@@ -1,0 +1,163 @@
+---
+title: 'Fetch ใน Server Components'
+description: 'Fetch ตรง ๆ ใน async Server Component ไม่ต้องใช้ useEffect ไม่ต้องยิง API รอบสอง และเลี่ยง waterfall ด้วยการ fetch แบบ parallel กับ Request Memoization'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Server Component เป็น `async` function จึง `await` `fetch` หรือ query database ได้ **ตรง ๆ** ในตัว component ไม่ต้องมี `useEffect` ไม่ต้องมี loading state และไม่ต้องยิงจาก client ไปหา API
+
+## Fetch ตรง ๆ ใน async component
+
+ใน App Router component รันบน server เรา fetch ตรงจุดที่ render และ data ไม่หลุดเข้า client bundle จนกว่าจะส่ง HTML ออกไป
+
+```tsx
+// app/products/page.tsx
+export default async function ProductsPage() {
+  // Runs on the server — the API key and response stay server-side
+  const res = await fetch('https://api.example.com/products')
+  const products = await res.json()
+  return <ProductList products={products} />
+}
+```
+
+เพราะ code รันบน server เราจึงคุย database หรือ ORM ได้ตรง ๆ ไม่ต้องมี API route คั่นกลาง
+
+```tsx
+// app/users/page.tsx
+import { db } from '@/lib/db'
+
+export default async function UsersPage() {
+  // Query the database straight from the Server Component
+  const users = await db.user.findMany()
+  return <UserList users={users} />
+}
+```
+
+## Sequential vs. parallel เลี่ยง waterfall
+
+ถ้า `await` request แรกแล้วค่อย `await` ตัวถัดไป ตัวที่สองจะเริ่มไม่ได้จนกว่าตัวแรกจะเสร็จ นั่นคือ **waterfall** เมื่อ request ไม่ได้ขึ้นต่อกัน ให้ยิงพร้อมกันด้วย `Promise.all`
+
+```tsx
+// app/dashboard/page.tsx
+async function getUser(id: string) {
+  const res = await fetch(`https://api.example.com/users/${id}`)
+  return res.json()
+}
+
+async function getPosts(id: string) {
+  const res = await fetch(`https://api.example.com/users/${id}/posts`)
+  return res.json()
+}
+
+export default async function Dashboard() {
+  // Parallel: both requests fire at once, no waterfall
+  const [user, posts] = await Promise.all([getUser('1'), getPosts('1')])
+  return <Profile user={user} posts={posts} />
+}
+```
+
+## Dedupe ด้วย Request Memoization และ React.cache()
+
+ภายใน render pass เดียว Next.js ทำ memoize `fetch` ที่เหมือนกันให้อัตโนมัติ เรียก URL เดิมจากสาม component แต่ network เห็นแค่ request เดียว ส่วนงานที่ไม่ใช่ `fetch` เช่น query database ให้ห่อด้วย `cache()` ของ React เพื่อ dedupe แบบ per-request เหมือนกัน
+
+```tsx
+// lib/user.ts
+import { cache } from 'react'
+import { db } from '@/lib/db'
+
+// Called by many components in one render — the query runs once per request
+export const getUser = cache(async (id: string) => {
+  return db.user.findUnique({ where: { id } })
+})
+```
+
+## จุดที่ไม่ควร fetch
+
+Client Component `await` ในตัวมันไม่ได้ และห้ามแตะ database ตรง ๆ มันต้องเข้าถึง data ผ่าน **Route Handler** หรือ data library ที่รันบน server แทนมัน
+
+```tsx
+// app/search/search-box.tsx
+'use client'
+import { useState } from 'react'
+
+export function SearchBox() {
+  const [results, setResults] = useState([])
+  async function onSearch(q: string) {
+    // Client components fetch through a Route Handler, never the DB
+    const res = await fetch(`/api/search?q=${q}`)
+    setResults(await res.json())
+  }
+  return <input onInput={(e) => onSearch(e.currentTarget.value)} />
+}
+```
+
+<Mermaid title="Sequential waterfall vs. parallel fetching" code={sfcDiagramTh} />
+
+export const sfcDiagramTh = `
+flowchart LR
+  A["Request"] --> B["await getUser()"]
+  B --> C["await getPosts()"]
+  C --> D["Render (late)"]
+  A --> E["Promise.all"]
+  E --> F["getUser() + getPosts() together"]
+  F --> G["Render (sooner)"]
+`;
+
+<Callout title="The one-line takeaway">
+fetch **ตรงจุดที่ render** async Server Component `await` data ได้ตรง ๆ และ `Promise.all` บวก Request Memoization ทำให้เร็วและไม่เกิด waterfall
+</Callout>
+
+export const sfcQuizTh = [
+  {
+    q: 'async Server Component ได้ data มายังไง?',
+    options: [
+      'ใช้ useEffect หลัง component mount',
+      'await fetch หรือ query database ตรง ๆ ในตัว component',
+      'ยิง API route ของตัวเองผ่าน network',
+      'ผ่าน data library ฝั่ง client เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมต้องห่อสอง fetch ที่ไม่ขึ้นต่อกันด้วย Promise.all?',
+    options: [
+      'เพื่อ retry เมื่อ fail',
+      'เพื่อ cache ผลลัพธ์ถาวร',
+      'เพื่อรันแบบ parallel และเลี่ยง request waterfall',
+      'เพื่อบังคับให้รันทีละตัว',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'cache() ของ React ให้อะไรกับ query database?',
+    options: [
+      'cache ถาวรที่อยู่ข้าม request',
+      'dedupe แบบ per-request ให้รันครั้งเดียวใน render เดียว',
+      'revalidate อัตโนมัติทุก 60 วินาที',
+      'cache ฝั่ง client ใน browser',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Client Component ต้องใช้ data จาก server ควรทำยังไง?',
+    options: [
+      'query database ตรง ๆ',
+      'await data ใน render body',
+      'เรียก Route Handler หรือ data library ที่รันบน server',
+      'import ORM เข้า client bundle',
+    ],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/fetching-in-server-components" questions={sfcQuizTh} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/fetching-in-server-components" />

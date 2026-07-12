@@ -1,0 +1,167 @@
+---
+title: Security and Patterns
+description: A Server Action is a public endpoint — always validate input and authorize the user inside it — plus the built-in protections and reusable patterns.
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Every Server Action is a public HTTP endpoint, so you must validate the input and authorize the caller inside the action itself — never trust that it was only reached from your own UI.
+
+## Validate and authorize inside the action
+
+Anyone who discovers the action ID can call it with any payload. So the action must re-check who the user is and re-parse the input on every call. Authorize first, validate second, then mutate — the UI that rendered the form is not a security boundary.
+
+```ts
+// app/actions.ts — authorize, then validate, then mutate
+'use server'
+
+import { auth } from '@/lib/auth'
+import { z } from 'zod'
+
+const schema = z.object({ id: z.string().uuid(), title: z.string().min(1) })
+
+export async function updatePost(formData: FormData) {
+  const session = await auth()
+  if (!session?.user) throw new Error('Unauthorized')
+
+  const parsed = schema.safeParse({
+    id: formData.get('id'),
+    title: formData.get('title'),
+  })
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  await db.post.update({
+    where: { id: parsed.data.id, authorId: session.user.id },
+    data: { title: parsed.data.title },
+  })
+}
+```
+
+## The built-in protections are not authorization
+
+Next.js encrypts variables you close over in an action, generates unguessable action IDs, and dead-code-eliminates any action you never use so it never becomes a public endpoint. These reduce the attack surface, but none of them check whether THIS user may perform THIS action. Authorization and validation remain your job.
+
+```ts
+// app/actions.ts — unused actions are stripped at build; used ones get an ID
+'use server'
+
+// Used in the app: Next.js creates an encrypted, unguessable ID for it.
+export async function updateUser(formData: FormData) {}
+
+// Never imported anywhere: dead-code-eliminated, no public endpoint exists.
+export async function deleteUser(formData: FormData) {}
+```
+
+## A reusable action wrapper with typed results
+
+To avoid repeating the auth and validation boilerplate, wrap actions in a helper that authorizes, parses with a schema, and returns a typed result. Every action then returns the same success-or-error shape, which pairs cleanly with `useActionState`.
+
+```ts
+// app/lib/action.ts — one wrapper: authorize, validate, typed result
+import { auth } from '@/lib/auth'
+import { z } from 'zod'
+
+type Result<T> = { ok: true; data: T } | { ok: false; error: string }
+
+export function authedAction<S extends z.ZodType, T>(
+  schema: S,
+  run: (input: z.infer<S>, userId: string) => Promise<T>,
+) {
+  return async (formData: FormData): Promise<Result<T>> => {
+    const session = await auth()
+    if (!session?.user) return { ok: false, error: 'Unauthorized' }
+
+    const parsed = schema.safeParse(Object.fromEntries(formData))
+    if (!parsed.success) return { ok: false, error: 'Invalid input' }
+
+    const data = await run(parsed.data, session.user.id)
+    return { ok: true, data }
+  }
+}
+```
+
+## Keep DB access in a data-access layer
+
+Do not scatter raw database queries across actions. Route every read and write through a data-access layer whose functions each enforce their own ownership checks. Actions call that layer, so authorization lives next to the data and is hard to forget.
+
+```ts
+// app/data/posts.ts — the only place that touches the posts table
+import 'server-only'
+
+export async function updatePostForUser(id: string, userId: string, title: string) {
+  return db.post.update({
+    where: { id, authorId: userId },
+    data: { title },
+  })
+}
+```
+
+<Mermaid title="Every request re-checks auth and input" code={diagramSa4En} />
+
+export const diagramSa4En = `
+graph TD
+  A["Public request hits action ID"] --> B{"Authorized user?"}
+  B -->|"No"| C["Reject: Unauthorized"]
+  B -->|"Yes"| D{"Input valid by schema?"}
+  D -->|"No"| E["Reject: Invalid input"]
+  D -->|"Yes"| F["Data-access layer with ownership check"]
+  F --> G["Mutate the database"]
+`;
+
+<Callout title="The one-line takeaway">
+Treat every Server Action as a public endpoint: authorize the user and validate the input inside the action — the built-in protections harden it but never replace your authorization.
+</Callout>
+
+export const quizSa4En = [
+  {
+    q: 'Why must you authorize and validate inside every Server Action?',
+    options: [
+      'Because actions are slow otherwise',
+      'Because an action is a public endpoint anyone can call directly',
+      'Because React requires it for hydration',
+      'Because the form already guarantees safe input',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What do the built-in protections like unguessable action IDs provide?',
+    options: [
+      'Full authorization so you can skip auth checks',
+      'A reduced attack surface, but not authorization',
+      'Automatic input validation for every field',
+      'Encryption of the database at rest',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What happens to a Server Action that is never used anywhere?',
+    options: [
+      'It is exposed as a default public endpoint',
+      'It is dead-code-eliminated and gets no public endpoint',
+      'It throws an error at runtime',
+      'It is cached and called automatically',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the point of a data-access layer for mutations?',
+    options: [
+      'To make queries run on the client',
+      'To centralize DB access so ownership checks are enforced consistently',
+      'To avoid using a database entirely',
+      'To disable revalidation',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="server-actions-and-mutations/security-and-patterns" questions={quizSa4En} />
+
+<ProgressTracker client:visible id="server-actions-and-mutations/security-and-patterns" />

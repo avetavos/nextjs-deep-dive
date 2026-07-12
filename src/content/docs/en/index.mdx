@@ -1,0 +1,60 @@
+---
+title: Next.js — From Zero to Hero
+description: Master Next.js from first principles — the App Router and React Server Components, routing and layouts, the four caching layers and current default caching behavior, static/dynamic/streaming rendering and Partial Prerendering, Server Actions and mutations, image/font/metadata optimization, and running Next.js in production.
+template: splash
+hero:
+  tagline: A standalone, developer-focused course on Next.js — the React framework. From the App Router and Server Components to the four caching layers, streaming rendering, and Server Actions — taught through real code and diagrams. Every version-sensitive detail (fetch no longer cached by default, the use cache / cacheComponents model, Partial Prerendering) is verified against current docs.
+  actions:
+    - text: Start here
+      link: /nextjs/en/foundations/
+      icon: right-arrow
+      variant: primary
+    - text: Jump to the caching layers
+      link: /nextjs/en/data-fetching-and-caching/the-four-caching-layers/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll learn
+
+<CardGrid>
+  <Card title="Foundations" icon="rocket">
+    What Next.js is, the App Router, Server vs. Client Components, and file conventions. [Start →](/nextjs/en/foundations/)
+  </Card>
+  <Card title="Routing & Navigation" icon="seti:html">
+    Layouts and nested routes, dynamic segments, route groups, parallel & intercepting routes, loading/error UI. [Route →](/nextjs/en/routing-and-navigation/pages-layouts-and-nested-routing/)
+  </Card>
+  <Card title="Data Fetching & Caching" icon="random">
+    Fetching in Server Components and the four caching layers — Request Memoization, Data Cache, Full Route Cache, Router Cache — plus revalidation. [Cache →](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/)
+  </Card>
+  <Card title="Rendering" icon="seti:config">
+    Static vs. dynamic rendering, streaming with Suspense, and Partial Prerendering via cacheComponents. [Render →](/nextjs/en/rendering/static-and-dynamic-rendering/)
+  </Card>
+  <Card title="Server Actions & Mutations" icon="approve-check">
+    Server Actions for forms and mutations, revalidatePath/revalidateTag, and the client/server boundary. [Mutate →](/nextjs/en/server-actions-and-mutations/what-are-server-actions/)
+  </Card>
+  <Card title="Optimization" icon="seti:plan">
+    Image, Font and Script components, the Metadata API, bundle analysis, and Turbopack. [Optimize →](/nextjs/en/optimization/images-and-fonts/)
+  </Card>
+  <Card title="Production & Ecosystem" icon="puzzle">
+    Middleware, auth patterns, environment config, and deployment beyond Vercel. [Ship it →](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)
+  </Card>
+</CardGrid>
+
+## How this course works
+
+<CardGrid>
+  <Card title="Server-first, boundary-aware" icon="rocket">
+    App Router components are Server Components by default; `"use client"` marks a boundary that spreads to everything imported past it. This course teaches where that boundary is and why it matters, not just the syntax.
+  </Card>
+  <Card title="Current behavior, verified" icon="random">
+    Written against current Next.js and checked against the official docs via context7 — including the big shift most tutorials miss: `fetch` and GET Route Handlers are no longer cached by default, and caching is now opt-in via `use cache` / `cacheComponents`.
+  </Card>
+  <Card title="Four caches, not one" icon="approve-check">
+    Request Memoization, the Data Cache, the Full Route Cache, and the client Router Cache each live at a different layer with different lifetimes and invalidation — the single most misunderstood part of Next.js, taught layer by layer.
+  </Card>
+  <Card title="Diagrams that explain" icon="puzzle">
+    The RSC request lifecycle, the four caching layers, the streaming/Suspense flow, and the Server Action round-trip as theme-aware Mermaid diagrams. Bilingual (English / ไทย) with saved quiz progress.
+  </Card>
+</CardGrid>

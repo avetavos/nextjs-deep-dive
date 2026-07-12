@@ -1,0 +1,125 @@
+---
+title: 'สี่ Caching Layers'
+description: 'Request Memoization, Data Cache, Full Route Cache และ Router Cache แต่ละชั้น cache อะไร อยู่ที่ไหน อยู่นานแค่ไหน และ invalidate ยังไง'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+caching ของ Next.js คือ **สี่ชั้นแยกกัน** ได้แก่ Request Memoization, Data Cache, Full Route Cache และ Router Cache และตั้งแต่ v15 Data Cache เป็นแบบ **opt-in** เพราะ `fetch` ไม่ถูก cache โดย default อีกต่อไป
+
+## สี่ชั้น สี่หน้าที่
+
+แต่ละชั้น cache คนละอย่าง อยู่คนละที่ และ invalidate คนละแบบ การแยกมันออกจากกันในหัวคือทักษะทั้งหมดของเรื่องนี้
+
+| Layer | What it caches | Where it lives | Lifetime | How it is invalidated |
+| --- | --- | --- | --- | --- |
+| Request Memoization | ค่าที่ return จาก `fetch` / `cache()` ที่เหมือนกันใน render เดียว | Server, per request (React) | หนึ่ง request / render pass | จบเองเมื่อ render เสร็จ |
+| Data Cache | ผลของ data fetch ใช้ซ้ำข้าม request และ deploy | Server (persistent) | จนกว่าจะ revalidate | `revalidateTag`, `revalidatePath` หรือ `revalidate` แบบ time-based |
+| Full Route Cache | RSC payload กับ HTML ของ route ที่ render แบบ static | Server (persistent, build หรือ runtime) | จนกว่าจะ deploy หรือ data revalidate | revalidate data ข้างใต้ หรือ redeploy |
+| Router Cache | RSC payload ของ route ที่เข้าชมหรือ prefetch | Client (browser memory) | ตลอด session; `staleTimes` คุมความสด | navigation, `router.refresh()` หรือ Server Action revalidation |
+
+## ฝั่ง server: memoization, data และ route cache
+
+สามในสี่ชั้นอยู่บน server และซ้อนกัน **Request Memoization** dedupe call ที่เหมือนกันภายใน render เดียว **Data Cache** เก็บผล fetch ข้าม request **Full Route Cache** เก็บผล render ของ static route เพื่อให้ request ข้ามการ render ไปเลย
+
+จุดที่มือใหม่พลาด ตั้งแต่ Next.js 15 `fetch` ธรรมดาไม่เขียนอะไรลง Data Cache เลย เรา opt-in ทีละ call
+
+```tsx
+// Not cached — hits the origin on every request (the Next.js 15+ default)
+await fetch('https://api.example.com/prices')
+
+// Opt in to the Data Cache indefinitely
+await fetch('https://api.example.com/config', { cache: 'force-cache' })
+
+// Opt in with a 60-second lifetime
+await fetch('https://api.example.com/feed', { next: { revalidate: 60 } })
+
+// Opt in and tag for on-demand invalidation
+await fetch('https://api.example.com/cart', { next: { tags: ['cart'] } })
+```
+
+## ฝั่ง client: Router Cache
+
+ชั้นที่สี่อยู่ใน browser เมื่อเรา navigate หรือ hover `<Link>` ที่ prefetch ไว้ Next.js เก็บ RSC payload ของ route ไว้ใน memory ทำให้ back และ forward ทันที ตั้งแต่ v15 ค่า default ของ `staleTimes.dynamic` คือ **0** ดังนั้น dynamic page จะไม่ถูกเก็บฝั่ง client จนกว่าเราจะเพิ่มค่า
+
+```ts
+// next.config.ts — opt into holding dynamic routes for 30s in the Router Cache
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    staleTimes: { dynamic: 30 },
+  },
+}
+
+export default nextConfig
+```
+
+## ทำไม "fetch ไม่ cache โดย default" ถึงสำคัญ
+
+ใน Next.js 14 `fetch` default เป็น `force-cache` tutorial เลยสอนว่า "Next.js cache ทุกอย่างให้อัตโนมัติ" ซึ่ง **ผิดสำหรับ v15 และ v16** วันนี้ caching เป็นแบบ layered และ opt-in `fetch` ที่ไม่ cache ทำให้ route กลายเป็น dynamic และ Data Cache ว่างจนกว่าเราจะร้องขอ `GET` Route Handler ก็เปลี่ยนแบบเดียวกัน มันเป็น dynamic จนกว่าเราจะเพิ่ม `export const dynamic = 'force-static'`
+
+<Mermaid title="How a request falls through the four caches" code={fclDiagramTh} />
+
+export const fclDiagramTh = `
+flowchart TD
+  A["Browser navigates"] --> B["Router Cache (client)"]
+  B -->|miss| C["Full Route Cache (server)"]
+  C -->|miss or dynamic| D["Render Server Components"]
+  D --> E["Request Memoization (per render)"]
+  E --> F["Data Cache (server)"]
+  F -->|miss| G["Origin: API or database"]
+`;
+
+<Callout title="The one-line takeaway">
+สี่ cache สี่หน้าที่ Request Memoization (per render), Data Cache (per data fetch), Full Route Cache (per rendered route), Router Cache (ใน browser) และตั้งแต่ v15 Data Cache เป็น **opt-in** เพราะ `fetch` ไม่ cache โดย default
+</Callout>
+
+export const fclQuizTh = [
+  {
+    q: 'ตั้งแต่ version ไหนที่ fetch ไม่ cache โดย default ใน Next.js?',
+    options: ['Next.js 12', 'Next.js 13', 'Next.js 14', 'Next.js 15'],
+    answer: 3,
+  },
+  {
+    q: 'ชั้นไหนในสี่ชั้นที่อยู่ใน browser?',
+    options: [
+      'Request Memoization',
+      'Data Cache',
+      'Full Route Cache',
+      'Router Cache',
+    ],
+    answer: 3,
+  },
+  {
+    q: 'ชั้นไหน dedupe fetch ที่เหมือนกันภายใน render เดียว?',
+    options: [
+      'Request Memoization',
+      'Data Cache',
+      'Full Route Cache',
+      'Router Cache',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'revalidateTag invalidate อะไร?',
+    options: [
+      'แค่ Router Cache ฝั่ง client',
+      'Data Cache entry ที่มี tag นั้น และ route ที่ขึ้นกับมัน',
+      'Request Memoization ของ render ปัจจุบัน',
+      'ไม่ทำอะไรจนกว่าจะ deploy ครั้งถัดไป',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/the-four-caching-layers" questions={fclQuizTh} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/the-four-caching-layers" />

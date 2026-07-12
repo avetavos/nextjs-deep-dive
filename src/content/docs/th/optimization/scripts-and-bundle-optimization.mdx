@@ -1,0 +1,148 @@
+---
+title: 'Script และ Bundle Optimization'
+description: 'โหลด third-party script ด้วย strategy ของ next/script, code-split client component ด้วย next/dynamic, optimizePackageImports และการวิเคราะห์ bundle'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+ส่ง JavaScript ให้น้อยลงด้วยการโหลด third-party script ในจังหวะที่เหมาะสมผ่าน `next/script`, code-split client component ที่หนักด้วย `next/dynamic` และรักษาเส้น Server/Client boundary ให้แคบไว้
+
+## next/script และ strategy ของมัน
+
+tag `<script>` ดิบ ๆ block การ parse และรันทันทีที่ browser ไปถึง `next/script` ให้คุณเลือกจังหวะด้วย `strategy` เลือกตัวที่ช้าที่สุดเท่าที่ script ทนได้
+
+- `beforeInteractive` — โหลดก่อนโค้ด Next.js ใด ๆ จะ hydrate เก็บไว้ให้ script ที่วิกฤตจริง ๆ เท่านั้น
+- `afterInteractive` — ค่า default โหลดหลัง hydration เริ่ม เหมาะกับ analytics
+- `lazyOnload` — โหลดตอน browser ว่าง เหมาะกับ widget ความสำคัญต่ำอย่าง chat
+
+```tsx
+// A chat widget is low priority — defer it to idle time
+import Script from 'next/script'
+
+export default function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      {children}
+      <Script src="https://widget.example.com/chat.js" strategy="lazyOnload" />
+    </>
+  )
+}
+```
+
+## code-split client component ด้วย next/dynamic
+
+`next/dynamic` (สร้างบน `React.lazy`) แยก client component ที่หนักออกเป็น chunk ของตัวเองที่โหลดเฉพาะตอน render สำหรับ component ที่แตะ browser-only API ให้ส่ง `ssr: false` เพื่อไม่ให้มันรันบน server เลย โปรดจำว่า `ssr: false` ใช้ได้เฉพาะภายใน Client Component
+
+```tsx
+'use client'
+import dynamic from 'next/dynamic'
+
+// Heavy, browser-only — split into its own chunk, no SSR
+const Chart = dynamic(() => import('./Chart'), {
+  ssr: false,
+  loading: () => <p>Loading chart…</p>,
+})
+
+export default function Dashboard() {
+  return <Chart />
+}
+```
+
+## optimizePackageImports และ bundle analyzer
+
+library บางตัวที่มี barrel file ดึงเข้ามามากกว่าที่คุณใช้จริงเยอะ `optimizePackageImports` บอก Next.js ให้ import เฉพาะ module ที่คุณอ้างถึงจริง ทำให้ client bundle เล็กลง
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    optimizePackageImports: ['lucide-react'],
+  },
+}
+
+export default nextConfig
+```
+
+จะดูว่าจริง ๆ มีอะไรอยู่ใน bundle ให้ครอบ config ด้วย `@next/bundle-analyzer` แล้วสั่ง build โดยเซ็ต flag ไว้
+
+```js
+// next.config.js — run: ANALYZE=true next build
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+})
+
+module.exports = withBundleAnalyzer({})
+```
+
+## รักษา Server/Client boundary ให้แคบ
+
+ชัยชนะเรื่อง bundle ที่ใหญ่ที่สุดคือการไม่ส่งโค้ดเลย ทุกอย่างที่ import ผ่านเส้น `"use client"` กลายเป็น client JavaScript ดังนั้นดัน `"use client"` ลงไปให้ลึกที่สุดเท่าที่ทำได้ — เก็บงานที่ใช้ data หนักไว้ใน Server Component แล้ว mark เฉพาะใบ interactive เล็ก ๆ ให้เป็น client
+
+<Mermaid title="Where client JavaScript comes from" code={diagramBundleTh} />
+
+export const diagramBundleTh = `flowchart TD
+  Page["Server Component (0 KB client JS)"] --> Leaf["'use client' leaf"]
+  Page --> Split["next/dynamic chunk"]
+  Leaf --> JS[Client bundle]
+  Split -->|loads on demand| JS
+  Page --> Script["next/script (strategy-timed)"]`;
+
+<Callout title="The one-line takeaway">
+จับจังหวะ third-party script ด้วย strategy ของ `next/script`, แยกโค้ด client ที่หนักด้วย `next/dynamic`, ตัด barrel import ด้วย `optimizePackageImports` และดัน `"use client"` ให้ต่ำ ต้นไม้ส่วนใหญ่จึงส่ง JavaScript เป็นศูนย์
+</Callout>
+
+export const quizBundleTh = [
+  {
+    q: 'strategy ไหนของ next/script เป็นค่า default สำหรับ analytics',
+    options: [
+      'beforeInteractive',
+      'afterInteractive',
+      'lazyOnload',
+      'workerThread',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ssr: false ใน next/dynamic ทำอะไร',
+    options: [
+      'render component บน server เท่านั้น',
+      'กันไม่ให้ component render บน server',
+      'ปิด code-splitting',
+      'cache ผลลัพธ์ของ component',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'optimizePackageImports ช่วยเรื่องอะไร',
+    options: [
+      'import เฉพาะ module ที่คุณใช้จาก package',
+      'preload remote image',
+      'สร้าง sitemap',
+      'จับจังหวะ third-party script',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'ทำไมต้องดัน "use client" ลงไปให้ลึกที่สุด',
+    options: [
+      'มันทำให้ server render เร็วขึ้นอย่างเดียว',
+      'ทุกอย่างที่ผ่านเส้น boundary กลายเป็น client JavaScript',
+      'มันจำเป็นสำหรับ metadata',
+      'มันปิด Suspense',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/scripts-and-bundle-optimization" questions={quizBundleTh} />
+
+<ProgressTracker client:visible id="optimization/scripts-and-bundle-optimization" />

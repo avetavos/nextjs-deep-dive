@@ -1,0 +1,125 @@
+---
+title: 'Static and Dynamic Rendering'
+description: 'How Next.js renders routes statically by default, what flips a route to dynamic (Dynamic APIs, uncached fetch, force-dynamic), how generateStaticParams prerenders dynamic segments, and how to read the build output.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Next.js prerenders every route as static HTML at build time unless the route reaches for request-time data — at which point it becomes dynamic and renders on each request.
+
+## Static is the default
+
+A route with no request-time inputs is rendered once at build time and served as static HTML. Nothing runs per request; the same bytes go to everyone.
+
+```tsx
+// app/about/page.tsx — no dynamic APIs, so this is prerendered at build time
+export default function AboutPage() {
+  return <h1>About us</h1>;
+}
+```
+
+This is the fastest path: the HTML sits on a CDN and returns instantly. Most marketing, docs, and content pages should stay here.
+
+## What flips a route to dynamic
+
+A route switches to **dynamic rendering** the moment it depends on something only known at request time. Any of these will flip it:
+
+- A **Dynamic API** — `cookies()`, `headers()`, `draftMode()`, or reading `searchParams` / the `params` Promise at request time.
+- An **uncached data request** — a `fetch()` with `cache: 'no-store'` (or any fetch under Next.js 15+ defaults that you have not opted into caching).
+- An explicit **`export const dynamic = 'force-dynamic'`**.
+
+```tsx
+// app/dashboard/page.tsx — reading cookies() flips this route to dynamic
+import { cookies } from 'next/headers';
+
+export default async function Dashboard() {
+  const store = await cookies();
+  const theme = store.get('theme')?.value ?? 'light';
+  return <p>Active theme: {theme}</p>;
+}
+```
+
+You can also force the mode yourself with a segment config export:
+
+```tsx
+// Force a route to render on every request, even with no dynamic API
+export const dynamic = 'force-dynamic';
+```
+
+## generateStaticParams prerenders dynamic segments
+
+A dynamic segment like `[slug]` has no fixed value at build time. `generateStaticParams` tells Next.js exactly which values to prerender, turning a dynamic route into a set of static pages — the App Router replacement for the old `getStaticPaths`.
+
+```tsx
+// app/blog/[slug]/page.tsx
+export async function generateStaticParams() {
+  const posts = await fetch('https://api.example.com/posts').then((r) => r.json());
+  return posts.map((post) => ({ slug: post.slug }));
+}
+
+export default async function Post({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  return <article>Reading post: {slug}</article>;
+}
+```
+
+Each returned `slug` is built into its own static HTML file at build time.
+
+## Reading the build output
+
+`next build` prints a legend that tells you the mode of every route. Learn the three symbols and you never have to guess:
+
+```txt
+Route (app)              Rendering
+○  /about                Static    prerendered as static HTML
+ƒ  /dashboard            Dynamic   server-rendered on each request
+●  /blog/[slug]          SSG       prerendered via generateStaticParams
+```
+
+If a route you expected to be static shows `ƒ`, something inside it reached for request-time data — trace back to the Dynamic API or uncached fetch that caused it.
+
+<Mermaid title="How Next.js decides static vs dynamic" code={diagramStaticEn} />
+
+export const diagramStaticEn = `flowchart TD
+  A[Incoming request] --> B{Dynamic API or uncached fetch?}
+  B -- No --> C[Static render, prerendered at build]
+  B -- Yes --> D[Dynamic render, on each request]
+  E[generateStaticParams] --> C`;
+
+<Callout title="The one-line takeaway">
+Routes are static by default and only become dynamic when they touch request-time data — a Dynamic API, an uncached fetch, or force-dynamic — while generateStaticParams keeps dynamic segments prerendered.
+</Callout>
+
+export const quizStaticEn = [
+  {
+    q: 'How does Next.js render a route by default?',
+    options: ['Dynamically on each request', 'Statically, prerendered at build time', 'Only on the client', 'It never renders until deployed'],
+    answer: 1,
+  },
+  {
+    q: 'Which of these flips a route to dynamic rendering?',
+    options: ['Importing a CSS file', 'Calling cookies() in the component', 'Exporting a default component', 'Adding a <title> tag'],
+    answer: 1,
+  },
+  {
+    q: 'What does generateStaticParams do?',
+    options: ['Forces a route to be dynamic', 'Disables caching for a route', 'Prerenders specific values of a dynamic segment at build time', 'Runs only in the browser'],
+    answer: 2,
+  },
+  {
+    q: 'In the build output, what does the ƒ symbol mean?',
+    options: ['A static prerendered route', 'A dynamic, server-rendered-on-demand route', 'A client-only route', 'A broken route'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/static-and-dynamic-rendering" questions={quizStaticEn} />
+
+<ProgressTracker client:visible id="rendering/static-and-dynamic-rendering" />

@@ -1,0 +1,112 @@
+---
+title: 'Partial Prerendering'
+description: 'How PPR combines a static shell with dynamic holes in one route, each hole wrapped in Suspense and streamed at request time, enabled via cacheComponents in Next.js 16, and how it contrasts with fully static and fully dynamic routes.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Partial Prerendering serves a prerendered static shell instantly and streams the dynamic "holes" — each wrapped in Suspense — into that shell at request time, giving one route the speed of static and the freshness of dynamic.
+
+## One route, static shell plus dynamic holes
+
+Before PPR you picked one mode per route: fully static (fast, but no per-request data) or fully dynamic (fresh, but nothing prerendered). PPR removes the either/or. The parts of the page that never change are prerendered into a static shell; the parts that need request-time data become dynamic holes, each behind a `<Suspense>` boundary, streamed in as they resolve.
+
+```tsx
+// app/product/[id]/page.tsx — static shell, dynamic price streamed into a hole
+import { Suspense } from 'react';
+import { cookies } from 'next/headers';
+
+async function LivePrice() {
+  const store = await cookies();
+  const currency = store.get('currency')?.value ?? 'USD';
+  const price = await fetch('https://api.example.com/price', {
+    cache: 'no-store',
+  }).then((r) => r.json());
+  return <strong>{price.amount} {currency}</strong>;
+}
+
+export default function ProductPage() {
+  return (
+    <main>
+      <h1>Wireless Headphones</h1>
+      <p>This description is prerendered into the static shell.</p>
+      <Suspense fallback={<span>Loading price…</span>}>
+        <LivePrice />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+The heading and description ship instantly as static HTML; `LivePrice` is the dynamic hole that streams in per request.
+
+## Enabling PPR in Next.js 16
+
+In Next.js 16, Partial Prerendering ships as part of **Cache Components** and is turned on with a single config flag. The old experimental `ppr` flag and the route-level `experimental_ppr` export have been **removed** — you no longer opt in per route.
+
+```ts
+// next.config.ts — enable Partial Prerendering (Next.js 16)
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+};
+
+export default nextConfig;
+```
+
+With `cacheComponents: true`, any route that mixes prerendered content with Suspense-wrapped dynamic content is partially prerendered automatically. Because this area is still stabilizing, verify the current status and naming in the Next.js docs before you rely on it in production.
+
+## Contrast with all-static and all-dynamic
+
+The three models line up along one axis — how much of the route is known at build time:
+
+- **All static** — the entire route is prerendered; nothing is per-request. Fastest, but no fresh data.
+- **All dynamic** — the entire route renders on each request. Always fresh, but nothing is prerendered, so TTFB waits on the slowest data.
+- **PPR** — the shell is prerendered like static, and only the holes are dynamic. Fast first paint *and* per-request data in the same route.
+
+<Mermaid title="A PPR route: static shell with a streamed dynamic hole" code={diagramPprEn} />
+
+export const diagramPprEn = `flowchart LR
+  A[Request] --> B[Static shell served instantly]
+  B --> E[Shell prerendered at build time]
+  B --> C[Dynamic hole in Suspense]
+  C --> D[Streamed at request time]`;
+
+<Callout title="The one-line takeaway">
+PPR gives one route a prerendered static shell plus Suspense-wrapped dynamic holes streamed at request time — enabled in Next.js 16 through cacheComponents, since the experimental ppr flag was removed.
+</Callout>
+
+export const quizPprEn = [
+  {
+    q: 'What does Partial Prerendering combine in a single route?',
+    options: ['Two separate pages', 'A static shell with dynamic holes streamed at request time', 'Client and server components only', 'Caching and revalidation'],
+    answer: 1,
+  },
+  {
+    q: 'How is each dynamic hole in a PPR route delivered?',
+    options: ['Prerendered at build time', 'Wrapped in Suspense and streamed at request time', 'Fetched from the client', 'Rendered once and cached forever'],
+    answer: 1,
+  },
+  {
+    q: 'How do you enable PPR in Next.js 16?',
+    options: ['export const experimental_ppr = true', 'The experimental ppr config flag', 'cacheComponents: true in next.config', 'It is always on and cannot be configured'],
+    answer: 2,
+  },
+  {
+    q: 'How does PPR differ from an all-dynamic route?',
+    options: ['It renders nothing at build time', 'Its shell is prerendered while only the holes are dynamic', 'It removes Suspense boundaries', 'It runs only on the edge'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/partial-prerendering" questions={quizPprEn} />
+
+<ProgressTracker client:visible id="rendering/partial-prerendering" />

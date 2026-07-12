@@ -1,0 +1,35 @@
+---
+title: 'Next.js — From Zero to Hero'
+description: 'A developer-focused, zero-to-hero course on Next.js — the App Router and Server Components, routing, the four caching layers, rendering and streaming, Server Actions, optimization, and production.'
+sidebar:
+  order: 1
+---
+
+import Callout from '../../../../components/Callout.astro';
+
+**Next.js** is a React framework for building full-stack web applications. This course covers the **App Router** — the current, React-Server-Components-based model (the `app/` directory) — with the older Pages Router mentioned only where migration matters. It is written **for developers** who already know React and want to understand what Next.js actually does underneath: where code runs, how data is cached, and how a request becomes HTML.
+
+Two things many tutorials get wrong, because Next.js's model has shifted:
+
+- **Components are Server Components by default.** In the App Router, a component runs on the server unless the file (or an ancestor in the import chain) is marked `"use client"`. That boundary is not per-component in isolation — everything imported into a Client Component becomes part of the client bundle. Knowing exactly where the boundary sits is the core skill of the App Router.
+- **`fetch` is no longer cached by default.** Since Next.js 15, `fetch()` requests and `GET` Route Handlers are **not** cached unless you opt in (`cache: 'force-cache'`, `next: { revalidate }`, or the newer `use cache` directive). Older tutorials that say "Next.js caches all fetches automatically" describe Next.js 14 behavior. This course teaches the current defaults and the four distinct caching layers that sit behind them.
+
+## What this course covers
+
+| Module | You will learn |
+| --- | --- |
+| **Foundations** | What Next.js is, the App Router, Server vs. Client Components, file conventions |
+| **Routing & Navigation** | Layouts and nested routes, dynamic segments, route groups, parallel & intercepting routes, loading/error UI |
+| **Data Fetching & Caching** | Fetching in Server Components, Request Memoization, Data Cache, Full Route Cache, Router Cache, revalidation |
+| **Rendering** | Static vs. dynamic rendering, streaming with Suspense, Partial Prerendering via cacheComponents |
+| **Server Actions & Mutations** | Server Actions for forms and mutations, revalidatePath/revalidateTag, the client/server boundary |
+| **Optimization** | Image/Font/Script components, the Metadata API, bundle analysis, Turbopack |
+| **Production & Ecosystem** | Middleware, auth patterns, environment config, deployment beyond Vercel |
+
+## How to read it
+
+Each lesson opens with the idea in one sentence, shows real TypeScript/React and CLI examples, has a diagram of the moving parts, and ends with a one-line takeaway plus a short quiz. Work top to bottom — later modules assume the Server/Client-boundary and caching vocabulary from these first lessons.
+
+<Callout title="The one-line takeaway">
+Next.js's App Router is **server-first** — components run on the server unless a `"use client"` boundary says otherwise — and its caching is **layered and opt-in** since v15, not automatic. This course teaches where code runs, the four caching layers, how rendering and streaming work, and how mutations flow through Server Actions, all against current Next.js behavior — starting from the App Router itself.
+</Callout>

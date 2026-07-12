@@ -1,0 +1,153 @@
+---
+title: Parallel and Intercepting Routes
+description: Render multiple pages at once with named slots and default.tsx, and render a route inside the current layout with intercepting route conventions.
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Parallel routes let one layout render several independent slots at once, and intercepting routes let a route render inside the current layout instead of on its own page.
+
+## Parallel routes with named slots
+
+A folder prefixed with `@` like `@team` or `@analytics` is a named slot. The layout in the same folder receives each slot as a prop and can render them simultaneously, each with its own independent loading and error states.
+
+```txt
+app/
+  dashboard/
+    layout.tsx
+    page.tsx
+    @team/
+      page.tsx
+    @analytics/
+      page.tsx
+```
+
+```tsx
+// app/dashboard/layout.tsx
+export default function Layout({
+  children,
+  team,
+  analytics,
+}: {
+  children: React.ReactNode
+  team: React.ReactNode
+  analytics: React.ReactNode
+}) {
+  return (
+    <section>
+      {children}
+      <div className="grid">
+        {team}
+        {analytics}
+      </div>
+    </section>
+  )
+}
+```
+
+## The default.tsx fallback
+
+When you navigate to a route that a slot does not define, Next.js renders that slot's `default.tsx` instead. Without it a hard navigation to an unmatched slot throws, so add one that returns `null` or calls `notFound()`.
+
+```tsx
+// app/dashboard/@team/default.tsx
+export default function Default() {
+  return null
+}
+```
+
+## Intercepting routes
+
+Intercepting route conventions render a route inside the current layout while the URL still updates. The prefix matches segment levels: `(.)` for the same level, `(..)` for one level up, and `(...)` from the app root. The classic use is a photo modal: click a photo in a feed and it opens over the feed as a modal, but a direct visit to that URL renders the full page.
+
+```txt
+app/
+  feed/
+    page.tsx
+    @modal/
+      (..)photo/
+        [id]/page.tsx   // intercepts /photo/[id] as a modal
+  photo/
+    [id]/page.tsx       // the full standalone page
+```
+
+```tsx
+// app/feed/@modal/(..)photo/[id]/page.tsx
+export default async function PhotoModal({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <dialog open>Photo {id} in a modal over the feed</dialog>
+}
+```
+
+<Mermaid title="Parallel slots and an intercepted modal" code={diagramParallelEn} />
+
+export const diagramParallelEn = `
+graph TD
+  L["dashboard/layout.tsx"] --> C["children (page.tsx)"]
+  L --> T["@team slot"]
+  L --> A["@analytics slot"]
+  F["click photo in feed"] --> M["(..)photo intercepts as modal"]
+  DIRECT["visit /photo/42 directly"] --> FULL["full photo page"]
+`;
+
+<Callout title="The one-line takeaway">
+Named `@slots` render several pages in one layout at once, and `(.)` `(..)` `(...)` intercepts render a route inside the current layout while the URL still changes.
+</Callout>
+
+export const quizParallelEn = [
+  {
+    q: 'What is a folder prefixed with @ such as @team?',
+    options: [
+      'A private folder excluded from routing',
+      'A named slot rendered by the layout',
+      'A route group that hides the URL',
+      'A dynamic catch-all segment',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why add default.tsx to a parallel route slot?',
+    options: [
+      'To set the default export of the page',
+      'To render a fallback when the slot has no match, avoiding a throw',
+      'To make the slot a Client Component',
+      'To prefetch the slot automatically',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does the intercepting convention (..) target?',
+    options: [
+      'The same segment level',
+      'One segment level up',
+      'The app root',
+      'A private folder',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the classic use case for intercepting routes?',
+    options: [
+      'Prerendering a list of static pages',
+      'A photo modal over a feed while the URL updates',
+      'Reading search params on the server',
+      'Grouping marketing pages under one layout',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/parallel-and-intercepting-routes" questions={quizParallelEn} />
+
+<ProgressTracker client:visible id="routing-and-navigation/parallel-and-intercepting-routes" />

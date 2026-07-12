@@ -1,0 +1,110 @@
+---
+title: 'Streaming และ Suspense'
+description: 'static shell stream ออกมาก่อน ทำไม loading.tsx คือ Suspense boundary อัตโนมัติของ segment การใช้ Suspense boundary แบบ manual เพื่อ stream เฉพาะ component ที่ช้า และทำไม streaming ช่วยเรื่อง TTFB กับ perceived performance'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+streaming ให้ server ส่งส่วนที่พร้อมแล้วของหน้า — คือ static shell — ออกไปทันที แล้วค่อยดันส่วนที่ช้ากว่าตามมาทาง connection เดียวกันเมื่อ render เสร็จ
+
+## static shell stream ออกมาก่อน
+
+ถ้าไม่มี streaming server จะกั๊ก response ทั้งก้อนไว้จนกว่าทุก await จะ resolve ดังนั้นชิ้นที่ data ช้าที่สุดจะเป็นตัวกำหนด time to first byte streaming ตัดหน้าออกเป็น chunk — shell (layout, heading, อะไรก็ตามที่ไม่รอ data) ออกจาก server ก่อน ส่วนที่ช้าตามมาเมื่อ resolve
+
+browser paint shell ทันที ผู้ใช้จึงเห็นหน้าจริงในขณะที่ data ยังโหลดอยู่เบื้องหลัง
+
+## loading.tsx คือ Suspense boundary อัตโนมัติ
+
+วาง `loading.tsx` ไว้ข้าง ๆ `page.tsx` แล้ว Next.js จะห่อทั้ง segment นั้นด้วย Suspense boundary ให้เอง ระหว่างที่ page รอ data อยู่ loading UI จะโชว์ทันที
+
+```tsx
+// app/feed/loading.tsx — shown instantly while page.tsx awaits its data
+export default function Loading() {
+  return <p>Loading your feed…</p>;
+}
+```
+
+คุณไม่ต้องเขียน `<Suspense>` เองตรงนี้ — file convention คือ boundary เอง segment จะ stream เข้ามาเมื่อ data พร้อม
+
+## manual Suspense stream เฉพาะส่วนที่ช้า
+
+เมื่อมีแค่ region เดียวของหน้าที่ช้า ให้ห่อ region นั้นด้วย `<Suspense>` ส่วนที่เหลือของหน้าจะ render ทันที และเฉพาะ component ที่ช้าเท่านั้นที่ stream เข้ามา
+
+```tsx
+// app/feed/page.tsx
+import { Suspense } from 'react';
+
+async function SlowComments() {
+  const comments = await fetch('https://api.example.com/comments', {
+    cache: 'no-store',
+  }).then((r) => r.json());
+  return <ul>{comments.map((c) => <li key={c.id}>{c.text}</li>)}</ul>;
+}
+
+export default function FeedPage() {
+  return (
+    <section>
+      <h1>Your feed</h1>
+      <p>This heading and text ship in the shell, immediately.</p>
+      <Suspense fallback={<p>Loading comments…</p>}>
+        <SlowComments />
+      </Suspense>
+    </section>
+  );
+}
+```
+
+heading paint ทันที ส่วน `SlowComments` stream เข้ามาแล้วแทนที่ fallback เมื่อ fetch resolve
+
+## ทำไม streaming ช่วยเรื่อง perceived performance
+
+streaming แยก "first paint" ออกจาก "data ที่ช้าที่สุด" มีสองข้อดีที่ตามมา —
+
+- **TTFB ดีขึ้น** — shell ออกจาก server โดยไม่รอ data request ใด ๆ byte แรกจึงมาถึงเร็ว
+- **perceived performance ดีขึ้น** — ผู้ใช้อ่าน layout จริงได้ระหว่างที่ region ช้ากำลังเติมเข้ามา แทนที่จะจ้องหน้าจอว่างจนกว่าทุกอย่างจะพร้อม
+
+<Mermaid title="Shell first, then stream the slow parts" code={diagramStreamTh} />
+
+export const diagramStreamTh = `flowchart LR
+  A[Request] --> B[Server sends static shell now]
+  B --> C[Browser paints shell, fast TTFB]
+  D[Slow async component resolves] --> E[Server streams the chunk]
+  E --> F[Suspense fallback swaps to real content]`;
+
+<Callout title="The one-line takeaway">
+streaming ส่ง static shell ก่อนเพื่อ TTFB ที่เร็ว แล้วค่อยดัน region ช้าเข้ามาเมื่อ resolve — ผ่าน loading.tsx สำหรับทั้ง segment หรือ `<Suspense>` แบบ manual รอบ component เดียวที่ช้า
+</Callout>
+
+export const quizStreamTh = [
+  {
+    q: 'อะไรถูกส่งไปที่ browser ก่อนเมื่อหน้า stream?',
+    options: ['region ของ data ที่ช้าที่สุด', 'static shell', 'ไม่มีอะไรจนกว่า data จะ resolve หมด', 'client bundle เท่านั้น'],
+    answer: 1,
+  },
+  {
+    q: 'ไฟล์ loading.tsx สร้างอะไรให้ segment ของมัน?',
+    options: ['dynamic route', 'Suspense boundary อัตโนมัติ', 'API route แยกต่างหาก', 'client component'],
+    answer: 1,
+  },
+  {
+    q: 'ควรใช้ <Suspense> แบบ manual เมื่อไหร่?',
+    options: ['เพื่อ stream เฉพาะ region ช้าเดียวขณะที่ส่วนที่เหลือ render', 'เพื่อปิด streaming', 'เพื่อบังคับ static rendering', 'เพื่อ cache fetch request'],
+    answer: 0,
+  },
+  {
+    q: 'ทำไม streaming ช่วยเรื่อง time to first byte?',
+    options: ['มัน cache ทุก request', 'มันส่ง shell โดยไม่รอ data request', 'มันข้ามการ render ทั้งหมด', 'มันรันบน client เท่านั้น'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/streaming-and-suspense" questions={quizStreamTh} />
+
+<ProgressTracker client:visible id="rendering/streaming-and-suspense" />

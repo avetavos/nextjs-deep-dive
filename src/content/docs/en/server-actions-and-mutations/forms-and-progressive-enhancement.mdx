@@ -1,0 +1,191 @@
+---
+title: Forms and Progressive Enhancement
+description: How a form action works without JS then upgrades on hydration, plus useActionState, useFormStatus, and useOptimistic for real form UX.
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Wiring a Server Action to `<form action={action}>` gives you a form that submits and mutates even before any JavaScript loads, then upgrades to a richer client experience once React hydrates.
+
+## Progressive enhancement for free
+
+Because the action is attached to a real `<form>`, the browser can post it with a plain HTTP request. The mutation works with JavaScript disabled or still loading. Once React hydrates the page, the same form is intercepted client-side, so there is no full-page reload — you get the baseline for free and the upgrade automatically.
+
+```tsx
+// app/new-todo.tsx — works before JS, upgrades after hydration
+import { createTodo } from './actions'
+
+export function NewTodoForm() {
+  return (
+    <form action={createTodo}>
+      <input name="title" required />
+      <button type="submit">Add todo</button>
+    </form>
+  )
+}
+```
+
+## useActionState for result, pending, and errors
+
+`useActionState(action, initialState)` wraps an action so you get back the latest returned state, a form action to bind, and a `pending` flag. Your action takes the previous state as its first argument and returns the new state — perfect for surfacing validation errors next to the fields.
+
+```tsx
+// app/actions.ts — return field errors instead of throwing
+'use server'
+
+import { z } from 'zod'
+
+const schema = z.object({ title: z.string().min(1, 'Title is required') })
+
+export async function createTodo(prevState: unknown, formData: FormData) {
+  const parsed = schema.safeParse({ title: formData.get('title') })
+  if (!parsed.success) {
+    return { errors: parsed.error.flatten().fieldErrors }
+  }
+  await db.todo.create({ data: { title: parsed.data.title } })
+  return { errors: {} }
+}
+```
+
+```tsx
+// app/new-todo.tsx — bind the action with useActionState
+'use client'
+
+import { useActionState } from 'react'
+import { createTodo } from './actions'
+
+export function NewTodoForm() {
+  const [state, formAction, pending] = useActionState(createTodo, { errors: {} })
+
+  return (
+    <form action={formAction}>
+      <input name="title" />
+      {state.errors?.title && <p>{state.errors.title[0]}</p>}
+      <button disabled={pending} type="submit">Add todo</button>
+    </form>
+  )
+}
+```
+
+## useFormStatus for the submit button
+
+`useFormStatus` reads the pending state of the enclosing form. Put it in a child component of the form so the button can disable itself while the action runs, without threading props down.
+
+```tsx
+// app/submit-button.tsx — a child of the form
+'use client'
+
+import { useFormStatus } from 'react-dom'
+
+export function SubmitButton() {
+  const { pending } = useFormStatus()
+  return (
+    <button disabled={pending} type="submit">
+      {pending ? 'Saving…' : 'Add todo'}
+    </button>
+  )
+}
+```
+
+## useOptimistic for instant feedback
+
+`useOptimistic` lets you show the expected result immediately, before the server responds. You render the optimistic list, add the new item on submit, and React reconciles once the real data arrives.
+
+```tsx
+// app/thread.tsx — optimistic update before the action resolves
+'use client'
+
+import { useOptimistic } from 'react'
+import { send } from './actions'
+
+type Message = { message: string }
+
+export function Thread({ messages }: { messages: Message[] }) {
+  const [optimistic, addOptimistic] = useOptimistic<Message[], string>(
+    messages,
+    (state, next) => [...state, { message: next }],
+  )
+
+  async function action(formData: FormData) {
+    const message = String(formData.get('message'))
+    addOptimistic(message)
+    await send(message)
+  }
+
+  return (
+    <form action={action}>
+      {optimistic.map((m, i) => <p key={i}>{m.message}</p>)}
+      <input name="message" />
+      <button type="submit">Send</button>
+    </form>
+  )
+}
+```
+
+<Mermaid title="Baseline submit then hydrated upgrade" code={diagramSa2En} />
+
+export const diagramSa2En = `
+graph TD
+  A["form action = Server Action"] --> B{"Has JS hydrated?"}
+  B -->|"No"| C["Plain HTTP POST, full navigation"]
+  B -->|"Yes"| D["Client intercepts, no reload"]
+  D --> E["useActionState + useFormStatus + useOptimistic"]
+`;
+
+<Callout title="The one-line takeaway">
+A form action mutates even without JavaScript, and `useActionState`, `useFormStatus`, and `useOptimistic` layer on pending, validation errors, and optimistic UI once hydrated.
+</Callout>
+
+export const quizSa2En = [
+  {
+    q: 'Why does a form action work before JavaScript loads?',
+    options: [
+      'Next.js ships a service worker to handle it',
+      'The action is attached to a real form the browser can POST',
+      'React hydrates synchronously before paint',
+      'It secretly polls an API route',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does useActionState give you back?',
+    options: [
+      'Only the pending boolean',
+      'The returned state, a form action, and a pending flag',
+      'A ref to the form element',
+      'The raw FormData object',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where must useFormStatus be called to read the form pending state?',
+    options: [
+      'In the Server Action itself',
+      'In the same component that renders the form tag',
+      'In a child component of the form',
+      'In the root layout',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'What is the purpose of useOptimistic?',
+    options: [
+      'To validate input on the server',
+      'To show the expected result before the server responds',
+      'To cache the action result on disk',
+      'To retry the action automatically on failure',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="server-actions-and-mutations/forms-and-progressive-enhancement" questions={quizSa2En} />
+
+<ProgressTracker client:visible id="server-actions-and-mutations/forms-and-progressive-enhancement" />

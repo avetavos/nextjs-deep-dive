@@ -1,0 +1,153 @@
+---
+title: Metadata and SEO
+description: The Metadata API — static export const metadata and dynamic generateMetadata, title templates, and file-based metadata like opengraph-image, sitemap, and robots.
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+You describe a page's `<head>` as data — a static `metadata` object or a dynamic `generateMetadata` function — and Next.js renders the correct tags on the server, so you never hand-manage `<head>` again.
+
+## Static metadata
+
+Export a `metadata` object from any `layout` or `page` and Next.js turns it into `<title>`, `<meta>`, and link tags. It runs on the server, so the tags are present in the initial HTML that crawlers read.
+
+```tsx
+// app/about/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'About',
+  description: 'Who we are and what we build.',
+  openGraph: { title: 'About Acme', images: ['/og.png'] },
+}
+
+export default function AboutPage() {
+  return <h1>About</h1>
+}
+```
+
+## Dynamic metadata and title templates
+
+When the tags depend on data — a blog post, a product — export `generateMetadata` instead. It receives the route `params`, runs on the server, and returns the same `Metadata` shape. Fetches here are deduplicated against the ones in your page, so you do not pay twice.
+
+```tsx
+// app/blog/[slug]/page.tsx
+import type { Metadata } from 'next'
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}): Promise<Metadata> {
+  const { slug } = await params
+  const post = await fetch(`https://api.example.com/posts/${slug}`).then((r) => r.json())
+  return { title: post.title, description: post.excerpt }
+}
+```
+
+A layout can define a `title.template` so every child page gets a consistent suffix. A `default` is required alongside the template.
+
+```tsx
+// app/layout.tsx — every child title becomes "<page> | Acme"
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: {
+    template: '%s | Acme',
+    default: 'Acme',
+  },
+}
+```
+
+## File-based metadata
+
+Some metadata is a file, not a field. Drop a specially named file into a route segment and Next.js wires it up: `opengraph-image.tsx` generates a social preview, `icon.png` becomes the favicon, and `sitemap.ts` and `robots.ts` become their respective routes. These special routes are cached by default.
+
+```tsx
+// app/opengraph-image.tsx — generated, cached social image
+import { ImageResponse } from 'next/og'
+
+export const size = { width: 1200, height: 630 }
+export const contentType = 'image/png'
+
+export default function Image() {
+  return new ImageResponse(<div style={{ fontSize: 96 }}>Acme</div>, size)
+}
+```
+
+```ts
+// app/sitemap.ts — becomes /sitemap.xml
+import type { MetadataRoute } from 'next'
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  return [{ url: 'https://acme.com', lastModified: new Date() }]
+}
+```
+
+Because everything is data or a file, there is no `<head>` to keep in sync by hand — the template merges parent and child, and duplicate tags cannot drift apart.
+
+<Mermaid title="How the Metadata API builds the head" code={diagramMetaEn} />
+
+export const diagramMetaEn = `flowchart TD
+  A["metadata object"] --> M[Merge parent + child]
+  B["generateMetadata(params)"] --> M
+  C["opengraph-image / sitemap / robots files"] --> M
+  M --> Head["Server-rendered head tags"]`;
+
+<Callout title="The one-line takeaway">
+Describe the head as data with `metadata` or `generateMetadata`, add file-based routes like `opengraph-image` and `sitemap`, and Next.js renders correct, merged tags on the server — no manual `<head>`.
+</Callout>
+
+export const quizMetaEn = [
+  {
+    q: 'When should you use generateMetadata instead of a static metadata object?',
+    options: [
+      'When the tags never change',
+      'When the tags depend on route data like params',
+      'Only inside Client Components',
+      'When you want to skip server rendering',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does a title.template require alongside it?',
+    options: [
+      'A robots.ts file',
+      'A title.default value',
+      'A priority flag',
+      'A generateMetadata function',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you add a sitemap in the App Router?',
+    options: [
+      'Write public/sitemap.xml by hand',
+      'Export a default function from app/sitemap.ts',
+      'Return it from generateMetadata',
+      'Add it to next.config',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does the Metadata API beat hand-managing the head?',
+    options: [
+      'It runs only on the client',
+      'It renders merged tags on the server and cannot drift apart',
+      'It disables crawlers',
+      'It removes the need for a title',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/metadata-and-seo" questions={quizMetaEn} />
+
+<ProgressTracker client:visible id="optimization/metadata-and-seo" />

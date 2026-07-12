@@ -1,0 +1,136 @@
+---
+title: Authentication Patterns
+description: session และ cookie ทำ optimistic check ใน middleware แต่ทำ authorization จริงใน Data Access Layer และทำไม middleware อย่างเดียวไม่พอ
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+ทำ optimistic check เบา ๆ ใน middleware เพื่อ redirect request ที่ไม่ auth ชัด ๆ ออกไป แต่ทำ authorization จริงให้ใกล้ data ที่สุด ใน Data Access Layer ที่ verify session ก่อนจะ return อะไรออกมา
+
+## Sessions and cookies
+
+auth ส่วนใหญ่วิ่งอยู่บน session ที่เก็บใน cookie แบบ HTTP-only ฝั่ง server เราอ่าน cookie นั้นด้วย `cookies()` จาก `next/headers`
+
+```ts
+// app/lib/session.ts — read the session cookie on the server
+import { cookies } from 'next/headers'
+import { decrypt } from '@/app/lib/crypto'
+
+export async function getSession() {
+  const cookie = (await cookies()).get('session')?.value
+  if (!cookie) return null
+  return decrypt(cookie)
+}
+```
+
+## Optimistic check in middleware
+
+middleware เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render มันเร็วก็จริง แต่มันแค่ redirect ห้ามใช้เป็นด่านเดียว
+
+```ts
+// middleware.ts — optimistic redirect only
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+const protectedRoutes = ['/dashboard']
+
+export function middleware(request: NextRequest) {
+  const path = request.nextUrl.pathname
+  const hasSession = request.cookies.has('session')
+  if (protectedRoutes.some((p) => path.startsWith(p)) && !hasSession) {
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
+  return NextResponse.next()
+}
+```
+
+## Real authorization lives in a Data Access Layer
+
+middleware อย่างเดียวไม่พอ มันไม่ได้รันบนทุก data path และ layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate เพราะฉะนั้น request ที่เก่าหรือถูกปลอมอาจหลุดผ่านไปได้ ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
+
+```ts
+// app/lib/dal.ts — verify the session close to the data
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session?.userId) {
+    redirect('/login')
+  }
+  return { isAuth: true, userId: session.userId }
+})
+```
+
+จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Lucia จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับบนมันอยู่ดี
+
+<Mermaid title="Optimistic gate in middleware, real check in the DAL" code={diagramAuthTh} />
+
+export const diagramAuthTh = `
+graph TD
+  A["Request"] --> B["middleware: optimistic redirect"]
+  B --> C["Page / Server Action"]
+  C --> D["verifySession() in DAL"]
+  D -->|no session| E["redirect to /login"]
+  D -->|valid| F["Return protected data"]
+`;
+
+<Callout title="The one-line takeaway">
+ใช้ middleware ทำ optimistic redirect เร็ว ๆ แต่วาง authorization check ตัวจริงไว้ใน Data Access Layer ที่ verify session ก่อน return data
+</Callout>
+
+export const quizAuthTh = [
+  {
+    q: 'How do you read the session cookie on the server?',
+    options: [
+      'document.cookie',
+      'cookies() from next/headers',
+      'localStorage.getItem',
+      'useCookie() hook',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What should middleware do for auth?',
+    options: [
+      'Run the full authorization check',
+      'A lightweight optimistic redirect',
+      'Query the database for permissions',
+      'Nothing — auth cannot use middleware',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why is middleware alone not sufficient for authorization?',
+    options: [
+      'It cannot read cookies',
+      'It does not run for every data path and layouts do not re-run every navigation',
+      'It only runs in development',
+      'It cannot redirect requests',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where does the authoritative authorization check belong?',
+    options: [
+      'In a Data Access Layer close to the data',
+      'Only in middleware',
+      'In the browser before fetching',
+      'In the root layout only',
+    ],
+    answer: 0,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/authentication-patterns" questions={quizAuthTh} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/authentication-patterns" />

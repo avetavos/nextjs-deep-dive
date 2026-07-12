@@ -1,0 +1,137 @@
+---
+title: Environment and Configuration
+description: Server-only env vars versus NEXT_PUBLIC_ vars inlined into the client bundle, .env load order, and the essentials of next.config.ts.
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Environment variables are server-only by default, and only those prefixed with `NEXT_PUBLIC_` are inlined into the client bundle — so a secret must never carry that prefix.
+
+## Server-only versus NEXT_PUBLIC_
+
+A plain env var is available only on the server. Prefix it with `NEXT_PUBLIC_` and Next.js inlines its value into the JavaScript sent to the browser at build time. That is perfect for a public analytics id and disastrous for an API secret.
+
+```ts
+// Server Component or route — both work on the server
+const dbUrl = process.env.DATABASE_URL          // server-only, safe
+const analyticsId = process.env.NEXT_PUBLIC_ANALYTICS_ID // also in the client bundle
+```
+
+```txt
+# .env.local
+DATABASE_URL="postgres://user:pass@host:5432/db"   # never prefix a secret
+NEXT_PUBLIC_ANALYTICS_ID="abcdefghijk"             # safe to expose
+```
+
+Because `NEXT_PUBLIC_` values are baked in at build time, changing one means you must rebuild — it is not read at runtime in the browser.
+
+## .env files and load order
+
+Next.js loads several `.env` files and the first match wins. For production the order is `.env.production.local`, then `.env.local`, then `.env.production`, then `.env`. Keep secrets in `.env.local` (gitignored) and commit only safe defaults.
+
+```txt
+.env                  # committed defaults, safe values only
+.env.local            # gitignored, real secrets
+.env.development      # loaded during next dev
+.env.production       # loaded during next build / next start
+```
+
+## next.config.ts essentials
+
+`next.config.ts` is where you configure the framework itself. The four you reach for most: `images.remotePatterns` (allow external image hosts), `redirects`, `rewrites`, and `headers`.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 's3.amazonaws.com', pathname: '/my-bucket/**' },
+    ],
+  },
+  async redirects() {
+    return [{ source: '/about', destination: '/', permanent: true }]
+  },
+  async rewrites() {
+    return [{ source: '/docs/:slug', destination: '/help/:slug' }]
+  },
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [{ key: 'X-Frame-Options', value: 'DENY' }],
+      },
+    ]
+  },
+}
+
+export default nextConfig
+```
+
+<Mermaid title="Where each env var can be read" code={diagramEnvEn} />
+
+export const diagramEnvEn = `
+graph TD
+  A["process.env.SECRET"] --> B["Server only"]
+  C["process.env.NEXT_PUBLIC_ID"] --> B
+  C --> D["Inlined into client bundle at build time"]
+`;
+
+<Callout title="The one-line takeaway">
+Only `NEXT_PUBLIC_` vars reach the browser and they are baked in at build time — keep every secret unprefixed and in `.env.local`.
+</Callout>
+
+export const quizEnvEn = [
+  {
+    q: 'Where is a plain (unprefixed) env var available?',
+    options: [
+      'Only in the browser',
+      'Only on the server',
+      'Both server and client',
+      'Nowhere until rebuilt',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does the NEXT_PUBLIC_ prefix do?',
+    options: [
+      'Encrypts the value',
+      'Inlines the value into the client bundle at build time',
+      'Makes it read at runtime in the browser',
+      'Marks it as required',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which file should hold real secrets?',
+    options: [
+      '.env (committed)',
+      '.env.local (gitignored)',
+      'next.config.ts',
+      'package.json',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which next.config.ts key allows external image hosts?',
+    options: [
+      'images.remotePatterns',
+      'redirects',
+      'headers',
+      'rewrites',
+    ],
+    answer: 0,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/environment-and-configuration" questions={quizEnvEn} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/environment-and-configuration" />

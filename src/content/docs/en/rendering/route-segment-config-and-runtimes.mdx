@@ -1,0 +1,104 @@
+---
+title: 'Route Segment Config and Runtimes'
+description: 'The Route Segment Config exports (dynamic, revalidate, runtime, fetchCache, dynamicParams), the Node.js runtime versus the Edge runtime and when to pick each, and how to enable ISR through revalidate.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Route Segment Config is a set of file-level `export const` values that let you override how a single route segment renders, caches, and which runtime it runs on.
+
+## The segment config exports
+
+Each of these is a named export at the top of a `layout.tsx`, `page.tsx`, or `route.ts`. They apply to that segment and its children.
+
+```tsx
+// app/blog/page.tsx — route segment config exports
+export const dynamic = 'auto';       // 'auto' | 'force-dynamic' | 'error' | 'force-static'
+export const revalidate = 3600;      // ISR: rebuild this route at most once per hour
+export const runtime = 'nodejs';     // 'nodejs' (default) | 'edge'
+export const fetchCache = 'auto';    // control the default caching of fetch() in this segment
+export const dynamicParams = true;   // allow params not returned by generateStaticParams
+```
+
+- **`dynamic`** — force the rendering mode; `'force-dynamic'` renders every request, `'force-static'` forbids dynamic APIs.
+- **`revalidate`** — seconds between background rebuilds; this is how you turn on ISR.
+- **`runtime`** — the execution environment, `'nodejs'` or `'edge'`.
+- **`fetchCache`** — override how `fetch()` calls in the segment are cached by default.
+- **`dynamicParams`** — when `false`, a param not listed by `generateStaticParams` returns a 404 instead of being rendered on demand.
+
+## Node.js runtime vs Edge runtime
+
+Every route runs in one of two runtimes. The default, **Node.js**, gives you the full Node API surface. The **Edge** runtime is a smaller environment that starts faster and runs close to the user, at the cost of a limited API set.
+
+```tsx
+// Opt a route into the Edge runtime
+export const runtime = 'edge';
+```
+
+Choose by what the route needs:
+
+- **Node.js (default)** — full Node APIs, native modules, larger libraries, database drivers. Pick it when you need the whole ecosystem or heavy work.
+- **Edge** — tiny bundle, near-zero cold start, runs geographically close to the user. Pick it for lightweight, latency-sensitive routes like personalization, redirects, or simple auth checks — as long as they stay inside the limited Edge API set.
+
+## ISR through revalidate
+
+Incremental Static Regeneration keeps a route static and fast while still letting it go stale and refresh on a timer. Set `revalidate` to a number of seconds and Next.js serves the cached static page, then rebuilds it in the background after that window.
+
+```tsx
+// app/products/page.tsx — serve static, refresh in the background every 60s
+export const revalidate = 60;
+
+export default async function Products() {
+  const products = await fetch('https://api.example.com/products').then((r) => r.json());
+  return <ul>{products.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
+}
+```
+
+The first request after 60 seconds triggers a background rebuild; visitors keep getting the fast cached page until the fresh one is ready.
+
+<Mermaid title="Route segment config and the two runtimes" code={diagramSegmentEn} />
+
+export const diagramSegmentEn = `flowchart TD
+  A[Route segment config] --> B[dynamic]
+  A --> C[revalidate for ISR]
+  A --> D[runtime]
+  D --> E[nodejs, full APIs, default]
+  D --> F[edge, small, fast cold start, limited APIs]`;
+
+<Callout title="The one-line takeaway">
+Route Segment Config exports let a single segment override its rendering, caching, and runtime — where revalidate turns on ISR and runtime picks between full-API Node.js and the small, fast, limited Edge.
+</Callout>
+
+export const quizSegmentEn = [
+  {
+    q: 'Where do Route Segment Config values live?',
+    options: ['In next.config only', 'As named exports at the top of a segment file', 'Inside the component body', 'In a separate JSON file'],
+    answer: 1,
+  },
+  {
+    q: 'Which export turns on Incremental Static Regeneration?',
+    options: ['runtime', 'dynamicParams', 'revalidate', 'fetchCache'],
+    answer: 2,
+  },
+  {
+    q: 'What is the default runtime for a route?',
+    options: ['edge', 'nodejs', 'browser', 'deno'],
+    answer: 1,
+  },
+  {
+    q: 'When is the Edge runtime the better choice?',
+    options: ['When you need native Node modules', 'For lightweight, latency-sensitive routes with limited API needs', 'For heavy database work', 'When you need the full Node API surface'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/route-segment-config-and-runtimes" questions={quizSegmentEn} />
+
+<ProgressTracker client:visible id="rendering/route-segment-config-and-runtimes" />

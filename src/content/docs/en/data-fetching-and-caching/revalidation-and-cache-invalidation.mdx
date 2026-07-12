@@ -1,0 +1,137 @@
+---
+title: 'Revalidation and Cache Invalidation'
+description: 'Time-based revalidation versus on-demand revalidateTag and revalidatePath, cache tags, and how they map onto the Data Cache and the Full Route Cache.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Once data is in the Data Cache you invalidate it two ways — **time-based** (let it go stale after N seconds) or **on-demand** (`revalidateTag` / `revalidatePath` after a mutation) — and both also refresh the Full Route Cache for affected routes.
+
+## Time-based revalidation
+
+Give a cached fetch a lifetime with `next: { revalidate: N }`, or set it for a whole route segment with `export const revalidate`. After the window passes, the next request triggers a background refresh.
+
+```tsx
+// Per fetch: this data is at most 60 seconds stale
+await fetch('https://api.example.com/posts', { next: { revalidate: 60 } })
+```
+
+```tsx
+// app/blog/page.tsx — revalidate the entire segment every hour
+export const revalidate = 3600
+```
+
+## On-demand revalidation with tags
+
+For data that changes on an event, not a clock, **tag** the fetch, then call `revalidateTag` after the mutation. Every fetch carrying that tag is dropped from the Data Cache.
+
+```tsx
+// lib/posts.ts
+export async function getPosts() {
+  const res = await fetch('https://api.example.com/posts', {
+    next: { tags: ['posts'] },
+  })
+  return res.json()
+}
+```
+
+```tsx
+// app/actions.ts
+'use server'
+import { revalidateTag } from 'next/cache'
+
+export async function createPost(formData: FormData) {
+  await fetch('https://api.example.com/posts', {
+    method: 'POST',
+    body: JSON.stringify({ title: formData.get('title') }),
+  })
+  // Invalidate every fetch tagged 'posts'
+  revalidateTag('posts')
+}
+```
+
+## revalidatePath vs. revalidateTag
+
+Both run inside a Server Action or Route Handler. `revalidateTag` targets **data** by tag, wherever it is fetched. `revalidatePath` targets a **route** and clears everything cached for it — reach for it when you do not know the tags.
+
+```tsx
+'use server'
+import { revalidatePath } from 'next/cache'
+
+export async function updateProfile() {
+  // Re-render and refetch everything for this exact route
+  revalidatePath('/profile')
+}
+```
+
+## How it maps onto the two server caches
+
+Revalidation touches two of the four layers. It drops the matching entries from the **Data Cache**, and because a route's rendered output depends on that data, it also marks the affected **Full Route Cache** entries stale. The next request re-runs the render with fresh data and repopulates both. Request Memoization and the client Router Cache are untouched — the Router Cache refreshes on its own after a Server Action.
+
+<Mermaid title="A mutation invalidating the Data and Route caches" code={rciDiagramEn} />
+
+export const rciDiagramEn = `
+flowchart LR
+  A["Server Action: mutate"] --> B["revalidateTag('posts')"]
+  B --> C["Data Cache: drop tagged entries"]
+  C --> D["Full Route Cache: mark routes stale"]
+  D --> E["Next request re-renders with fresh data"]
+`;
+
+<Callout title="The one-line takeaway">
+Time-based `revalidate` sets a staleness clock; on-demand `revalidateTag` / `revalidatePath` invalidates on an event — both clear the **Data Cache** and the dependent **Full Route Cache**, so tag your fetches to revalidate precisely.
+</Callout>
+
+export const rciQuizEn = [
+  {
+    q: 'What are the two ways to do time-based revalidation?',
+    options: [
+      'revalidateTag and revalidatePath',
+      'Per-fetch next.revalidate and segment export const revalidate',
+      'cache: force-cache and cache: no-store',
+      'useEffect and setInterval',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where may you call revalidateTag?',
+    options: [
+      'In any Client Component',
+      'Inside a Server Action or Route Handler',
+      'Only in next.config.ts',
+      'In a useEffect on the client',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does revalidatePath differ from revalidateTag?',
+    options: [
+      'revalidatePath targets a route; revalidateTag targets all fetches with a tag',
+      'They are identical aliases',
+      'revalidatePath only works at build time',
+      'revalidateTag clears the client Router Cache only',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'What must a fetch have before revalidateTag can invalidate it?',
+    options: [
+      'cache: no-store',
+      'A next.tags entry naming that tag',
+      'export const dynamic = force-static',
+      'A useEffect wrapper',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/revalidation-and-cache-invalidation" questions={rciQuizEn} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/revalidation-and-cache-invalidation" />

@@ -1,0 +1,122 @@
+---
+title: 'การตั้งค่าโปรเจกต์และ Toolchain'
+description: 'scaffold ด้วย create-next-app, โครงสร้าง app/, dev server, Turbopack ในฐานะ bundler เริ่มต้น, การรองรับ TypeScript, next.config.ts และวิธีอ่าน convention ของ framework'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+การเริ่มทำงานกับ Next.js ให้ลื่นส่วนใหญ่คือ command เดียวสำหรับ scaffold, command เดียวสำหรับรัน และรู้ว่าไฟล์ไหนที่ framework มองเป็น convention ไม่ใช่โค้ดธรรมดา
+
+## scaffold แล้วรัน
+
+สร้างโปรเจกต์และสตาร์ทมันด้วยสอง command —
+
+```bash
+npx create-next-app@latest my-app
+cd my-app
+npm run dev
+```
+
+`create-next-app` จะถามว่าจะใช้ recommended defaults ไหม — TypeScript, ESLint, Tailwind CSS, App Router และไฟล์ `AGENTS.md` — หรือจะ customize เอง การเลือก defaults คือทางที่เร็วสุดและตรงกับทุกอย่างในคอร์สนี้
+
+script ใน `package.json` คือชุดที่คุณจะรันทุกวัน —
+
+```json
+{
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  }
+}
+```
+
+`next dev` รัน local development server พร้อม hot reloading ส่วน `next build` สร้าง output สำหรับ production ที่ optimize แล้ว และ `next start` เสิร์ฟ build นั้น
+
+## Turbopack คือ bundler เริ่มต้น
+
+ตั้งแต่ Next.js 16 Turbopack เป็น bundler เริ่มต้นสำหรับ**ทั้ง** `next dev` และ `next build` — คุณไม่ต้อง opt in มันคือสิ่งที่รันอยู่แล้ว มันคือทายาทของ webpack ที่เขียนด้วย Rust ออกแบบมาเพื่อ cold start ที่เร็วและ update แบบ incremental
+
+คุณ config มันได้ตอนที่ต้องการ ผ่าน key `turbopack` ระดับบนสุดในไฟล์ config —
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  turbopack: {
+    // Turbopack-specific options go here
+  },
+};
+
+export default nextConfig;
+```
+
+## TypeScript และการอ่าน convention
+
+Next.js รองรับ TypeScript แบบ first-class ไฟล์ config เองก็เป็น `next.config.ts` ที่ type ด้วย `NextConfig` และ framework จะ generate `next-env.d.ts` ที่คุณไม่ควรแก้ TypeScript เปิดใช้งานโดย default เมื่อใช้ setup ที่แนะนำ
+
+นิสัยที่ทำให้ Next.js เข้าใจง่ายขึ้นคือการหัด **อ่าน convention** ของมัน ชื่อจำนวนหนึ่งถูกจองไว้และมีความหมายทุกที่ใต้ `app/` —
+
+- ชื่อไฟล์อย่าง `page`, `layout`, `loading`, `error` และ `route` คือพฤติกรรม ไม่ใช่ module ทั่ว ๆ ไป
+- โฟลเดอร์คือ route segment ส่วนการครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง `[slug]` ทำให้มันเป็น dynamic
+- `next.config.ts` คือที่เดียวสำหรับเปลี่ยนพฤติกรรมระดับ framework
+
+พอคุณมอง tree แล้วเดา URL และจุดที่โค้ดรันได้ framework ก็เลิกรู้สึกเหมือนเวทมนตร์ —
+
+```txt
+my-app/
+  app/
+    layout.tsx
+    page.tsx
+  public/            # static assets served as-is
+  next.config.ts     # framework configuration
+  tsconfig.json      # TypeScript configuration
+```
+
+<Mermaid title="From scaffold to a running dev server" code={diagramToolchain} />
+
+export const diagramToolchain = `flowchart LR
+  Create[create-next-app] --> Tree[app/ structure]
+  Tree --> Dev[next dev]
+  Dev --> Turbo[Turbopack bundles]
+  Turbo --> Browser[Live app in the browser]
+  Config[next.config.ts] --> Turbo`;
+
+<Callout title="The one-line takeaway">
+scaffold ด้วย `create-next-app` รันด้วย `next dev` ปล่อยให้ Turbopack bundle โดย default และมองชื่อไฟล์ที่จองไว้ใต้ `app/` กับ `next.config.ts` เป็น convention ที่คุณอ่าน ไม่ใช่โค้ดที่คุณคิดขึ้นเอง
+</Callout>
+
+export const quizToolchain = [
+  {
+    q: 'command ไหนใช้ scaffold โปรเจกต์ Next.js ใหม่',
+    options: ['npm run dev', 'npx create-next-app@latest my-app', 'next build', 'npm init next'],
+    answer: 1,
+  },
+  {
+    q: 'bundler เริ่มต้นของ Next.js ปัจจุบันสำหรับ dev และ build คืออะไร',
+    options: ['webpack', 'Vite', 'Turbopack', 'esbuild'],
+    answer: 2,
+  },
+  {
+    q: 'ไฟล์ config แบบ TypeScript ของ framework ชื่ออะไร',
+    options: ['next.config.js', 'next.config.ts', 'tsconfig.next.json', 'config.ts'],
+    answer: 1,
+  },
+  {
+    q: 'การครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง [slug] ทำอะไร',
+    options: ['ซ่อนมันจาก routing', 'ทำให้เป็น dynamic route segment', 'มาร์กมันเป็น layout', 'เปลี่ยนมันเป็น API route'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/project-setup-and-the-toolchain" questions={quizToolchain} />
+
+<ProgressTracker client:visible id="foundations/project-setup-and-the-toolchain" />

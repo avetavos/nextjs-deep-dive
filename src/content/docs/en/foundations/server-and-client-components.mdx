@@ -1,0 +1,113 @@
+---
+title: 'Server and Client Components'
+description: 'The core App Router mental model: Server Components by default, the "use client" boundary and why it is transitive, passing Server Components into Client Components, and serializable props.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+In the App Router every component is a Server Component until a file says `"use client"`, and that one line draws a boundary that decides what code ever reaches the browser.
+
+## Server Components are the default
+
+A component in `app/` runs on the server unless you opt out. That means it can be `async`, `await` data, and touch the database, the filesystem, or secrets directly — none of that code is sent to the browser.
+
+```tsx
+// app/dashboard/page.tsx — a Server Component (no directive needed)
+import { db } from '@/lib/db';
+
+export default async function Dashboard() {
+  const users = await db.user.findMany(); // runs on the server only
+  return <ul>{users.map((u) => <li key={u.id}>{u.name}</li>)}</ul>;
+}
+```
+
+Because this never ships to the client, the browser downloads zero JavaScript for it. Server Components cannot use `useState`, `useEffect`, event handlers, or browser APIs — they render once, on the server.
+
+## "use client" marks a Client Component
+
+Put `"use client"` at the very top of a file and everything it exports becomes a Client Component: it runs in the browser and may use hooks, state, effects, event handlers, and browser APIs.
+
+```tsx
+'use client';
+
+import { useState } from 'react';
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(count + 1)}>Count: {count}</button>;
+}
+```
+
+The subtle part: **the boundary is transitive.** Every module a Client Component imports is pulled into the client bundle too, whether or not it has its own directive. You mark the boundary once, at the top of the tree; you do not repeat `"use client"` in every child.
+
+## Composing across the boundary
+
+Two rules govern how the two kinds mix, and they are not symmetric:
+
+- A **Server Component can import and render a Client Component** directly.
+- A **Client Component cannot import a Server Component** — but it can accept one as `children` or a prop.
+
+That second rule is the **doughnut (slot) pattern**: the Client Component is the ring, and a Server Component fills the hole. The server-rendered content stays on the server even though a client component surrounds it.
+
+```tsx
+// app/page.tsx — Server Component
+import ClientShell from './client-shell';
+import ServerData from './server-data';
+
+export default function Page() {
+  return (
+    <ClientShell>
+      <ServerData /> {/* stays a Server Component, passed as children */}
+    </ClientShell>
+  );
+}
+```
+
+One constraint makes this work: **props crossing the boundary must be serializable.** You can pass strings, numbers, plain objects, arrays, and JSX, but not functions, class instances, or Dates as raw props — they cannot survive the trip from server to client.
+
+<Mermaid title="Where the client boundary sits" code={diagramBoundary} />
+
+export const diagramBoundary = `flowchart LR
+  Root[Server Component root] --> Client["use client boundary"]
+  Root --> Server[More Server Components]
+  Client --> Bundle[Imports join client bundle]
+  Root -. passes children .-> Client
+  Client -. renders server child .-> Server`;
+
+<Callout title="The one-line takeaway">
+Server is the default; `"use client"` opens a transitive boundary that swallows everything it imports — so keep it low in the tree and pass Server Components in as children with serializable props.
+</Callout>
+
+export const quizServerClient = [
+  {
+    q: 'In the App Router, what is a component before any directive is added?',
+    options: ['A Client Component', 'A Server Component', 'A static template', 'Undefined until configured'],
+    answer: 1,
+  },
+  {
+    q: 'What does "use client" do to the modules a file imports?',
+    options: ['Nothing — only that file changes', 'Pulls them into the client bundle too', 'Forces them to run on the server', 'Deletes their imports'],
+    answer: 1,
+  },
+  {
+    q: 'How can a Client Component include Server-Component content?',
+    options: ['By importing the Server Component directly', 'It cannot, ever', 'By receiving it as children or a prop', 'By adding "use server" to it'],
+    answer: 2,
+  },
+  {
+    q: 'Which prop can safely cross the server-to-client boundary?',
+    options: ['A database connection', 'A plain object of strings and numbers', 'A callback function defined on the server', 'A class instance'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/server-and-client-components" questions={quizServerClient} />
+
+<ProgressTracker client:visible id="foundations/server-and-client-components" />

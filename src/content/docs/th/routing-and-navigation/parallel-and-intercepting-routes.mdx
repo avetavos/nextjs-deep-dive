@@ -1,0 +1,153 @@
+---
+title: Parallel และ Intercepting Routes
+description: render หลายหน้าพร้อมกันด้วย named slots และ default.tsx และ render route ภายใน layout ปัจจุบันด้วย intercepting route conventions
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+parallel routes ให้ layout เดียว render หลาย slot อิสระพร้อมกัน ส่วน intercepting routes ให้ route หนึ่ง render ภายใน layout ปัจจุบันแทนที่จะเปิดเป็นหน้าของตัวเอง
+
+## Parallel routes with named slots
+
+folder ที่ขึ้นต้นด้วย `@` อย่าง `@team` หรือ `@analytics` คือ named slot layout ใน folder เดียวกันรับแต่ละ slot มาเป็น prop และ render พร้อมกันได้ โดยแต่ละตัวมี loading และ error state อิสระของตัวเอง
+
+```txt
+app/
+  dashboard/
+    layout.tsx
+    page.tsx
+    @team/
+      page.tsx
+    @analytics/
+      page.tsx
+```
+
+```tsx
+// app/dashboard/layout.tsx
+export default function Layout({
+  children,
+  team,
+  analytics,
+}: {
+  children: React.ReactNode
+  team: React.ReactNode
+  analytics: React.ReactNode
+}) {
+  return (
+    <section>
+      {children}
+      <div className="grid">
+        {team}
+        {analytics}
+      </div>
+    </section>
+  )
+}
+```
+
+## The default.tsx fallback
+
+เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีมัน การ navigate ตรงไปยัง slot ที่ไม่ match จะ throw จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
+
+```tsx
+// app/dashboard/@team/default.tsx
+export default function Default() {
+  return null
+}
+```
+
+## Intercepting routes
+
+intercepting route convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update prefix จับตาม segment level `(.)` สำหรับ level เดียวกัน `(..)` สำหรับขึ้นไปหนึ่ง level และ `(...)` จาก app root use case คลาสสิกคือ photo modal คลิกรูปใน feed แล้วมันเปิดเป็น modal ทับ feed แต่การเข้า URL นั้นตรง ๆ จะ render หน้าเต็ม
+
+```txt
+app/
+  feed/
+    page.tsx
+    @modal/
+      (..)photo/
+        [id]/page.tsx   // intercepts /photo/[id] as a modal
+  photo/
+    [id]/page.tsx       // the full standalone page
+```
+
+```tsx
+// app/feed/@modal/(..)photo/[id]/page.tsx
+export default async function PhotoModal({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <dialog open>Photo {id} in a modal over the feed</dialog>
+}
+```
+
+<Mermaid title="parallel slots และ modal ที่ถูก intercept" code={diagramParallelTh} />
+
+export const diagramParallelTh = `
+graph TD
+  L["dashboard/layout.tsx"] --> C["children (page.tsx)"]
+  L --> T["@team slot"]
+  L --> A["@analytics slot"]
+  F["click photo in feed"] --> M["(..)photo intercepts as modal"]
+  DIRECT["visit /photo/42 directly"] --> FULL["full photo page"]
+`;
+
+<Callout title="The one-line takeaway">
+named `@slots` render หลายหน้าใน layout เดียวพร้อมกัน ส่วน `(.)` `(..)` `(...)` intercept render route ภายใน layout ปัจจุบันโดยที่ URL ยังเปลี่ยน
+</Callout>
+
+export const quizParallelTh = [
+  {
+    q: 'folder ที่ขึ้นต้นด้วย @ อย่าง @team คืออะไร',
+    options: [
+      'private folder ที่ถูกกันออกจาก routing',
+      'named slot ที่ layout เป็นคน render',
+      'route group ที่ซ่อน URL',
+      'dynamic catch-all segment',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมต้องใส่ default.tsx ให้ parallel route slot',
+    options: [
+      'เพื่อตั้ง default export ของ page',
+      'เพื่อ render fallback ตอน slot ไม่มี match เลี่ยงการ throw',
+      'เพื่อทำให้ slot เป็น Client Component',
+      'เพื่อ prefetch slot อัตโนมัติ',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'intercepting convention (..) เจาะไปที่ไหน',
+    options: [
+      'segment level เดียวกัน',
+      'ขึ้นไปหนึ่ง segment level',
+      'app root',
+      'private folder',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'use case คลาสสิกของ intercepting routes คืออะไร',
+    options: [
+      'prerender list ของหน้า static',
+      'photo modal ทับ feed โดยที่ URL update',
+      'อ่าน search params บน server',
+      'group หน้า marketing ไว้ใต้ layout เดียว',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/parallel-and-intercepting-routes" questions={quizParallelTh} />
+
+<ProgressTracker client:visible id="routing-and-navigation/parallel-and-intercepting-routes" />

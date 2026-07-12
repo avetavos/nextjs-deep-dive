@@ -1,0 +1,113 @@
+---
+title: 'Server และ Client Components'
+description: 'mental model หลักของ App Router: Server Components เป็น default, boundary ของ "use client" และทำไมมันเป็น transitive, การส่ง Server Components เข้าไปใน Client Components และ serializable props'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+ใน App Router ทุก component เป็น Server Component จนกว่าไฟล์จะบอกว่า `"use client"` และบรรทัดเดียวนี้ลากเส้น boundary ที่ตัดสินว่าโค้ดไหนจะไปถึง browser
+
+## Server Components คือ default
+
+component ใน `app/` รันบน server เว้นแต่คุณจะ opt out นั่นแปลว่ามันเป็น `async` ได้, `await` data ได้ และแตะ database, filesystem หรือ secret ตรง ๆ ได้ — โค้ดพวกนี้ไม่ถูกส่งไป browser เลย
+
+```tsx
+// app/dashboard/page.tsx — a Server Component (no directive needed)
+import { db } from '@/lib/db';
+
+export default async function Dashboard() {
+  const users = await db.user.findMany(); // runs on the server only
+  return <ul>{users.map((u) => <li key={u.id}>{u.name}</li>)}</ul>;
+}
+```
+
+เพราะสิ่งนี้ไม่เคยถูกส่งไป client browser จึงดาวน์โหลด JavaScript ศูนย์ไบต์สำหรับมัน Server Components ใช้ `useState`, `useEffect`, event handler หรือ browser API ไม่ได้ — มัน render ครั้งเดียวบน server
+
+## "use client" มาร์กให้เป็น Client Component
+
+วาง `"use client"` ไว้บนสุดของไฟล์ แล้วทุกอย่างที่มัน export จะกลายเป็น Client Component มันรันใน browser และใช้ hook, state, effect, event handler และ browser API ได้
+
+```tsx
+'use client';
+
+import { useState } from 'react';
+
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(count + 1)}>Count: {count}</button>;
+}
+```
+
+จุดที่ละเอียดอ่อนคือ **boundary นี้เป็น transitive** ทุก module ที่ Client Component import เข้ามาจะถูกดึงเข้า client bundle ด้วย ไม่ว่ามันจะมี directive ของตัวเองหรือไม่ คุณมาร์ก boundary ครั้งเดียวที่บนสุดของ tree — ไม่ต้องใส่ `"use client"` ซ้ำในทุก child
+
+## การประกอบข้าม boundary
+
+มีสองกฎที่คุมว่าทั้งสองชนิดผสมกันยังไง และมันไม่สมมาตร —
+
+- **Server Component import และ render Client Component** ได้ตรง ๆ
+- **Client Component import Server Component ไม่ได้** — แต่รับมันเป็น `children` หรือ prop ได้
+
+กฎข้อที่สองคือ **doughnut (slot) pattern** — Client Component เป็นวงแหวน และ Server Component เติมเข้าไปในรู เนื้อหาที่ render บน server ยังอยู่บน server แม้จะมี client component ล้อมรอบ
+
+```tsx
+// app/page.tsx — Server Component
+import ClientShell from './client-shell';
+import ServerData from './server-data';
+
+export default function Page() {
+  return (
+    <ClientShell>
+      <ServerData /> {/* stays a Server Component, passed as children */}
+    </ClientShell>
+  );
+}
+```
+
+มีข้อจำกัดหนึ่งที่ทำให้สิ่งนี้ทำงานได้ — **prop ที่ข้าม boundary ต้อง serializable** คุณส่ง string, number, plain object, array และ JSX ได้ แต่ส่ง function, class instance หรือ Date เป็น prop ดิบ ๆ ไม่ได้ — มันรอดการเดินทางจาก server ไป client ไม่ได้
+
+<Mermaid title="Where the client boundary sits" code={diagramBoundary} />
+
+export const diagramBoundary = `flowchart LR
+  Root[Server Component root] --> Client["use client boundary"]
+  Root --> Server[More Server Components]
+  Client --> Bundle[Imports join client bundle]
+  Root -. passes children .-> Client
+  Client -. renders server child .-> Server`;
+
+<Callout title="The one-line takeaway">
+server คือ default ส่วน `"use client"` เปิด boundary แบบ transitive ที่กลืนทุกอย่างที่มัน import — ดังนั้นวางมันไว้ต่ำ ๆ ใน tree แล้วส่ง Server Components เข้าไปเป็น children ด้วย serializable props
+</Callout>
+
+export const quizServerClient = [
+  {
+    q: 'ใน App Router component เป็นอะไรก่อนที่จะเพิ่ม directive ใด ๆ',
+    options: ['Client Component', 'Server Component', 'template แบบ static', 'ยังไม่ระบุจนกว่าจะ config'],
+    answer: 1,
+  },
+  {
+    q: '"use client" ทำอะไรกับ module ที่ไฟล์นั้น import เข้ามา',
+    options: ['ไม่ทำอะไร — เปลี่ยนแค่ไฟล์นั้น', 'ดึงมันเข้า client bundle ด้วย', 'บังคับให้มันรันบน server', 'ลบ import ของมันทิ้ง'],
+    answer: 1,
+  },
+  {
+    q: 'Client Component จะรวมเนื้อหาแบบ Server Component ได้ยังไง',
+    options: ['import Server Component เข้ามาตรง ๆ', 'ทำไม่ได้เลย', 'รับมันเป็น children หรือ prop', 'ใส่ "use server" ให้มัน'],
+    answer: 2,
+  },
+  {
+    q: 'prop ไหนข้าม boundary จาก server ไป client ได้อย่างปลอดภัย',
+    options: ['database connection', 'plain object ของ string กับ number', 'callback function ที่นิยามบน server', 'class instance'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/server-and-client-components" questions={quizServerClient} />
+
+<ProgressTracker client:visible id="foundations/server-and-client-components" />

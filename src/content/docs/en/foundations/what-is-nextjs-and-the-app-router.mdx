@@ -1,0 +1,115 @@
+---
+title: 'What Is Next.js and the App Router'
+description: 'Next.js as a full React framework, the App Router as the current RSC-based model, how it differs from the legacy Pages Router, and what create-next-app scaffolds.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Next.js is a React framework that owns routing, rendering, data fetching, bundling, and optimization for you — and its current model, the App Router, runs your components on the server by default.
+
+## Next.js is a React framework, not just a router
+
+Plain React gives you a component model and nothing else — no routing, no server, no build pipeline. Next.js fills that gap. It is the layer that decides how a URL maps to code, where that code runs, and how the result reaches the browser.
+
+Concretely, the framework provides:
+
+- **Routing** — folders under `app/` become URL segments; there is no route config file to maintain.
+- **Rendering** — it renders on the server (static or dynamic), streams HTML, and hydrates only what needs interactivity.
+- **Data fetching** — you can `await` data directly inside a component, on the server, with no client round-trip.
+- **Bundling** — it compiles and splits your code with Turbopack, so each route ships only what it needs.
+- **Optimizations** — images, fonts, scripts, and metadata all have built-in components and APIs.
+
+A route is just a file that default-exports a React component:
+
+```tsx
+// app/page.tsx — this is the "/" route
+export default function HomePage() {
+  return <h1>Hello from a Server Component</h1>;
+}
+```
+
+## App Router vs. Pages Router
+
+Next.js has two routing systems. The **App Router** (the `app/` directory) is the current, recommended model, built on React Server Components. The **Pages Router** (the `pages/` directory) is the older model; it still works and is fully supported, but it is not where new features land.
+
+The differences are structural, not cosmetic:
+
+```txt
+app/                    pages/
+  layout.tsx              _app.tsx
+  page.tsx                index.tsx
+  blog/                   blog/
+    page.tsx                index.tsx
+```
+
+In the App Router, components are **Server Components by default** and data fetching happens inline with `async`/`await`. In the Pages Router, every component is a Client Component and data comes from special functions like `getServerSideProps`. This course is **App-Router-first**; the Pages Router appears only where migrating an existing app matters.
+
+## What create-next-app gives you
+
+You scaffold a new project with one command:
+
+```bash
+npx create-next-app@latest my-app
+```
+
+The recommended defaults set you up with TypeScript, ESLint, Tailwind CSS, the App Router, and an `AGENTS.md` file. The generated tree centers on `app/`:
+
+```txt
+my-app/
+  app/
+    layout.tsx   # root layout (required)
+    page.tsx     # the "/" route
+  next.config.ts
+  package.json
+  tsconfig.json
+```
+
+From here, `npm run dev` starts the development server and you are looking at a live App Router app.
+
+<Mermaid title="How a request flows through the App Router" code={diagramFramework} />
+
+export const diagramFramework = `flowchart LR
+  Req[Browser request] --> Router[App Router]
+  Router --> RSC[Server Components render on server]
+  RSC --> HTML[Streamed HTML]
+  Router --> Bundle[Minimal client bundle]
+  HTML --> Page[Interactive page]
+  Bundle --> Page`;
+
+<Callout title="The one-line takeaway">
+Next.js is the framework around React that handles routing, rendering, data, and bundling — and the App Router is its current, Server-Component-based model, with the Pages Router kept only for migration.
+</Callout>
+
+export const quizWhatIsNext = [
+  {
+    q: 'What does the App Router use as the default type of component?',
+    options: ['Client Components', 'Server Components', 'Static HTML files', 'Web Components'],
+    answer: 1,
+  },
+  {
+    q: 'Which directory signals that a project uses the App Router?',
+    options: ['pages/', 'app/', 'routes/', 'src/config/'],
+    answer: 1,
+  },
+  {
+    q: 'Which of these does Next.js NOT hand to you out of the box?',
+    options: ['Routing from the folder structure', 'A design mockup tool', 'Server rendering and streaming', 'Code bundling and splitting'],
+    answer: 1,
+  },
+  {
+    q: 'How does this course treat the Pages Router?',
+    options: ['As the primary model to learn', 'As fully removed from Next.js', 'As relevant mainly for migrating existing apps', 'As required before the App Router'],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="foundations/what-is-nextjs-and-the-app-router" questions={quizWhatIsNext} />
+
+<ProgressTracker client:visible id="foundations/what-is-nextjs-and-the-app-router" />

@@ -1,0 +1,145 @@
+---
+title: Dynamic Segments and Route Groups
+description: Dynamic segments, catch-all routes, generateStaticParams for prerendering, plus route groups and private folders that opt out of routing.
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Bracketed folders turn URL parts into params you read from a Promise, while parenthesized and underscored folders reshape your file tree without changing the URL.
+
+## Dynamic segments read from a Promise
+
+A folder named `[id]` captures one URL part as a param. In current Next.js `params` is a Promise, so you `await` it. The same is true for `searchParams`.
+
+```tsx
+// app/blog/[id]/page.tsx
+export default async function Post({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
+}) {
+  const { id } = await params
+  const { sort } = await searchParams
+  return <article>Post {id} sorted by {sort}</article>
+}
+```
+
+## Catch-all and optional catch-all
+
+Use `[...slug]` to capture many segments as an array. Use `[[...slug]]` to make it optional so the parent route also matches with no extra segments.
+
+```txt
+app/
+  docs/
+    [...slug]/page.tsx      // matches /docs/a and /docs/a/b/c
+  shop/
+    [[...slug]]/page.tsx    // matches /shop AND /shop/a/b
+```
+
+```tsx
+// app/docs/[...slug]/page.tsx
+export default async function Docs({
+  params,
+}: {
+  params: Promise<{ slug: string[] }>
+}) {
+  const { slug } = await params
+  return <h1>{slug.join(' / ')}</h1>
+}
+```
+
+## generateStaticParams prerenders dynamic routes
+
+Export `generateStaticParams` to tell Next.js which param values to prerender at build time. Each returned object becomes one statically generated page.
+
+```tsx
+// app/blog/[id]/page.tsx
+export function generateStaticParams() {
+  return [{ id: '1' }, { id: '2' }, { id: '3' }]
+}
+```
+
+## Route groups and private folders
+
+A folder in parentheses like `(marketing)` is a route group: it organizes files and can hold its own shared layout, but its name is stripped from the URL. A folder with a leading underscore like `_components` is a private folder that opts out of routing entirely.
+
+```txt
+app/
+  (marketing)/
+    layout.tsx      // layout for marketing pages only
+    about/page.tsx  // URL is /about, NOT /marketing/about
+  (shop)/
+    cart/page.tsx   // URL is /cart
+  _components/      // private, never a route
+    Button.tsx
+```
+
+<Mermaid title="Folders that do vs do not change the URL" code={diagramDynamicEn} />
+
+export const diagramDynamicEn = `
+graph TD
+  A["[id] dynamic segment"] --> U1["changes URL: /blog/42"]
+  B["[...slug] catch-all"] --> U2["changes URL: /docs/a/b"]
+  C["(marketing) route group"] --> U3["no URL change"]
+  D["_components private"] --> U4["not routable"]
+`;
+
+<Callout title="The one-line takeaway">
+Brackets capture URL params you `await` from a Promise, parentheses group without touching the URL, and a leading underscore opts a folder out of routing.
+</Callout>
+
+export const quizDynamicEn = [
+  {
+    q: 'In current Next.js, how do you read the id from a dynamic segment?',
+    options: [
+      'const id = params.id directly',
+      'const { id } = await params because params is a Promise',
+      'const id = useParams().id in a Server Component',
+      'const id = props.id from getServerSideProps',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does [[...slug]] provide over [...slug]?',
+    options: [
+      'It matches a single segment only',
+      'It makes the catch-all optional so the parent also matches',
+      'It disables prerendering for the route',
+      'It turns the folder into a route group',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is generateStaticParams used for?',
+    options: [
+      'Reading search params at runtime',
+      'Declaring which param values to prerender at build time',
+      'Grouping routes without changing the URL',
+      'Marking a folder as private',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the effect of a (marketing) route group on the URL?',
+    options: [
+      'It adds /marketing to the URL',
+      'It has no effect on the URL',
+      'It makes the route dynamic',
+      'It removes the segment from routing entirely',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/dynamic-segments-and-route-groups" questions={quizDynamicEn} />
+
+<ProgressTracker client:visible id="routing-and-navigation/dynamic-segments-and-route-groups" />

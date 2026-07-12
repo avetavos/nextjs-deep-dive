@@ -1,0 +1,156 @@
+---
+title: Linking and Navigation
+description: Client-side navigation with Link and prefetching, programmatic navigation with useRouter, the navigation hooks, and server-side redirect and notFound.
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`<Link>` handles most navigation with client-side transitions and automatic prefetching, while `useRouter` and the `next/navigation` helpers cover programmatic and server-side navigation.
+
+## Link and automatic prefetching
+
+`<Link>` navigates on the client without a full page reload. Any `<Link>` that scrolls into the viewport is automatically prefetched, so the destination is often ready before the click.
+
+```tsx
+import Link from 'next/link'
+
+export default function Nav() {
+  return (
+    <nav>
+      <Link href="/">Home</Link>
+      <Link href="/blog/42">Post 42</Link>
+      <Link href="/dashboard" prefetch={false}>Dashboard</Link>
+    </nav>
+  )
+}
+```
+
+Prefetched routes land in the client Router Cache, so a navigation may be served instantly from a cached RSC payload instead of a fresh request. The Router Cache is covered fully in the Data Fetching module.
+
+## Programmatic navigation with useRouter
+
+For navigation triggered by logic (after a form submit, a timeout, an auth check) use `useRouter` from `next/navigation` in a Client Component.
+
+```tsx
+'use client'
+
+import { useRouter } from 'next/navigation'
+
+export default function SaveButton() {
+  const router = useRouter()
+  async function onSave() {
+    await fetch('/api/save', { method: 'POST' })
+    router.push('/dashboard') // or replace, back, refresh
+  }
+  return <button onClick={onSave}>Save</button>
+}
+```
+
+`router.push` adds a history entry, `router.replace` swaps the current one, `router.back` goes back, and `router.refresh` refetches the current route from the server while keeping client state.
+
+## Reading the current route
+
+Client Components read navigation state with hooks from `next/navigation`: `usePathname`, `useSearchParams`, and `useParams`.
+
+```tsx
+'use client'
+
+import { usePathname, useSearchParams, useParams } from 'next/navigation'
+
+export default function Debug() {
+  const pathname = usePathname()      // "/blog/42"
+  const searchParams = useSearchParams() // read ?sort=new
+  const params = useParams()          // { id: "42" }
+  return <pre>{pathname} {searchParams.get('sort')} {params.id}</pre>
+}
+```
+
+## Server-side redirect and notFound
+
+In Server Components, route handlers, and Server Actions you navigate by throwing with `redirect()` or `notFound()` from `next/navigation`.
+
+```tsx
+import { redirect, notFound } from 'next/navigation'
+
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const post = await getPost(id)
+  if (!post) notFound()          // renders the nearest not-found UI
+  if (post.archived) redirect('/blog') // sends the user elsewhere
+  return <article>{post.title}</article>
+}
+```
+
+<Mermaid title="Which navigation tool to reach for" code={diagramLinkingEn} />
+
+export const diagramLinkingEn = `
+graph TD
+  N["Need to navigate"] --> UI["From a link or UI?"]
+  N --> LOGIC["From logic in the client?"]
+  N --> SERVER["From the server?"]
+  UI --> L["Link (prefetch + client nav)"]
+  LOGIC --> R["useRouter push/replace/back/refresh"]
+  SERVER --> S["redirect() / notFound()"]
+`;
+
+<Callout title="The one-line takeaway">
+Reach for `<Link>` first for prefetched client navigation, `useRouter` for programmatic moves, and `redirect()` / `notFound()` on the server.
+</Callout>
+
+export const quizLinkingEn = [
+  {
+    q: 'What does Link do automatically for routes in the viewport?',
+    options: [
+      'It reloads the whole page',
+      'It prefetches them into the Router Cache',
+      'It disables client-side navigation',
+      'It redirects them on the server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which method refetches the current route while keeping client state?',
+    options: [
+      'router.push',
+      'router.replace',
+      'router.refresh',
+      'router.back',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'Which hook reads the current URL path in a Client Component?',
+    options: [
+      'useParams',
+      'useSearchParams',
+      'usePathname',
+      'useRouter',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'How do you navigate away from a Server Component?',
+    options: [
+      'Call useRouter().push',
+      'Call redirect() from next/navigation',
+      'Return a Link component',
+      'Throw a new Error',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/linking-and-navigation" questions={quizLinkingEn} />
+
+<ProgressTracker client:visible id="routing-and-navigation/linking-and-navigation" />

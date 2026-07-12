@@ -1,0 +1,145 @@
+---
+title: Dynamic Segments และ Route Groups
+description: Dynamic segments, catch-all routes, generateStaticParams สำหรับ prerender พร้อม route groups และ private folders ที่ opt out จาก routing
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+folder ที่อยู่ใน bracket เปลี่ยนส่วนของ URL ให้เป็น param ที่เราอ่านจาก Promise ส่วน folder ในวงเล็บและที่ขึ้นต้นด้วย underscore จัดโครงสร้าง file tree ใหม่โดยไม่แตะ URL
+
+## Dynamic segments read from a Promise
+
+folder ชื่อ `[id]` จับ URL ส่วนหนึ่งมาเป็น param ใน Next.js ปัจจุบัน `params` เป็น Promise เราจึงต้อง `await` มัน `searchParams` ก็เป็นแบบเดียวกัน
+
+```tsx
+// app/blog/[id]/page.tsx
+export default async function Post({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
+}) {
+  const { id } = await params
+  const { sort } = await searchParams
+  return <article>Post {id} sorted by {sort}</article>
+}
+```
+
+## Catch-all and optional catch-all
+
+ใช้ `[...slug]` จับหลาย segment มาเป็น array ใช้ `[[...slug]]` เพื่อทำให้มัน optional เพื่อให้ route แม่ match ได้ด้วยแม้ไม่มี segment ต่อท้าย
+
+```txt
+app/
+  docs/
+    [...slug]/page.tsx      // matches /docs/a and /docs/a/b/c
+  shop/
+    [[...slug]]/page.tsx    // matches /shop AND /shop/a/b
+```
+
+```tsx
+// app/docs/[...slug]/page.tsx
+export default async function Docs({
+  params,
+}: {
+  params: Promise<{ slug: string[] }>
+}) {
+  const { slug } = await params
+  return <h1>{slug.join(' / ')}</h1>
+}
+```
+
+## generateStaticParams prerenders dynamic routes
+
+ใช้ `export generateStaticParams` เพื่อบอก Next.js ว่าจะ prerender param ค่าไหนบ้างตอน build แต่ละ object ที่ return จะกลายเป็นหนึ่ง page ที่ generate แบบ static
+
+```tsx
+// app/blog/[id]/page.tsx
+export function generateStaticParams() {
+  return [{ id: '1' }, { id: '2' }, { id: '3' }]
+}
+```
+
+## Route groups and private folders
+
+folder ในวงเล็บอย่าง `(marketing)` คือ route group มันจัดระเบียบไฟล์และถือ shared layout ของตัวเองได้ แต่ชื่อของมันจะถูกตัดออกจาก URL ส่วน folder ที่ขึ้นต้นด้วย underscore อย่าง `_components` เป็น private folder ที่ opt out จาก routing ทั้งหมด
+
+```txt
+app/
+  (marketing)/
+    layout.tsx      // layout for marketing pages only
+    about/page.tsx  // URL is /about, NOT /marketing/about
+  (shop)/
+    cart/page.tsx   // URL is /cart
+  _components/      // private, never a route
+    Button.tsx
+```
+
+<Mermaid title="folder ที่เปลี่ยนกับไม่เปลี่ยน URL" code={diagramDynamicTh} />
+
+export const diagramDynamicTh = `
+graph TD
+  A["[id] dynamic segment"] --> U1["changes URL: /blog/42"]
+  B["[...slug] catch-all"] --> U2["changes URL: /docs/a/b"]
+  C["(marketing) route group"] --> U3["no URL change"]
+  D["_components private"] --> U4["not routable"]
+`;
+
+<Callout title="The one-line takeaway">
+bracket จับ URL param ที่เรา `await` จาก Promise, วงเล็บ group โดยไม่แตะ URL, ส่วน underscore นำหน้าทำให้ folder opt out จาก routing
+</Callout>
+
+export const quizDynamicTh = [
+  {
+    q: 'ใน Next.js ปัจจุบัน อ่าน id จาก dynamic segment อย่างไร',
+    options: [
+      'const id = params.id ตรง ๆ',
+      'const { id } = await params เพราะ params เป็น Promise',
+      'const id = useParams().id ใน Server Component',
+      'const id = props.id จาก getServerSideProps',
+    ],
+    answer: 1,
+  },
+  {
+    q: '[[...slug]] ให้อะไรเพิ่มจาก [...slug]',
+    options: [
+      'มัน match แค่ segment เดียวเท่านั้น',
+      'มันทำให้ catch-all optional เพื่อให้ route แม่ match ได้ด้วย',
+      'มันปิด prerendering ของ route',
+      'มันเปลี่ยน folder เป็น route group',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'generateStaticParams ใช้ทำอะไร',
+    options: [
+      'อ่าน search params ตอน runtime',
+      'ประกาศว่าจะ prerender param ค่าไหนตอน build',
+      'group route โดยไม่เปลี่ยน URL',
+      'mark folder ให้เป็น private',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'route group (marketing) ส่งผลต่อ URL อย่างไร',
+    options: [
+      'มันเพิ่ม /marketing เข้าไปใน URL',
+      'มันไม่ส่งผลต่อ URL เลย',
+      'มันทำให้ route กลายเป็น dynamic',
+      'มันเอา segment ออกจาก routing ทั้งหมด',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/dynamic-segments-and-route-groups" questions={quizDynamicTh} />
+
+<ProgressTracker client:visible id="routing-and-navigation/dynamic-segments-and-route-groups" />

@@ -1,0 +1,137 @@
+---
+title: 'Revalidation และ Cache Invalidation'
+description: 'time-based revalidation เทียบกับ on-demand revalidateTag และ revalidatePath, cache tag และการ map ลงบน Data Cache กับ Full Route Cache'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+เมื่อ data อยู่ใน Data Cache แล้ว เรา invalidate ได้สองทาง **time-based** (ปล่อยให้ stale หลัง N วินาที) หรือ **on-demand** (`revalidateTag` / `revalidatePath` หลัง mutation) และทั้งคู่ยัง refresh Full Route Cache ของ route ที่เกี่ยวข้องด้วย
+
+## Time-based revalidation
+
+ตั้ง lifetime ให้ fetch ที่ cache ไว้ด้วย `next: { revalidate: N }` หรือตั้งทั้ง route segment ด้วย `export const revalidate` เมื่อผ่านช่วงเวลานั้น request ถัดไปจะ trigger การ refresh แบบ background
+
+```tsx
+// Per fetch: this data is at most 60 seconds stale
+await fetch('https://api.example.com/posts', { next: { revalidate: 60 } })
+```
+
+```tsx
+// app/blog/page.tsx — revalidate the entire segment every hour
+export const revalidate = 3600
+```
+
+## On-demand revalidation ด้วย tag
+
+สำหรับ data ที่เปลี่ยนตาม event ไม่ใช่ตามนาฬิกา ให้ **tag** fetch ไว้ แล้วเรียก `revalidateTag` หลัง mutation ทุก fetch ที่ถือ tag นั้นจะถูกทิ้งจาก Data Cache
+
+```tsx
+// lib/posts.ts
+export async function getPosts() {
+  const res = await fetch('https://api.example.com/posts', {
+    next: { tags: ['posts'] },
+  })
+  return res.json()
+}
+```
+
+```tsx
+// app/actions.ts
+'use server'
+import { revalidateTag } from 'next/cache'
+
+export async function createPost(formData: FormData) {
+  await fetch('https://api.example.com/posts', {
+    method: 'POST',
+    body: JSON.stringify({ title: formData.get('title') }),
+  })
+  // Invalidate every fetch tagged 'posts'
+  revalidateTag('posts')
+}
+```
+
+## revalidatePath vs. revalidateTag
+
+ทั้งคู่รันใน Server Action หรือ Route Handler `revalidateTag` เล็งไปที่ **data** ตาม tag ไม่ว่ามัน fetch จากที่ไหน `revalidatePath` เล็งไปที่ **route** และเคลียร์ทุกอย่างที่ cache ไว้ให้ route นั้น ใช้ตอนที่เราไม่รู้ tag
+
+```tsx
+'use server'
+import { revalidatePath } from 'next/cache'
+
+export async function updateProfile() {
+  // Re-render and refetch everything for this exact route
+  revalidatePath('/profile')
+}
+```
+
+## map ลงบนสอง server cache
+
+revalidation แตะสองในสี่ชั้น มันทิ้ง entry ที่ match จาก **Data Cache** และเพราะผล render ของ route ขึ้นกับ data นั้น มันจึง mark **Full Route Cache** ที่เกี่ยวข้องให้ stale ด้วย request ถัดไปจะ render ใหม่ด้วย data สดและเติมทั้งสอง cache กลับ ส่วน Request Memoization และ Router Cache ฝั่ง client ไม่ถูกแตะ Router Cache จะ refresh เองหลัง Server Action
+
+<Mermaid title="A mutation invalidating the Data and Route caches" code={rciDiagramTh} />
+
+export const rciDiagramTh = `
+flowchart LR
+  A["Server Action: mutate"] --> B["revalidateTag('posts')"]
+  B --> C["Data Cache: drop tagged entries"]
+  C --> D["Full Route Cache: mark routes stale"]
+  D --> E["Next request re-renders with fresh data"]
+`;
+
+<Callout title="The one-line takeaway">
+`revalidate` แบบ time-based ตั้งนาฬิกาความ stale ส่วน `revalidateTag` / `revalidatePath` แบบ on-demand invalidate ตาม event ทั้งคู่เคลียร์ **Data Cache** และ **Full Route Cache** ที่ขึ้นกับมัน ดังนั้น tag fetch ไว้เพื่อ revalidate ให้แม่นยำ
+</Callout>
+
+export const rciQuizTh = [
+  {
+    q: 'สองวิธีในการทำ time-based revalidation คืออะไร?',
+    options: [
+      'revalidateTag กับ revalidatePath',
+      'next.revalidate ต่อ fetch กับ segment export const revalidate',
+      'cache: force-cache กับ cache: no-store',
+      'useEffect กับ setInterval',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เรียก revalidateTag ได้ที่ไหน?',
+    options: [
+      'ใน Client Component ไหนก็ได้',
+      'ใน Server Action หรือ Route Handler',
+      'ใน next.config.ts เท่านั้น',
+      'ใน useEffect ฝั่ง client',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'revalidatePath ต่างจาก revalidateTag ยังไง?',
+    options: [
+      'revalidatePath เล็ง route ส่วน revalidateTag เล็งทุก fetch ที่มี tag',
+      'ทั้งคู่เป็น alias เดียวกัน',
+      'revalidatePath ทำงานแค่ตอน build',
+      'revalidateTag เคลียร์แค่ Router Cache ฝั่ง client',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'fetch ต้องมีอะไรก่อน revalidateTag ถึงจะ invalidate มันได้?',
+    options: [
+      'cache: no-store',
+      'entry ใน next.tags ที่ระบุ tag นั้น',
+      'export const dynamic = force-static',
+      'ห่อด้วย useEffect',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/revalidation-and-cache-invalidation" questions={rciQuizTh} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/revalidation-and-cache-invalidation" />

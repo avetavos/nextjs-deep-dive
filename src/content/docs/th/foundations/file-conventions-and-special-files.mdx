@@ -1,0 +1,136 @@
+---
+title: 'File Conventions และ Special Files'
+description: 'ไฟล์พิเศษที่ให้ความหมายกับโฟลเดอร์ใน App Router: page, layout, loading, error, not-found, route, template และเงื่อนไข root layout — พร้อมเหตุผลว่าทำไมโฟลเดอร์ที่ไม่มี page.tsx ถึง route ไม่ได้'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+ใน App Router โฟลเดอร์นิยาม route segment และชื่อไฟล์ที่จองไว้ชุดเล็ก ๆ ให้พฤติกรรมกับแต่ละโฟลเดอร์ — โฟลเดอร์จะเข้าถึงเป็น URL ได้ก็ต่อเมื่อมันมี `page` อยู่ข้างใน
+
+## โฟลเดอร์คือ segment ส่วนไฟล์พิเศษคือพฤติกรรม
+
+โฟลเดอร์ใต้ `app/` คือ URL segment แต่โฟลเดอร์เปล่า ๆ ไม่ทำอะไร สิ่งที่มันทำถูกตัดสินโดยไฟล์ที่จองไว้ข้างใน ชื่อไฟล์แต่ละอันมีหน้าที่เดียว —
+
+- **`page.tsx`** — UI ของ route และเป็นตัวที่ทำให้ segment นั้น route ได้แบบ public
+- **`layout.tsx`** — wrapper ที่ใช้ร่วมกัน คงอยู่ข้ามการ navigate และ nest ซ้อนใน parent layout
+- **`loading.tsx`** — Suspense fallback ที่แสดงระหว่าง segment กำลัง stream เข้ามา
+- **`error.tsx`** — error boundary ของ segment มันต้องเป็น Client Component
+- **`not-found.tsx`** — UI ที่ render เมื่อ `notFound()` ถูกเรียก
+- **`route.ts`** — Route Handler คือ API endpoint แทนที่จะเป็น page
+- **`template.tsx`** — คล้าย layout แต่มัน re-mount instance ใหม่ทุกครั้งที่ navigate
+
+```txt
+app/
+  layout.tsx        # root layout — wraps everything
+  page.tsx          # "/"
+  dashboard/
+    layout.tsx      # wraps everything under /dashboard
+    loading.tsx     # fallback while /dashboard loads
+    error.tsx       # catches errors in /dashboard
+    page.tsx        # "/dashboard"
+  api/
+    users/
+      route.ts      # "/api/users" — a Route Handler, not a page
+```
+
+## page กับ layout คือสองอันที่คุณใช้บ่อยสุด
+
+`page` รับ route param และ search param แล้ว return UI ของ segment —
+
+```tsx
+// app/blog/[slug]/page.tsx
+export default async function BlogPost({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug } = await params;
+  return <article>Reading: {slug}</article>;
+}
+```
+
+`layout` ครอบ segment และทุกอย่างที่อยู่ใต้มัน มันเก็บ state ไว้ข้ามการ navigate ระหว่าง sibling page ดังนั้น chrome ที่ใช้ร่วมกันอย่าง sidebar จึงไม่ remount —
+
+```tsx
+// app/dashboard/layout.tsx
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <nav>Dashboard nav</nav>
+      {children}
+    </section>
+  );
+}
+```
+
+## root layout เป็นสิ่งที่ต้องมี
+
+ทุก App Router app ต้องมี root layout หนึ่งอันที่ `app/layout.tsx` มันเป็น layout เดียวที่ render tag `<html>` และ `<body>` เพราะ Next.js ไม่ได้ปล่อย tag พวกนี้ให้คุณ —
+
+```tsx
+// app/layout.tsx
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+มีสองกฎที่ตามมาจากทั้งหมดนี้ กฎแรก โฟลเดอร์ที่**ไม่มี** `page.tsx` (หรือ `route.ts`) จะ route ไม่ได้ — คุณ nest โฟลเดอร์เพื่อจัดระเบียบไฟล์ล้วน ๆ ได้ และมันจะไม่ตอบสนองต่อ URL เลย กฎที่สอง `error.tsx` ต้องขึ้นต้นด้วย `"use client"` เพราะ error boundary พึ่งพา React ฝั่ง client
+
+<Mermaid title="How special files map onto a route segment" code={diagramFileConventions} />
+
+export const diagramFileConventions = `flowchart LR
+  Folder[dashboard folder] --> Layout[layout wraps and persists]
+  Layout --> Loading[loading is the Suspense fallback]
+  Layout --> Error[error catches failures]
+  Layout --> Page[page is the routable UI]
+  Page --> URL[/dashboard is reachable]`;
+
+<Callout title="The one-line takeaway">
+โฟลเดอร์สร้าง segment ชื่อไฟล์ที่จองไว้ให้พฤติกรรม `page` (หรือ `route`) คือสิ่งที่ทำให้ segment เข้าถึงได้ และ root layout คือที่เดียวที่ `<html>` และ `<body>` อยู่
+</Callout>
+
+export const quizFileConventions = [
+  {
+    q: 'ไฟล์ไหนทำให้ route segment เข้าถึงได้แบบ public ที่ URL',
+    options: ['layout.tsx', 'page.tsx', 'template.tsx', 'loading.tsx'],
+    answer: 1,
+  },
+  {
+    q: 'อะไรคือสิ่งพิเศษของ error.tsx',
+    options: ['มันต้องเป็น Server Component', 'มันต้องเป็น Client Component', 'มันแทนที่ root layout', 'มัน import อะไรไม่ได้เลย'],
+    answer: 1,
+  },
+  {
+    q: 'อะไรที่อยู่เฉพาะใน root layout เท่านั้น',
+    options: ['component page', 'tag <html> และ <body>', 'Route Handlers', 'loading fallback'],
+    answer: 1,
+  },
+  {
+    q: 'โฟลเดอร์ที่ไม่มีทั้ง page.tsx และ route.ts คือ:',
+    options: ['route แบบ 404', 'route ไม่ได้ ใช้จัดระเบียบเท่านั้น', 'กลายเป็น API endpoint อัตโนมัติ', 'เหมือนกับ layout'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/file-conventions-and-special-files" questions={quizFileConventions} />
+
+<ProgressTracker client:visible id="foundations/file-conventions-and-special-files" />

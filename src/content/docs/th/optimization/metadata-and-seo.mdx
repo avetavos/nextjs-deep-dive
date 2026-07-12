@@ -1,0 +1,153 @@
+---
+title: 'Metadata และ SEO'
+description: 'Metadata API — static export const metadata และ dynamic generateMetadata, title template และ file-based metadata อย่าง opengraph-image, sitemap และ robots'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+คุณอธิบาย `<head>` ของหน้าเป็น data — object `metadata` แบบ static หรือฟังก์ชัน `generateMetadata` แบบ dynamic — แล้ว Next.js render tag ที่ถูกต้องบน server จึงไม่ต้องมาจัดการ `<head>` ด้วยมืออีก
+
+## metadata แบบ static
+
+คุณ export object `metadata` จาก `layout` หรือ `page` ไหนก็ได้ แล้ว Next.js เปลี่ยนมันเป็น `<title>`, `<meta>` และ link tag มันรันบน server ดังนั้น tag จึงอยู่ใน HTML ชุดแรกที่ crawler อ่าน
+
+```tsx
+// app/about/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'About',
+  description: 'Who we are and what we build.',
+  openGraph: { title: 'About Acme', images: ['/og.png'] },
+}
+
+export default function AboutPage() {
+  return <h1>About</h1>
+}
+```
+
+## metadata แบบ dynamic และ title template
+
+เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน มันรับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง
+
+```tsx
+// app/blog/[slug]/page.tsx
+import type { Metadata } from 'next'
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}): Promise<Metadata> {
+  const { slug } = await params
+  const post = await fetch(`https://api.example.com/posts/${slug}`).then((r) => r.json())
+  return { title: post.title, description: post.excerpt }
+}
+```
+
+layout กำหนด `title.template` ได้เพื่อให้ทุกหน้าลูกได้ suffix ที่สม่ำเสมอ และต้องมี `default` คู่กับ template เสมอ
+
+```tsx
+// app/layout.tsx — every child title becomes "<page> | Acme"
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: {
+    template: '%s | Acme',
+    default: 'Acme',
+  },
+}
+```
+
+## file-based metadata
+
+metadata บางอย่างเป็นไฟล์ ไม่ใช่ field วางไฟล์ที่ตั้งชื่อแบบพิเศษลงใน route segment แล้ว Next.js ต่อให้เอง `opengraph-image.tsx` สร้าง social preview, `icon.png` กลายเป็น favicon ส่วน `sitemap.ts` และ `robots.ts` กลายเป็น route ของตัวเอง route พิเศษเหล่านี้ถูก cache โดย default
+
+```tsx
+// app/opengraph-image.tsx — generated, cached social image
+import { ImageResponse } from 'next/og'
+
+export const size = { width: 1200, height: 630 }
+export const contentType = 'image/png'
+
+export default function Image() {
+  return new ImageResponse(<div style={{ fontSize: 96 }}>Acme</div>, size)
+}
+```
+
+```ts
+// app/sitemap.ts — becomes /sitemap.xml
+import type { MetadataRoute } from 'next'
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  return [{ url: 'https://acme.com', lastModified: new Date() }]
+}
+```
+
+เพราะทุกอย่างเป็น data หรือเป็นไฟล์ จึงไม่มี `<head>` ให้คอย sync ด้วยมือ — template merge ทั้ง parent และ child และ tag ที่ซ้ำกันก็ไม่มีทางเพี้ยนออกจากกัน
+
+<Mermaid title="How the Metadata API builds the head" code={diagramMetaTh} />
+
+export const diagramMetaTh = `flowchart TD
+  A["metadata object"] --> M[Merge parent + child]
+  B["generateMetadata(params)"] --> M
+  C["opengraph-image / sitemap / robots files"] --> M
+  M --> Head["Server-rendered head tags"]`;
+
+<Callout title="The one-line takeaway">
+อธิบาย head เป็น data ด้วย `metadata` หรือ `generateMetadata` เพิ่ม file-based route อย่าง `opengraph-image` และ `sitemap` แล้ว Next.js render tag ที่ถูกต้องและ merge แล้วบน server โดยไม่ต้องแตะ `<head>` เอง
+</Callout>
+
+export const quizMetaTh = [
+  {
+    q: 'ควรใช้ generateMetadata แทน object metadata แบบ static เมื่อไหร่',
+    options: [
+      'เมื่อ tag ไม่เคยเปลี่ยน',
+      'เมื่อ tag ขึ้นกับ data ของ route อย่าง params',
+      'ใช้ได้เฉพาะภายใน Client Component',
+      'เมื่ออยากข้ามการ render บน server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'title.template ต้องมีอะไรคู่กัน',
+    options: [
+      'ไฟล์ robots.ts',
+      'ค่า title.default',
+      'flag priority',
+      'ฟังก์ชัน generateMetadata',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เพิ่ม sitemap ใน App Router ยังไง',
+    options: [
+      'เขียน public/sitemap.xml ด้วยมือ',
+      'export default function จาก app/sitemap.ts',
+      'return มันจาก generateMetadata',
+      'เพิ่มมันใน next.config',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม Metadata API ดีกว่าการจัดการ head ด้วยมือ',
+    options: [
+      'มันรันบน client เท่านั้น',
+      'มัน render tag ที่ merge แล้วบน server และเพี้ยนออกจากกันไม่ได้',
+      'มันปิดการทำงานของ crawler',
+      'มันตัดความจำเป็นของ title ออก',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/metadata-and-seo" questions={quizMetaTh} />
+
+<ProgressTracker client:visible id="optimization/metadata-and-seo" />

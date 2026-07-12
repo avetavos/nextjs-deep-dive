@@ -1,0 +1,160 @@
+---
+title: Images and Fonts
+description: How next/image resizes, converts, and lazy-loads images with zero layout shift, and how next/font self-hosts fonts at build time with no request to Google.
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`next/image` resizes, converts to modern formats, and lazy-loads your images while reserving their space, and `next/font` self-hosts your fonts at build time — so the page loads fast and never shifts.
+
+## next/image resizes, converts, and lazy-loads
+
+`Image` is a drop-in replacement for `<img>` that optimizes on demand. It generates a resized version per device, serves modern formats like WebP or AVIF when the browser supports them, and lazy-loads anything below the fold automatically.
+
+When you import a local file, Next.js reads its intrinsic dimensions at build time, so `width` and `height` are filled in for you.
+
+```tsx
+// app/page.tsx
+import Image from 'next/image'
+import hero from './hero.png'
+
+export default function Page() {
+  return <Image src={hero} alt="Product hero shot" />
+}
+```
+
+## width, height, and priority
+
+For any image whose size Next.js cannot infer — a remote URL, for example — you MUST pass `width` and `height`. They reserve the exact box before the pixels arrive, which is what prevents Cumulative Layout Shift. Add `priority` to the one image that is your Largest Contentful Paint so Next.js preloads it and skips lazy-loading.
+
+```tsx
+// Remote image: width + height are required to reserve space
+import Image from 'next/image'
+
+export default function Avatar() {
+  return (
+    <Image
+      src="https://cdn.example.com/avatar.png"
+      alt="User avatar"
+      width={64}
+      height={64}
+      priority // preload the LCP image, skip lazy-loading
+    />
+  )
+}
+```
+
+When the dimensions are genuinely unknown, use `fill` inside a positioned parent and let CSS size the box instead.
+
+```tsx
+// Unknown dimensions: use fill inside a positioned parent
+<div style={{ position: 'relative', width: 400, height: 300 }}>
+  <Image src={src} alt="" fill sizes="400px" style={{ objectFit: 'cover' }} />
+</div>
+```
+
+## Remote images need remotePatterns
+
+Optimizing an arbitrary external URL would be an open proxy, so Next.js refuses unless you allowlist the host. Declare `images.remotePatterns` in `next.config` and be as specific as you can.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'cdn.example.com', pathname: '/**' },
+    ],
+  },
+}
+
+export default nextConfig
+```
+
+## next/font self-hosts at build time
+
+`next/font` downloads the font files at build time and serves them from your own origin. There is no runtime request to Google, and because the font metrics are known ahead of time it reserves the right space and produces zero layout shift.
+
+```tsx
+// app/layout.tsx — self-hosted, zero layout shift, no request to Google
+import { Inter } from 'next/font/google'
+import localFont from 'next/font/local'
+
+const inter = Inter({ subsets: ['latin'], display: 'swap' })
+const brand = localFont({ src: './brand.woff2' })
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className={inter.className}>
+      <body className={brand.className}>{children}</body>
+    </html>
+  )
+}
+```
+
+<Mermaid title="From source asset to a stable, fast page" code={diagramImgEn} />
+
+export const diagramImgEn = `flowchart LR
+  Src[Source asset] --> Build[Build step]
+  Build --> Opt["Resized, WebP/AVIF, self-hosted font"]
+  Opt --> Reserve["width + height reserve space"]
+  Reserve --> Page["No layout shift, fast LCP"]`;
+
+<Callout title="The one-line takeaway">
+`next/image` needs `width`/`height` (or `fill`) to reserve space and `priority` on the LCP image, and `next/font` self-hosts fonts at build time so nothing shifts and nothing calls Google.
+</Callout>
+
+export const quizImgEn = [
+  {
+    q: 'Why must you pass width and height to a remote next/image?',
+    options: [
+      'To pick the image format',
+      'To reserve space and prevent layout shift',
+      'To enable lazy-loading',
+      'To allow the remote host',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does the priority prop do?',
+    options: [
+      'Compresses the image more aggressively',
+      'Preloads the LCP image and skips lazy-loading',
+      'Marks the image as decorative',
+      'Forces the AVIF format',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is required before next/image will optimize a remote URL?',
+    options: [
+      'Nothing, it works for any URL',
+      'The host must be listed in images.remotePatterns',
+      'The image must be a WebP file',
+      'A priority prop on the image',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does next/font do at build time?',
+    options: [
+      'Requests the font from Google on every page load',
+      'Self-hosts the font so there is no request to Google',
+      'Inlines the font as base64 in every component',
+      'Disables the font until hydration finishes',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/images-and-fonts" questions={quizImgEn} />
+
+<ProgressTracker client:visible id="optimization/images-and-fonts" />

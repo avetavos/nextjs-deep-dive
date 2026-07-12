@@ -1,0 +1,134 @@
+---
+title: What Are Server Actions?
+description: The "use server" directive, inline actions vs a shared actions module, how they run only on the server, and how they differ from a Route Handler.
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A Server Action is an async function marked with the `"use server"` directive that runs only on the server, and you can call it straight from a `<form>` or from a Client Component without writing an API route.
+
+## The `"use server"` directive
+
+There are two ways to mark a function as a Server Action. You can add `"use server"` at the top of an inline async function inside a Server Component, or you can add `'use server'` at the top of a whole module file so every export in that file becomes an action.
+
+```tsx
+// app/page.tsx — an inline Server Action inside a Server Component
+export default function Page() {
+  async function createTodo(formData: FormData) {
+    'use server'
+    const title = String(formData.get('title'))
+    await db.todo.create({ data: { title } })
+  }
+
+  return (
+    <form action={createTodo}>
+      <input name="title" />
+      <button type="submit">Add</button>
+    </form>
+  )
+}
+```
+
+## A shared actions module
+
+When several components need the same action, put it in a dedicated file. Add `'use server'` once at the top and every export becomes a callable action. This keeps mutation logic in one place and lets Client Components import it.
+
+```ts
+// app/actions.ts — every export here is a Server Action
+'use server'
+
+export async function createTodo(formData: FormData) {
+  const title = String(formData.get('title'))
+  await db.todo.create({ data: { title } })
+}
+
+export async function deleteTodo(id: string) {
+  await db.todo.delete({ where: { id } })
+}
+```
+
+## Calling from a form and from a Client Component
+
+A Server Action can be wired directly to a form with `<form action={createTodo}>`, and Next.js posts the form data to the action on the server. It can also be imported into a Client Component and called like a normal function — Next.js turns that call into a network request for you.
+
+```tsx
+// app/todo-button.tsx — calling an action from a Client Component
+'use client'
+
+import { deleteTodo } from './actions'
+
+export function DeleteButton({ id }: { id: string }) {
+  return <button onClick={() => deleteTodo(id)}>Delete</button>
+}
+```
+
+## How it differs from a Route Handler
+
+A Route Handler in `route.ts` is a public URL you design, wire up, and `fetch` by hand. A Server Action is a function you call directly; Next.js generates the endpoint and the network call for you and supports progressive enhancement through forms. Reach for a Route Handler when you need a real public API or webhook; reach for a Server Action for form and mutation flows inside your own app.
+
+<Mermaid title="How a Server Action call reaches the server" code={diagramSa1En} />
+
+export const diagramSa1En = `
+graph LR
+  A["form or Client Component"] -->|"calls action"| B["Next.js generated endpoint"]
+  B -->|"runs on server only"| C["Server Action function"]
+  C -->|"reads or writes"| D["Database"]
+`;
+
+<Callout title="The one-line takeaway">
+A Server Action is a `"use server"` async function that runs only on the server and is callable from a form or a Client Component without you ever writing an API route.
+</Callout>
+
+export const quizSa1En = [
+  {
+    q: 'What does the "use server" directive mark a function as?',
+    options: [
+      'A Client Component that runs in the browser',
+      'A Server Action that runs only on the server',
+      'A Route Handler exposed at a fixed URL',
+      'A middleware function that runs on every request',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What happens when you add \'use server\' at the top of a module file?',
+    options: [
+      'Only the default export becomes an action',
+      'Every export in that file becomes a Server Action',
+      'The file is treated as a Client Component',
+      'Nothing, the directive is ignored in module files',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you call a Server Action from a Client Component?',
+    options: [
+      'Write a fetch call to a route you defined',
+      'Import the action and call it like a normal function',
+      'You cannot call actions from Client Components',
+      'Register it in middleware first',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When should you reach for a Route Handler instead of a Server Action?',
+    options: [
+      'For form submissions inside your own app',
+      'When you need a real public API or webhook endpoint',
+      'Whenever you write to the database',
+      'To avoid running code on the server',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="server-actions-and-mutations/what-are-server-actions" questions={quizSa1En} />
+
+<ProgressTracker client:visible id="server-actions-and-mutations/what-are-server-actions" />

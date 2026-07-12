@@ -1,0 +1,125 @@
+---
+title: 'The Four Caching Layers'
+description: 'Request Memoization, the Data Cache, the Full Route Cache, and the Router Cache — what each one caches, where it lives, how long, and how it is invalidated.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Next.js caching is **four separate layers** — Request Memoization, the Data Cache, the Full Route Cache, and the Router Cache — and since v15 the Data Cache is **opt-in**, because `fetch` is no longer cached by default.
+
+## Four layers, four jobs
+
+Each layer caches a different thing, lives in a different place, and is invalidated in a different way. Keeping them separate in your head is the whole skill.
+
+| Layer | What it caches | Where it lives | Lifetime | How it is invalidated |
+| --- | --- | --- | --- | --- |
+| Request Memoization | Return value of identical `fetch` / `cache()` calls in one render | Server, per request (React) | A single request / render pass | Ends automatically when the render finishes |
+| Data Cache | Results of data fetches, reused across requests and deploys | Server (persistent) | Until revalidated | `revalidateTag`, `revalidatePath`, or time-based `revalidate` |
+| Full Route Cache | Rendered RSC payload plus HTML of a statically-rendered route | Server (persistent, build or runtime) | Until a deploy or the underlying data revalidates | Revalidating the underlying data, or a redeploy |
+| Router Cache | RSC payloads of visited and prefetched routes | Client (browser memory) | The session; `staleTimes` controls freshness | Navigation, `router.refresh()`, or a Server Action revalidation |
+
+## Server-side: memoization, data, and route caches
+
+Three of the four layers live on the server, and they stack. **Request Memoization** dedupes identical calls inside one render. The **Data Cache** persists fetch results across requests. The **Full Route Cache** stores the fully-rendered output of a static route so a request can skip rendering entirely.
+
+The catch beginners miss: since Next.js 15, a plain `fetch` writes nothing to the Data Cache. You opt in per call.
+
+```tsx
+// Not cached — hits the origin on every request (the Next.js 15+ default)
+await fetch('https://api.example.com/prices')
+
+// Opt in to the Data Cache indefinitely
+await fetch('https://api.example.com/config', { cache: 'force-cache' })
+
+// Opt in with a 60-second lifetime
+await fetch('https://api.example.com/feed', { next: { revalidate: 60 } })
+
+// Opt in and tag for on-demand invalidation
+await fetch('https://api.example.com/cart', { next: { tags: ['cart'] } })
+```
+
+## Client-side: the Router Cache
+
+The fourth layer lives in the browser. When you navigate or hover a prefetched `<Link>`, Next.js keeps the route's RSC payload in memory so back and forward are instant. Since v15 the default `staleTimes.dynamic` is **0**, so dynamic pages are not held client-side unless you raise it.
+
+```ts
+// next.config.ts — opt into holding dynamic routes for 30s in the Router Cache
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    staleTimes: { dynamic: 30 },
+  },
+}
+
+export default nextConfig
+```
+
+## Why "fetch is uncached by default" matters
+
+In Next.js 14, `fetch` defaulted to `force-cache`, so tutorials taught "Next.js caches everything automatically." That is **wrong for v15 and v16**. Today caching is layered and opt-in: an uncached `fetch` makes the route dynamic and the Data Cache stays empty until you ask for it. `GET` Route Handlers changed the same way — they are dynamic unless you add `export const dynamic = 'force-static'`.
+
+<Mermaid title="How a request falls through the four caches" code={fclDiagramEn} />
+
+export const fclDiagramEn = `
+flowchart TD
+  A["Browser navigates"] --> B["Router Cache (client)"]
+  B -->|miss| C["Full Route Cache (server)"]
+  C -->|miss or dynamic| D["Render Server Components"]
+  D --> E["Request Memoization (per render)"]
+  E --> F["Data Cache (server)"]
+  F -->|miss| G["Origin: API or database"]
+`;
+
+<Callout title="The one-line takeaway">
+Four caches, four jobs — Request Memoization (per render), Data Cache (per data fetch), Full Route Cache (per rendered route), Router Cache (in the browser) — and since v15 the Data Cache is **opt-in** because `fetch` is uncached by default.
+</Callout>
+
+export const fclQuizEn = [
+  {
+    q: 'Since which version is fetch uncached by default in Next.js?',
+    options: ['Next.js 12', 'Next.js 13', 'Next.js 14', 'Next.js 15'],
+    answer: 3,
+  },
+  {
+    q: 'Which of the four layers lives in the browser?',
+    options: [
+      'Request Memoization',
+      'The Data Cache',
+      'The Full Route Cache',
+      'The Router Cache',
+    ],
+    answer: 3,
+  },
+  {
+    q: 'Which layer dedupes identical fetch calls within a single render?',
+    options: [
+      'Request Memoization',
+      'The Data Cache',
+      'The Full Route Cache',
+      'The Router Cache',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'What does revalidateTag invalidate?',
+    options: [
+      'Only the client Router Cache',
+      'The Data Cache entries with that tag, and dependent routes',
+      'Request Memoization for the current render',
+      'Nothing until the next deploy',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/the-four-caching-layers" questions={fclQuizEn} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/the-four-caching-layers" />

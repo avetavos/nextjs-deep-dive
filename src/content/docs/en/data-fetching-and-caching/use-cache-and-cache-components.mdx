@@ -1,0 +1,140 @@
+---
+title: 'use cache and Cache Components'
+description: 'The modern explicit caching model — the use cache directive, cacheLife and cacheTag, the cacheComponents flag, and how it enables Partial Prerendering in Next.js 16.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Cache Components flips the model: instead of remembering per-`fetch` cache options, you mark a function, file, or component with the `'use cache'` directive to say **"cache this,"** then shape its lifetime and invalidation with `cacheLife` and `cacheTag`.
+
+## The `use cache` directive
+
+Add the string `'use cache'` at the top of a function (or file) and everything it returns is cached — a `fetch`, a database query, or a whole rendered component. It replaces scattering `cache` options across individual calls.
+
+```tsx
+// lib/data.ts
+import { cacheLife, cacheTag } from 'next/cache'
+
+async function getData() {
+  'use cache'
+  cacheLife('hours')
+  cacheTag('data')
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+```
+
+## cacheLife and cacheTag
+
+`cacheLife` sets how long the entry stays fresh — a named profile like `'hours'` or an explicit object. `cacheTag` attaches a tag so the same `revalidateTag` you already know invalidates it on demand.
+
+```tsx
+import { cacheLife, cacheTag } from 'next/cache'
+
+async function getProduct(id: string) {
+  'use cache'
+  cacheTag(`product-${id}`)
+  cacheLife({ stale: 60, revalidate: 300 })
+  return db.product.findUnique({ where: { id } })
+}
+```
+
+## Turning it on: cacheComponents and Partial Prerendering
+
+`'use cache'` requires the `cacheComponents` flag. In Next.js 16 that same flag is **also** how you opt into **Partial Prerendering** — the older experimental `ppr` flag and `experimental_ppr` export were removed. With it on, Next.js prerenders a static shell and streams the dynamic, uncached holes in at request time.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+## Private and remote caches
+
+Two variants extend the model. `'use cache: private'` caches **per user** — it may read `cookies()`, so it is never shared across visitors. `'use cache: remote'` stores in a shared server-side cache across users. These are current but still stabilizing, so pin your Next.js version and re-check the docs before relying on exact names.
+
+```tsx
+import { cacheLife } from 'next/cache'
+import { cookies } from 'next/headers'
+
+async function getRecommendations() {
+  'use cache: private'
+  cacheLife({ stale: 60 })
+  const sessionId = (await cookies()).get('session-id')?.value
+  return db.recommendations.forSession(sessionId)
+}
+```
+
+<Mermaid title="cacheComponents: the static shell plus streamed dynamic holes" code={uccDiagramEn} />
+
+export const uccDiagramEn = `
+flowchart TD
+  A["cacheComponents: true"] --> B["'use cache' function or component"]
+  A --> C["Partial Prerendering"]
+  B --> D["Cached static shell"]
+  C --> D
+  D --> E["Dynamic uncached holes stream in"]
+`;
+
+<Callout title="The one-line takeaway">
+`'use cache'` makes caching **explicit** — mark what to cache, then tune it with `cacheLife` and `cacheTag` — and its `cacheComponents` flag is the same switch that turns on Partial Prerendering in Next.js 16.
+</Callout>
+
+export const uccQuizEn = [
+  {
+    q: 'What does the use cache directive do?',
+    options: [
+      'Disables caching for a function',
+      'Marks a function, file, or component as explicitly cached',
+      'Forces a Client Component boundary',
+      'Sets a route to dynamic rendering',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which config flag enables use cache?',
+    options: [
+      'experimental.ppr',
+      'experimental.staleTimes',
+      'cacheComponents',
+      'dynamic: force-static',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'What set the lifetime and tag of a use cache entry?',
+    options: [
+      'next.revalidate and next.tags',
+      'cacheLife and cacheTag from next/cache',
+      'staleTimes and revalidatePath',
+      'force-cache and no-store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In Next.js 16, what does cacheComponents also enable?',
+    options: [
+      'The Pages Router',
+      'Partial Prerendering (replacing the removed ppr flag)',
+      'Client-side data fetching',
+      'Automatic fetch caching like Next.js 14',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/use-cache-and-cache-components" questions={uccQuizEn} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/use-cache-and-cache-components" />

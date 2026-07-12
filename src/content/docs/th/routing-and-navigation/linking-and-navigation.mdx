@@ -1,0 +1,156 @@
+---
+title: Linking และ Navigation
+description: Client-side navigation ด้วย Link และ prefetching, programmatic navigation ด้วย useRouter, navigation hooks และ redirect กับ notFound ฝั่ง server
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`<Link>` จัดการ navigation ส่วนใหญ่ด้วย client-side transition และ prefetch อัตโนมัติ ส่วน `useRouter` และ helper จาก `next/navigation` ครอบคลุม navigation แบบ programmatic และฝั่ง server
+
+## Link and automatic prefetching
+
+`<Link>` navigate ฝั่ง client โดยไม่ reload หน้าใหม่ทั้งหน้า `<Link>` ตัวใดที่เลื่อนเข้ามาใน viewport จะถูก prefetch อัตโนมัติ ทำให้ปลายทางมักพร้อมก่อนที่ผู้ใช้จะคลิก
+
+```tsx
+import Link from 'next/link'
+
+export default function Nav() {
+  return (
+    <nav>
+      <Link href="/">Home</Link>
+      <Link href="/blog/42">Post 42</Link>
+      <Link href="/dashboard" prefetch={false}>Dashboard</Link>
+    </nav>
+  )
+}
+```
+
+route ที่ prefetch แล้วจะเข้าไปอยู่ใน client Router Cache การ navigate จึงอาจถูก serve ทันทีจาก RSC payload ที่ cache ไว้แทนที่จะยิง request ใหม่ เรื่อง Router Cache เต็ม ๆ อยู่ใน module Data Fetching
+
+## Programmatic navigation with useRouter
+
+สำหรับ navigation ที่ trigger ด้วย logic เช่นหลัง submit form หลัง timeout หรือหลังเช็ค auth ให้ใช้ `useRouter` จาก `next/navigation` ใน Client Component
+
+```tsx
+'use client'
+
+import { useRouter } from 'next/navigation'
+
+export default function SaveButton() {
+  const router = useRouter()
+  async function onSave() {
+    await fetch('/api/save', { method: 'POST' })
+    router.push('/dashboard') // or replace, back, refresh
+  }
+  return <button onClick={onSave}>Save</button>
+}
+```
+
+`router.push` เพิ่ม history entry, `router.replace` แทนที่ entry ปัจจุบัน, `router.back` ย้อนกลับ, ส่วน `router.refresh` refetch route ปัจจุบันจาก server โดยยังเก็บ client state ไว้
+
+## Reading the current route
+
+Client Component อ่าน navigation state ด้วย hook จาก `next/navigation` ได้แก่ `usePathname`, `useSearchParams` และ `useParams`
+
+```tsx
+'use client'
+
+import { usePathname, useSearchParams, useParams } from 'next/navigation'
+
+export default function Debug() {
+  const pathname = usePathname()      // "/blog/42"
+  const searchParams = useSearchParams() // read ?sort=new
+  const params = useParams()          // { id: "42" }
+  return <pre>{pathname} {searchParams.get('sort')} {params.id}</pre>
+}
+```
+
+## Server-side redirect and notFound
+
+ใน Server Component, route handler และ Server Action เรา navigate ด้วยการ throw ผ่าน `redirect()` หรือ `notFound()` จาก `next/navigation`
+
+```tsx
+import { redirect, notFound } from 'next/navigation'
+
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const post = await getPost(id)
+  if (!post) notFound()          // renders the nearest not-found UI
+  if (post.archived) redirect('/blog') // sends the user elsewhere
+  return <article>{post.title}</article>
+}
+```
+
+<Mermaid title="เลือกเครื่องมือ navigation ตัวไหนดี" code={diagramLinkingTh} />
+
+export const diagramLinkingTh = `
+graph TD
+  N["Need to navigate"] --> UI["From a link or UI?"]
+  N --> LOGIC["From logic in the client?"]
+  N --> SERVER["From the server?"]
+  UI --> L["Link (prefetch + client nav)"]
+  LOGIC --> R["useRouter push/replace/back/refresh"]
+  SERVER --> S["redirect() / notFound()"]
+`;
+
+<Callout title="The one-line takeaway">
+หยิบ `<Link>` ก่อนสำหรับ client navigation ที่ prefetch แล้ว, `useRouter` สำหรับการย้ายแบบ programmatic, และ `redirect()` / `notFound()` บน server
+</Callout>
+
+export const quizLinkingTh = [
+  {
+    q: 'Link ทำอะไรอัตโนมัติกับ route ที่อยู่ใน viewport',
+    options: [
+      'มัน reload หน้าทั้งหน้า',
+      'มัน prefetch เข้า Router Cache',
+      'มันปิด client-side navigation',
+      'มัน redirect พวกมันบน server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'method ไหน refetch route ปัจจุบันโดยยังเก็บ client state',
+    options: [
+      'router.push',
+      'router.replace',
+      'router.refresh',
+      'router.back',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'hook ไหนอ่าน URL path ปัจจุบันใน Client Component',
+    options: [
+      'useParams',
+      'useSearchParams',
+      'usePathname',
+      'useRouter',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'navigate ออกจาก Server Component อย่างไร',
+    options: [
+      'เรียก useRouter().push',
+      'เรียก redirect() จาก next/navigation',
+      'return component Link',
+      'throw Error ตัวใหม่',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/linking-and-navigation" questions={quizLinkingTh} />
+
+<ProgressTracker client:visible id="routing-and-navigation/linking-and-navigation" />

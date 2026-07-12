@@ -1,0 +1,112 @@
+---
+title: 'Partial Prerendering'
+description: 'PPR รวม static shell กับ dynamic hole ไว้ใน route เดียว แต่ละ hole ห่อด้วย Suspense แล้ว stream ตอน request เปิดใช้ผ่าน cacheComponents ใน Next.js 16 และต่างจาก route แบบ static ล้วนกับ dynamic ล้วนยังไง'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Partial Prerendering เสิร์ฟ static shell ที่ prerender ไว้แล้วทันที และ stream "hole" ที่เป็น dynamic — แต่ละอันห่อด้วย Suspense — เข้ามาใน shell ตอน request ทำให้ route เดียวได้ทั้งความเร็วของ static และความสดของ dynamic
+
+## route เดียว static shell บวก dynamic hole
+
+ก่อนมี PPR คุณต้องเลือก mode เดียวต่อ route — static ล้วน (เร็ว แต่ไม่มี data ต่อ request) หรือ dynamic ล้วน (สด แต่ไม่มีอะไร prerender) PPR ตัด "อย่างใดอย่างหนึ่ง" ทิ้ง ส่วนของหน้าที่ไม่เปลี่ยนเลยจะถูก prerender เป็น static shell ส่วนที่ต้องใช้ data ตอน request กลายเป็น dynamic hole แต่ละอันอยู่หลัง `<Suspense>` boundary แล้ว stream เข้ามาเมื่อ resolve
+
+```tsx
+// app/product/[id]/page.tsx — static shell, dynamic price streamed into a hole
+import { Suspense } from 'react';
+import { cookies } from 'next/headers';
+
+async function LivePrice() {
+  const store = await cookies();
+  const currency = store.get('currency')?.value ?? 'USD';
+  const price = await fetch('https://api.example.com/price', {
+    cache: 'no-store',
+  }).then((r) => r.json());
+  return <strong>{price.amount} {currency}</strong>;
+}
+
+export default function ProductPage() {
+  return (
+    <main>
+      <h1>Wireless Headphones</h1>
+      <p>This description is prerendered into the static shell.</p>
+      <Suspense fallback={<span>Loading price…</span>}>
+        <LivePrice />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+heading กับ description ออกไปทันทีเป็น static HTML ส่วน `LivePrice` คือ dynamic hole ที่ stream เข้ามาต่อ request
+
+## เปิดใช้ PPR ใน Next.js 16
+
+ใน Next.js 16 Partial Prerendering มาเป็นส่วนหนึ่งของ **Cache Components** และเปิดด้วย config flag เดียว flag `ppr` แบบ experimental เดิมและ export ระดับ route `experimental_ppr` ถูก **เอาออกไปแล้ว** — คุณไม่ต้อง opt-in ต่อ route อีก
+
+```ts
+// next.config.ts — enable Partial Prerendering (Next.js 16)
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+};
+
+export default nextConfig;
+```
+
+พอตั้ง `cacheComponents: true` route ใดที่ผสม content ที่ prerender กับ content ที่เป็น dynamic ห่อด้วย Suspense จะถูก partially prerender ให้อัตโนมัติ เนื่องจากฟีเจอร์นี้กำลัง stabilize ให้เช็คสถานะและชื่อปัจจุบันในเอกสาร Next.js ก่อนนำไปใช้จริงบน production
+
+## ต่างจาก static ล้วนกับ dynamic ล้วน
+
+โมเดลทั้งสามเรียงตัวบนแกนเดียว — ว่ารู้ route มากแค่ไหนตอน build —
+
+- **static ล้วน** — ทั้ง route ถูก prerender ไม่มีอะไรต่อ request เร็วที่สุด แต่ไม่มี data สด
+- **dynamic ล้วน** — ทั้ง route render ทุก request สดเสมอ แต่ไม่มีอะไร prerender TTFB จึงรอ data ที่ช้าที่สุด
+- **PPR** — shell ถูก prerender เหมือน static และมีแค่ hole ที่เป็น dynamic first paint เร็ว *และ* มี data ต่อ request ใน route เดียว
+
+<Mermaid title="A PPR route: static shell with a streamed dynamic hole" code={diagramPprTh} />
+
+export const diagramPprTh = `flowchart LR
+  A[Request] --> B[Static shell served instantly]
+  B --> E[Shell prerendered at build time]
+  B --> C[Dynamic hole in Suspense]
+  C --> D[Streamed at request time]`;
+
+<Callout title="The one-line takeaway">
+PPR ให้ route เดียวมี static shell ที่ prerender ไว้ บวก dynamic hole ห่อ Suspense ที่ stream ตอน request — เปิดใช้ใน Next.js 16 ผ่าน cacheComponents เพราะ flag ppr แบบ experimental ถูกเอาออกไปแล้ว
+</Callout>
+
+export const quizPprTh = [
+  {
+    q: 'Partial Prerendering รวมอะไรไว้ใน route เดียว?',
+    options: ['สองหน้าแยกกัน', 'static shell กับ dynamic hole ที่ stream ตอน request', 'client กับ server component เท่านั้น', 'caching กับ revalidation'],
+    answer: 1,
+  },
+  {
+    q: 'dynamic hole แต่ละอันใน PPR route ถูกส่งมายังไง?',
+    options: ['prerender ตอน build', 'ห่อด้วย Suspense แล้ว stream ตอน request', 'fetch จาก client', 'render ครั้งเดียวแล้ว cache ตลอดไป'],
+    answer: 1,
+  },
+  {
+    q: 'เปิดใช้ PPR ใน Next.js 16 ยังไง?',
+    options: ['export const experimental_ppr = true', 'flag ppr แบบ experimental ใน config', 'cacheComponents: true ใน next.config', 'เปิดตลอดและตั้งค่าไม่ได้'],
+    answer: 2,
+  },
+  {
+    q: 'PPR ต่างจาก route แบบ dynamic ล้วนยังไง?',
+    options: ['ไม่ render อะไรเลยตอน build', 'shell ถูก prerender ส่วนที่ dynamic มีแค่ hole', 'มันเอา Suspense boundary ออก', 'มันรันบน edge เท่านั้น'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/partial-prerendering" questions={quizPprTh} />
+
+<ProgressTracker client:visible id="rendering/partial-prerendering" />

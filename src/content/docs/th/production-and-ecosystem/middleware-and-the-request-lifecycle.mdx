@@ -1,0 +1,127 @@
+---
+title: Middleware และ Request Lifecycle
+description: middleware.ts ทำงานก่อน request จะเสร็จบนทุก route ที่ match วิธี scope ด้วย matcher และงานแบบไหนควรอยู่บน Edge runtime
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+ไฟล์ `middleware.ts` ที่ root ของโปรเจกต์จะรันก่อน request จะเสร็จ บนทุก route ที่ match ทำให้เรา redirect, rewrite หรือ set header กับ cookie ได้ก่อนที่ Next.js จะ render อะไรออกมา
+
+## Where middleware sits in the request lifecycle
+
+middleware ดัก request หลังจากมันมาถึงแต่ก่อน route จะถูก resolve เรา return `NextResponse` เพื่อ redirect, rewrite หรือปล่อยผ่านด้วย `NextResponse.next()`
+
+```ts
+// middleware.ts — runs BEFORE the request completes, on every matching route
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function middleware(request: NextRequest) {
+  // Lightweight auth gate: redirect logged-out users away from /dashboard
+  const isLoggedIn = request.cookies.has('session')
+  if (request.nextUrl.pathname.startsWith('/dashboard') && !isLoggedIn) {
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
+
+  // Otherwise continue, and set a header on the way through
+  const response = NextResponse.next()
+  response.headers.set('x-request-time', Date.now().toString())
+  return response
+}
+```
+
+## Scope it with matcher
+
+ถ้าไม่มี `matcher` middleware จะรันทุก request รวมถึง static asset ด้วย เรา scope มันให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
+
+```ts
+// middleware.ts — scope which routes run middleware
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+}
+```
+
+## Redirects, rewrites, and the Edge runtime
+
+ใช้ middleware สำหรับ redirect, rewrite (URL เดิมแต่เสิร์ฟ content ต่างกัน) และ set header หรือ cookie การ rewrite เสิร์ฟ content คนละแบบโดยไม่เปลี่ยน URL บน browser เหมาะกับ A/B test หรือ geo routing
+
+```ts
+// A/B or geo rewrite — same URL, different content served
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function middleware(request: NextRequest) {
+  const country = request.headers.get('x-vercel-ip-country') ?? 'us'
+  return NextResponse.rewrite(new URL(`/${country}${request.nextUrl.pathname}`, request.url))
+}
+```
+
+middleware รันบน Edge runtime เป็น default มันอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
+
+<Mermaid title="Middleware intercepts before the route resolves" code={diagramMwTh} />
+
+export const diagramMwTh = `
+graph LR
+  A["Incoming request"] --> B["middleware.ts (Edge)"]
+  B -->|redirect| C["NextResponse.redirect"]
+  B -->|rewrite| D["NextResponse.rewrite"]
+  B -->|next| E["Route handler / page"]
+`;
+
+<Callout title="The one-line takeaway">
+middleware รันบน Edge ก่อนทุก request ที่ match ใช้มันทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
+</Callout>
+
+export const quizMwTh = [
+  {
+    q: 'When does middleware.ts run?',
+    options: [
+      'After the page finishes rendering',
+      'Before the request completes, on matching routes',
+      'Only on the first request of a session',
+      'Only for API routes',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the matcher config used for?',
+    options: [
+      'Choosing which routes middleware runs on',
+      'Matching database rows',
+      'Validating form input',
+      'Selecting the rendering mode',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'What runtime does middleware use by default?',
+    options: [
+      'The Node.js runtime',
+      'A separate worker thread',
+      'The Edge runtime',
+      'The browser main thread',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'Which of these belongs in middleware?',
+    options: [
+      'A heavy database aggregation',
+      'A lightweight redirect based on a cookie',
+      'Rendering the full page HTML',
+      'Sending a transactional email',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/middleware-and-the-request-lifecycle" questions={quizMwTh} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/middleware-and-the-request-lifecycle" />

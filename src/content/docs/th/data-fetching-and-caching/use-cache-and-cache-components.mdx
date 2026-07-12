@@ -1,0 +1,140 @@
+---
+title: 'use cache และ Cache Components'
+description: 'โมเดล caching แบบ explicit ยุคใหม่ directive use cache, cacheLife กับ cacheTag, flag cacheComponents และการเปิด Partial Prerendering ใน Next.js 16'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Cache Components พลิกโมเดล แทนที่จะจำ cache option ต่อ `fetch` เรา mark function, file หรือ component ด้วย directive `'use cache'` เพื่อบอกว่า **"cache อันนี้"** แล้วปรับ lifetime กับ invalidation ด้วย `cacheLife` และ `cacheTag`
+
+## directive `use cache`
+
+ใส่ string `'use cache'` ไว้บนสุดของ function หรือ file แล้วทุกอย่างที่มัน return จะถูก cache ไม่ว่าจะเป็น `fetch`, query database หรือทั้ง component ที่ render แล้ว มันแทนการโปรย `cache` option ตาม call ทีละอัน
+
+```tsx
+// lib/data.ts
+import { cacheLife, cacheTag } from 'next/cache'
+
+async function getData() {
+  'use cache'
+  cacheLife('hours')
+  cacheTag('data')
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+```
+
+## cacheLife และ cacheTag
+
+`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ `revalidateTag` ตัวเดิมที่เรารู้จักอยู่แล้ว invalidate มันได้แบบ on-demand
+
+```tsx
+import { cacheLife, cacheTag } from 'next/cache'
+
+async function getProduct(id: string) {
+  'use cache'
+  cacheTag(`product-${id}`)
+  cacheLife({ stale: 60, revalidate: 300 })
+  return db.product.findUnique({ where: { id } })
+}
+```
+
+## เปิดใช้: cacheComponents และ Partial Prerendering
+
+`'use cache'` ต้องใช้ flag `cacheComponents` ใน Next.js 16 flag ตัวเดียวกันนี้ **ยัง** เป็นวิธีเปิด **Partial Prerendering** ด้วย flag `ppr` แบบ experimental เดิมและ export `experimental_ppr` ถูกถอดออกไปแล้ว เมื่อเปิดมัน Next.js จะ prerender shell แบบ static และ stream ส่วน dynamic ที่ไม่ cache เข้ามาตอน request
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+## private และ remote cache
+
+มีสอง variant ที่ต่อยอดโมเดลนี้ `'use cache: private'` cache **ต่อ user** มันอ่าน `cookies()` ได้ จึงไม่แชร์ข้ามผู้เข้าชม ส่วน `'use cache: remote'` เก็บใน shared cache ฝั่ง server ที่แชร์ข้าม user ทั้งสองใช้ได้ในปัจจุบันแต่ยัง stabilizing ดังนั้น pin version ของ Next.js และเช็ค docs อีกครั้งก่อนพึ่งชื่อที่แน่นอน
+
+```tsx
+import { cacheLife } from 'next/cache'
+import { cookies } from 'next/headers'
+
+async function getRecommendations() {
+  'use cache: private'
+  cacheLife({ stale: 60 })
+  const sessionId = (await cookies()).get('session-id')?.value
+  return db.recommendations.forSession(sessionId)
+}
+```
+
+<Mermaid title="cacheComponents: the static shell plus streamed dynamic holes" code={uccDiagramTh} />
+
+export const uccDiagramTh = `
+flowchart TD
+  A["cacheComponents: true"] --> B["'use cache' function or component"]
+  A --> C["Partial Prerendering"]
+  B --> D["Cached static shell"]
+  C --> D
+  D --> E["Dynamic uncached holes stream in"]
+`;
+
+<Callout title="The one-line takeaway">
+`'use cache'` ทำให้ caching **explicit** mark ว่าจะ cache อะไร แล้วปรับด้วย `cacheLife` กับ `cacheTag` และ flag `cacheComponents` ของมันคือสวิตช์เดียวกับที่เปิด Partial Prerendering ใน Next.js 16
+</Callout>
+
+export const uccQuizTh = [
+  {
+    q: 'directive use cache ทำอะไร?',
+    options: [
+      'ปิด caching ให้ function',
+      'mark function, file หรือ component ว่าถูก cache แบบ explicit',
+      'บังคับให้เป็น Client Component boundary',
+      'ตั้ง route ให้ render แบบ dynamic',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'flag ตัวไหนเปิดใช้ use cache?',
+    options: [
+      'experimental.ppr',
+      'experimental.staleTimes',
+      'cacheComponents',
+      'dynamic: force-static',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'อะไรตั้ง lifetime และ tag ของ entry use cache?',
+    options: [
+      'next.revalidate กับ next.tags',
+      'cacheLife กับ cacheTag จาก next/cache',
+      'staleTimes กับ revalidatePath',
+      'force-cache กับ no-store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน Next.js 16 cacheComponents ยังเปิดอะไรอีก?',
+    options: [
+      'Pages Router',
+      'Partial Prerendering (แทน flag ppr ที่ถูกถอด)',
+      'การ fetch ฝั่ง client',
+      'auto fetch caching แบบ Next.js 14',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/use-cache-and-cache-components" questions={uccQuizTh} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/use-cache-and-cache-components" />

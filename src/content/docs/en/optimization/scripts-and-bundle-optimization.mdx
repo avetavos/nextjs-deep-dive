@@ -1,0 +1,148 @@
+---
+title: Scripts and Bundle Optimization
+description: Loading third-party scripts with next/script strategies, code-splitting client components with next/dynamic, optimizePackageImports, and analyzing the bundle.
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Ship less JavaScript by loading third-party scripts at the right moment with `next/script`, code-splitting heavy client components with `next/dynamic`, and keeping the Server/Client boundary tight.
+
+## next/script and its strategies
+
+A raw `<script>` tag blocks parsing and runs whenever the browser reaches it. `next/script` lets you choose the moment with a `strategy`. Pick the latest one your script can tolerate.
+
+- `beforeInteractive` — loads before any Next.js code hydrates; reserve it for critical scripts only.
+- `afterInteractive` — the default; loads after hydration starts, right for analytics.
+- `lazyOnload` — loads during idle time; right for low-priority widgets like chat.
+
+```tsx
+// A chat widget is low priority — defer it to idle time
+import Script from 'next/script'
+
+export default function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      {children}
+      <Script src="https://widget.example.com/chat.js" strategy="lazyOnload" />
+    </>
+  )
+}
+```
+
+## Code-split client components with next/dynamic
+
+`next/dynamic` (built on `React.lazy`) splits a heavy client component into its own chunk that loads only when rendered. For a component that touches browser-only APIs, pass `ssr: false` so it never runs on the server. Note that `ssr: false` is only allowed inside a Client Component.
+
+```tsx
+'use client'
+import dynamic from 'next/dynamic'
+
+// Heavy, browser-only — split into its own chunk, no SSR
+const Chart = dynamic(() => import('./Chart'), {
+  ssr: false,
+  loading: () => <p>Loading chart…</p>,
+})
+
+export default function Dashboard() {
+  return <Chart />
+}
+```
+
+## optimizePackageImports and the bundle analyzer
+
+Some libraries with barrel files pull in far more than you use. `optimizePackageImports` tells Next.js to import only the modules you actually reference, shrinking the client bundle.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    optimizePackageImports: ['lucide-react'],
+  },
+}
+
+export default nextConfig
+```
+
+To see what is actually in your bundle, wrap the config with `@next/bundle-analyzer` and run a build with the flag set.
+
+```js
+// next.config.js — run: ANALYZE=true next build
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+})
+
+module.exports = withBundleAnalyzer({})
+```
+
+## Keep the Server/Client boundary tight
+
+The biggest bundle win is not shipping code at all. Everything imported past a `"use client"` boundary becomes client JavaScript, so push `"use client"` as far down the tree as you can — keep data-heavy work in Server Components and mark only the small interactive leaves as client.
+
+<Mermaid title="Where client JavaScript comes from" code={diagramBundleEn} />
+
+export const diagramBundleEn = `flowchart TD
+  Page["Server Component (0 KB client JS)"] --> Leaf["'use client' leaf"]
+  Page --> Split["next/dynamic chunk"]
+  Leaf --> JS[Client bundle]
+  Split -->|loads on demand| JS
+  Page --> Script["next/script (strategy-timed)"]`;
+
+<Callout title="The one-line takeaway">
+Time third-party scripts with `next/script` strategies, split heavy client code with `next/dynamic`, trim barrel imports with `optimizePackageImports`, and keep `"use client"` low so most of the tree ships zero JavaScript.
+</Callout>
+
+export const quizBundleEn = [
+  {
+    q: 'Which next/script strategy is the default for analytics?',
+    options: [
+      'beforeInteractive',
+      'afterInteractive',
+      'lazyOnload',
+      'workerThread',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does ssr: false in next/dynamic do?',
+    options: [
+      'Renders the component on the server only',
+      'Prevents the component from rendering on the server',
+      'Disables code-splitting',
+      'Caches the component output',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does optimizePackageImports help with?',
+    options: [
+      'Importing only the modules you use from a package',
+      'Preloading remote images',
+      'Generating a sitemap',
+      'Timing third-party scripts',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'Why push "use client" as far down the tree as possible?',
+    options: [
+      'It makes the server render faster only',
+      'Everything past the boundary becomes client JavaScript',
+      'It is required for metadata',
+      'It disables Suspense',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/scripts-and-bundle-optimization" questions={quizBundleEn} />
+
+<ProgressTracker client:visible id="optimization/scripts-and-bundle-optimization" />

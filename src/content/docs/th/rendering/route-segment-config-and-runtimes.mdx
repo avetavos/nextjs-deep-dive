@@ -1,0 +1,104 @@
+---
+title: 'Route Segment Config และ Runtime'
+description: 'Route Segment Config exports (dynamic, revalidate, runtime, fetchCache, dynamicParams) Node.js runtime กับ Edge runtime เลือกอันไหนเมื่อไหร่ และเปิด ISR ผ่าน revalidate ยังไง'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Route Segment Config คือชุดของค่า `export const` ระดับไฟล์ ที่ให้คุณ override ว่า route segment เดียว render, cache และรันบน runtime ไหน
+
+## segment config exports
+
+แต่ละตัวเป็น named export อยู่บนสุดของ `layout.tsx`, `page.tsx` หรือ `route.ts` มันมีผลกับ segment นั้นและลูกของมัน
+
+```tsx
+// app/blog/page.tsx — route segment config exports
+export const dynamic = 'auto';       // 'auto' | 'force-dynamic' | 'error' | 'force-static'
+export const revalidate = 3600;      // ISR: rebuild this route at most once per hour
+export const runtime = 'nodejs';     // 'nodejs' (default) | 'edge'
+export const fetchCache = 'auto';    // control the default caching of fetch() in this segment
+export const dynamicParams = true;   // allow params not returned by generateStaticParams
+```
+
+- **`dynamic`** — บังคับ mode ของการ render `'force-dynamic'` render ทุก request ส่วน `'force-static'` ห้ามใช้ dynamic API
+- **`revalidate`** — จำนวนวินาทีระหว่างการ rebuild เบื้องหลัง นี่คือวิธีเปิด ISR
+- **`runtime`** — สภาพแวดล้อมที่รัน `'nodejs'` หรือ `'edge'`
+- **`fetchCache`** — override ว่า `fetch()` ใน segment นี้ถูก cache เป็น default ยังไง
+- **`dynamicParams`** — เมื่อเป็น `false` param ที่ไม่อยู่ในลิสต์ของ generateStaticParams จะคืน 404 แทนที่จะ render ตอน request
+
+## Node.js runtime กับ Edge runtime
+
+ทุก route รันบน runtime หนึ่งในสอง ตัว default คือ **Node.js** ให้ Node API เต็มชุด ส่วน **Edge** runtime เป็นสภาพแวดล้อมที่เล็กกว่า start เร็วกว่า และรันใกล้ผู้ใช้ แลกกับชุด API ที่จำกัด
+
+```tsx
+// Opt a route into the Edge runtime
+export const runtime = 'edge';
+```
+
+เลือกตามสิ่งที่ route ต้องการ —
+
+- **Node.js (default)** — Node API เต็ม, native module, library ใหญ่ ๆ, database driver เลือกเมื่อคุณต้องการ ecosystem ทั้งหมดหรืองานหนัก
+- **Edge** — bundle เล็ก, cold start เกือบเป็นศูนย์, รันใกล้ผู้ใช้เชิงภูมิศาสตร์ เลือกสำหรับ route เบา ๆ ที่ไวต่อ latency เช่น personalization, redirect หรือ auth check ง่าย ๆ ตราบใดที่มันอยู่ในชุด Edge API ที่จำกัด
+
+## ISR ผ่าน revalidate
+
+Incremental Static Regeneration ทำให้ route ยัง static และเร็ว แต่ยังปล่อยให้มัน stale แล้ว refresh ตามเวลาได้ ตั้ง `revalidate` เป็นจำนวนวินาที Next.js จะเสิร์ฟ static page ที่ cache ไว้ แล้ว rebuild เบื้องหลังหลังพ้นช่วงนั้น
+
+```tsx
+// app/products/page.tsx — serve static, refresh in the background every 60s
+export const revalidate = 60;
+
+export default async function Products() {
+  const products = await fetch('https://api.example.com/products').then((r) => r.json());
+  return <ul>{products.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
+}
+```
+
+request แรกหลังพ้น 60 วินาทีจะ trigger การ rebuild เบื้องหลัง ผู้เข้าชมยังได้ page ที่ cache ไว้แบบเร็วต่อไปจนกว่าอันใหม่จะพร้อม
+
+<Mermaid title="Route segment config and the two runtimes" code={diagramSegmentTh} />
+
+export const diagramSegmentTh = `flowchart TD
+  A[Route segment config] --> B[dynamic]
+  A --> C[revalidate for ISR]
+  A --> D[runtime]
+  D --> E[nodejs, full APIs, default]
+  D --> F[edge, small, fast cold start, limited APIs]`;
+
+<Callout title="The one-line takeaway">
+Route Segment Config exports ให้ segment เดียว override การ render, caching และ runtime ได้ — โดย revalidate เปิด ISR และ runtime เลือกระหว่าง Node.js ที่ API เต็ม กับ Edge ที่เล็ก เร็ว และ API จำกัด
+</Callout>
+
+export const quizSegmentTh = [
+  {
+    q: 'ค่า Route Segment Config อยู่ที่ไหน?',
+    options: ['ใน next.config เท่านั้น', 'เป็น named export บนสุดของไฟล์ segment', 'ในตัว component body', 'ในไฟล์ JSON แยกต่างหาก'],
+    answer: 1,
+  },
+  {
+    q: 'export ตัวไหนเปิด Incremental Static Regeneration?',
+    options: ['runtime', 'dynamicParams', 'revalidate', 'fetchCache'],
+    answer: 2,
+  },
+  {
+    q: 'runtime default ของ route คืออะไร?',
+    options: ['edge', 'nodejs', 'browser', 'deno'],
+    answer: 1,
+  },
+  {
+    q: 'Edge runtime เป็นตัวเลือกที่ดีกว่าเมื่อไหร่?',
+    options: ['เมื่อต้องใช้ native Node module', 'สำหรับ route เบา ๆ ที่ไวต่อ latency และต้องการ API จำกัด', 'สำหรับงาน database หนัก ๆ', 'เมื่อต้องการ Node API เต็มชุด'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/route-segment-config-and-runtimes" questions={quizSegmentTh} />
+
+<ProgressTracker client:visible id="rendering/route-segment-config-and-runtimes" />

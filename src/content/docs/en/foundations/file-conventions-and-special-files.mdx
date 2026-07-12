@@ -1,0 +1,136 @@
+---
+title: 'File Conventions and Special Files'
+description: 'The special files that give App Router folders meaning: page, layout, loading, error, not-found, route, template, and the root layout requirement — plus why a folder without page.tsx is not routable.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+In the App Router, folders define route segments and a small set of reserved filenames give each folder its behavior — a folder is only reachable as a URL once it contains a `page`.
+
+## Folders are segments, special files are behavior
+
+A folder under `app/` is a URL segment. But a folder on its own is inert; what it does is decided by the reserved files inside it. Each filename has one job:
+
+- **`page.tsx`** — the UI for a route, and the thing that makes the segment publicly routable.
+- **`layout.tsx`** — a shared wrapper that persists across navigation and nests inside parent layouts.
+- **`loading.tsx`** — a Suspense fallback shown while the segment streams in.
+- **`error.tsx`** — an error boundary for the segment; it must be a Client Component.
+- **`not-found.tsx`** — the UI rendered when `notFound()` is called.
+- **`route.ts`** — a Route Handler, i.e. an API endpoint instead of a page.
+- **`template.tsx`** — like a layout, but it re-mounts a fresh instance on every navigation.
+
+```txt
+app/
+  layout.tsx        # root layout — wraps everything
+  page.tsx          # "/"
+  dashboard/
+    layout.tsx      # wraps everything under /dashboard
+    loading.tsx     # fallback while /dashboard loads
+    error.tsx       # catches errors in /dashboard
+    page.tsx        # "/dashboard"
+  api/
+    users/
+      route.ts      # "/api/users" — a Route Handler, not a page
+```
+
+## page and layout are the two you use most
+
+A `page` receives route params and search params and returns the segment's UI:
+
+```tsx
+// app/blog/[slug]/page.tsx
+export default async function BlogPost({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug } = await params;
+  return <article>Reading: {slug}</article>;
+}
+```
+
+A `layout` wraps a segment and everything below it. It keeps its state across navigations between sibling pages, so shared chrome like a sidebar does not remount:
+
+```tsx
+// app/dashboard/layout.tsx
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <nav>Dashboard nav</nav>
+      {children}
+    </section>
+  );
+}
+```
+
+## The root layout is required
+
+Every App Router app must have one root layout at `app/layout.tsx`. It is the only layout that renders the `<html>` and `<body>` tags, because Next.js does not emit them for you:
+
+```tsx
+// app/layout.tsx
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+Two rules follow from all this. First, a folder **without** a `page.tsx` (or a `route.ts`) is not routable — you can nest folders purely to organize files and they will never respond to a URL. Second, `error.tsx` must start with `"use client"`, because error boundaries rely on client-side React.
+
+<Mermaid title="How special files map onto a route segment" code={diagramFileConventions} />
+
+export const diagramFileConventions = `flowchart LR
+  Folder[dashboard folder] --> Layout[layout wraps and persists]
+  Layout --> Loading[loading is the Suspense fallback]
+  Layout --> Error[error catches failures]
+  Layout --> Page[page is the routable UI]
+  Page --> URL[/dashboard is reachable]`;
+
+<Callout title="The one-line takeaway">
+Folders make segments, reserved filenames give them behavior, `page` (or `route`) is what makes a segment reachable at all, and the root layout is the one place `<html>` and `<body>` live.
+</Callout>
+
+export const quizFileConventions = [
+  {
+    q: 'Which file makes a route segment publicly reachable at a URL?',
+    options: ['layout.tsx', 'page.tsx', 'template.tsx', 'loading.tsx'],
+    answer: 1,
+  },
+  {
+    q: 'What is special about error.tsx?',
+    options: ['It must be a Server Component', 'It must be a Client Component', 'It replaces the root layout', 'It cannot import anything'],
+    answer: 1,
+  },
+  {
+    q: 'What lives only in the root layout?',
+    options: ['The page component', 'The <html> and <body> tags', 'Route Handlers', 'The loading fallback'],
+    answer: 1,
+  },
+  {
+    q: 'A folder that contains no page.tsx and no route.ts is:',
+    options: ['A 404 route', 'Not routable, only for organization', 'Automatically an API endpoint', 'The same as a layout'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/file-conventions-and-special-files" questions={quizFileConventions} />
+
+<ProgressTracker client:visible id="foundations/file-conventions-and-special-files" />

@@ -1,0 +1,142 @@
+---
+title: Deployment and Self-Hosting
+description: Deploying to Vercel versus self-hosting, output standalone for a minimal Docker image, how ISR and revalidateTag work across instances, and a go-live checklist.
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+You can deploy to Vercel with zero config or self-host a Node server behind a CDN — but once you run more than one instance, caching and ISR need a shared cache handler so every instance agrees.
+
+## Vercel versus self-hosting
+
+Vercel detects a Next.js app and wires up builds, the CDN, image optimization, and Edge/Node runtimes with no configuration. Self-hosting gives you full control: you build the app and run `next start` (a long-lived Node server) yourself, usually behind a CDN that caches static assets.
+
+```bash
+# Self-hosting: build once, then run a long-lived Node server
+next build
+next start -p 3000
+```
+
+## A minimal Docker image with output standalone
+
+Set `output: 'standalone'` and Next.js traces exactly which files the server needs and copies them into `.next/standalone`. You get a tiny image that ships without `node_modules`.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  output: 'standalone',
+}
+
+export default nextConfig
+```
+
+```dockerfile
+# Minimal runtime image — copy only the traced standalone output
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+# standalone ships its own server.js — do NOT use "next start" here
+CMD ["node", "server.js"]
+```
+
+## Caching and ISR across instances
+
+ISR, the full-route cache, and `revalidateTag` all write to a cache. On a single instance the default filesystem cache is fine. Run multiple instances and each has its own local cache — so `revalidateTag` on one pod leaves the others stale. The fix is a shared cache handler (backed by Redis or similar) that every instance reads and writes.
+
+```ts
+// next.config.ts — shared cache for multi-instance self-hosting
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheHandler: require.resolve('./cache-handler.js'),
+  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+}
+
+export default nextConfig
+```
+
+With a shared handler, `revalidateTag('products')` in a Server Action invalidates the entry for every instance at once. Also decide per route between the Node runtime (full Node APIs) and the Edge runtime (fast, limited APIs) based on what each route actually needs.
+
+## Go-live checklist
+
+This is the last stop, so pull the whole course together before you ship:
+
+- Keep data fetching in Server Components; only mark a leaf `'use client'` when it truly needs interactivity.
+- Choose the rendering mode per route deliberately — static, dynamic, or ISR — and confirm each behaves as expected in a production build.
+- Understand your caching layers (request memoization, Data Cache, full-route cache) and wire a shared cache handler before scaling past one instance.
+- Mutate through Server Actions and call `revalidateTag` / `revalidatePath` so caches stay correct after writes.
+- Gate protected routes with an optimistic middleware redirect AND a Data Access Layer check.
+- Keep secrets unprefixed in `.env.local`; expose only `NEXT_PUBLIC_` values.
+
+<Mermaid title="Multi-instance self-hosting shares one cache" code={diagramDeployEn} />
+
+export const diagramDeployEn = `
+graph TD
+  A["CDN"] --> B["Instance 1 (next start)"]
+  A --> C["Instance 2 (next start)"]
+  B --> D["Shared cache handler (Redis)"]
+  C --> D
+  D --> E["revalidateTag invalidates all instances"]
+`;
+
+<Callout title="The one-line takeaway">
+Vercel is zero-config; self-hosting works too, but the moment you run more than one instance you need a shared cache handler or ISR and `revalidateTag` go stale.
+</Callout>
+
+export const quizDeployEn = [
+  {
+    q: 'What does output: standalone produce?',
+    options: [
+      'A static HTML export',
+      'A traced minimal server bundle without node_modules',
+      'An Edge-only deployment',
+      'A serverless function per route',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you start a standalone build?',
+    options: [
+      'next start',
+      'node server.js',
+      'npm run dev',
+      'next export',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does multi-instance self-hosting need a shared cache handler?',
+    options: [
+      'To reduce the Docker image size',
+      'So revalidateTag and ISR stay consistent across instances',
+      'To enable the Edge runtime',
+      'To read NEXT_PUBLIC_ vars at runtime',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the main advantage of deploying to Vercel?',
+    options: [
+      'It requires a custom Dockerfile',
+      'Zero-config builds, CDN, and runtimes',
+      'It disables caching by default',
+      'It only supports the Edge runtime',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/deployment-and-self-hosting" questions={quizDeployEn} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/deployment-and-self-hosting" />

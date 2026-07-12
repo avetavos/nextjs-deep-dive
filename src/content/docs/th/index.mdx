@@ -1,0 +1,60 @@
+---
+title: Next.js — From Zero to Hero
+description: เชี่ยวชาญ Next.js ตั้งแต่พื้นฐาน — App Router กับ React Server Components, routing กับ layout, caching 4 ชั้นกับพฤติกรรม default ปัจจุบัน, static/dynamic/streaming rendering กับ Partial Prerendering, Server Actions กับ mutation, การ optimize image/font/metadata และการรัน Next.js บน production
+template: splash
+hero:
+  tagline: คอร์สแบบ standalone เน้น developer ว่าด้วย Next.js เฟรมเวิร์ก React ตั้งแต่ App Router กับ Server Components ไปจนถึง caching 4 ชั้น, streaming rendering และ Server Actions สอนผ่านโค้ดจริงและไดอะแกรม รายละเอียดที่ขึ้นกับเวอร์ชัน (fetch ไม่ถูก cache โดย default แล้ว, โมเดล use cache / cacheComponents, Partial Prerendering) ถูก verify กับ docs ปัจจุบันแล้ว
+  actions:
+    - text: เริ่มที่นี่
+      link: /nextjs/th/foundations/
+      icon: right-arrow
+      variant: primary
+    - text: ข้ามไปที่ caching 4 ชั้น
+      link: /nextjs/th/data-fetching-and-caching/the-four-caching-layers/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## สิ่งที่คุณจะได้เรียน
+
+<CardGrid>
+  <Card title="Foundations" icon="rocket">
+    Next.js คืออะไร, App Router, Server เทียบกับ Client Components และ file convention [เริ่ม →](/nextjs/th/foundations/)
+  </Card>
+  <Card title="Routing & Navigation" icon="seti:html">
+    layout กับ nested route, dynamic segment, route group, parallel & intercepting route, loading/error UI [route →](/nextjs/th/routing-and-navigation/pages-layouts-and-nested-routing/)
+  </Card>
+  <Card title="Data Fetching & Caching" icon="random">
+    การ fetch ใน Server Components และ caching 4 ชั้น — Request Memoization, Data Cache, Full Route Cache, Router Cache — พร้อม revalidation [cache →](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/)
+  </Card>
+  <Card title="Rendering" icon="seti:config">
+    static เทียบกับ dynamic rendering, streaming ด้วย Suspense และ Partial Prerendering ผ่าน cacheComponents [render →](/nextjs/th/rendering/static-and-dynamic-rendering/)
+  </Card>
+  <Card title="Server Actions & Mutations" icon="approve-check">
+    Server Actions สำหรับ form กับ mutation, revalidatePath/revalidateTag และ client/server boundary [mutate →](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)
+  </Card>
+  <Card title="Optimization" icon="seti:plan">
+    Image, Font กับ Script component, Metadata API, bundle analysis และ Turbopack [optimize →](/nextjs/th/optimization/images-and-fonts/)
+  </Card>
+  <Card title="Production & Ecosystem" icon="puzzle">
+    middleware, pattern การทำ auth, การตั้งค่า environment และการ deploy นอกเหนือจาก Vercel [ขึ้น production →](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)
+  </Card>
+</CardGrid>
+
+## คอร์สนี้ทำงานยังไง
+
+<CardGrid>
+  <Card title="server-first และรู้ขอบเขต" icon="rocket">
+    component ใน App Router เป็น Server Components โดย default ส่วน `"use client"` คือเส้นแบ่ง boundary ที่ลามไปถึงทุกอย่างที่ถูก import ต่อจากมัน คอร์สนี้สอนว่าเส้นนั้นอยู่ตรงไหนและทำไมมันถึงสำคัญ ไม่ใช่แค่ syntax
+  </Card>
+  <Card title="พฤติกรรมปัจจุบัน ที่ verify แล้ว" icon="random">
+    เขียนตามพฤติกรรมปัจจุบันของ Next.js และตรวจสอบกับ official docs ผ่าน context7 — รวมถึงการเปลี่ยนแปลงใหญ่ที่ tutorial ส่วนใหญ่พลาด คือ `fetch` และ GET Route Handlers ไม่ถูก cache โดย default อีกต่อไป และการ cache ตอนนี้ต้อง opt-in ผ่าน `use cache` / `cacheComponents`
+  </Card>
+  <Card title="cache 4 ชั้น ไม่ใช่ชั้นเดียว" icon="approve-check">
+    Request Memoization, Data Cache, Full Route Cache และ Router Cache ฝั่ง client แต่ละอันอยู่คนละชั้น มี lifetime และวิธี invalidate ต่างกัน — เป็นส่วนที่คนเข้าใจผิดมากที่สุดใน Next.js สอนทีละชั้น
+  </Card>
+  <Card title="ไดอะแกรมที่อธิบายได้" icon="puzzle">
+    RSC request lifecycle, caching 4 ชั้น, flow ของ streaming/Suspense และ round-trip ของ Server Action เป็นไดอะแกรม Mermaid ที่รองรับธีม สองภาษา (English / ไทย) พร้อมบันทึกความคืบหน้า quiz
+  </Card>
+</CardGrid>

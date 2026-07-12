@@ -1,0 +1,136 @@
+---
+title: Mutations และ Revalidation
+description: flow ของ mutation แบบเต็ม — validate, เขียนลง DB, revalidateTag หรือ revalidatePath และ redirect แล้ว client cache ถูก refresh อย่างไร
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+mutation คือ flow สี่ขั้น validate input, เขียนลง database, เรียก `revalidateTag` หรือ `revalidatePath` เพื่อ refresh ข้อมูลที่ cache ไว้ซึ่งได้รับผลกระทบ และ redirect ถ้าจำเป็น เพื่อให้ UI สะท้อนการเปลี่ยนแปลงโดยไม่ต้อง reload เอง
+
+## The full mutation flow
+
+ภายใน action เรา validate ก่อน แล้วค่อย mutate แล้วค่อย revalidate ข้อมูลที่เพิ่งเปลี่ยน หลัง revalidate แล้วจึง redirect เพราะ `redirect` throw ภายในและหยุดโค้ดที่เหลือของ function ไม่ให้รันต่อ
+
+```ts
+// app/actions.ts — validate, write, revalidate, redirect
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+import { z } from 'zod'
+
+const schema = z.object({ title: z.string().min(1) })
+
+export async function createPost(formData: FormData) {
+  const parsed = schema.safeParse({ title: formData.get('title') })
+  if (!parsed.success) {
+    return { error: 'Invalid title' }
+  }
+
+  await db.post.create({ data: { title: parsed.data.title } })
+
+  revalidatePath('/posts')
+  redirect('/posts')
+}
+```
+
+## revalidateTag vs revalidatePath
+
+`revalidatePath('/posts')` invalidate ทุกอย่างที่ cache ไว้สำหรับ route นั้น ส่วน `revalidateTag('posts')` invalidate เฉพาะ fetch ที่เรา tag ด้วย `'posts'` จึงตรงจุดกว่าเมื่อข้อมูลเดียวกันโผล่ในหลาย route ให้ tag ตอน read แล้ว invalidate ด้วย tag หลัง write
+
+```ts
+// app/posts/data.ts — tag the read so you can revalidate by tag later
+export async function getPosts() {
+  const res = await fetch('https://api.example.com/posts', {
+    next: { tags: ['posts'] },
+  })
+  return res.json()
+}
+```
+
+```ts
+// app/actions.ts — invalidate only the tagged data
+'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function publishPost(id: string) {
+  await db.post.update({ where: { id }, data: { published: true } })
+  revalidateTag('posts')
+}
+```
+
+## How the client caches get refreshed
+
+ส่วนนี้โยงกลับไปที่ caching module ฝั่ง server การ revalidate จะล้าง entry ใน Data Cache ของ fetch ที่ได้รับผลกระทบ ฝั่ง client response ของ Server Action ยัง refresh Router Cache ของ route ปัจจุบันด้วย segment ที่ render ไปแล้วจึงถูกแทนด้วย output ใหม่จาก server ผู้ใช้เห็นข้อมูลใหม่โดยไม่ต้อง hard reload cache ทั้งสองตัวจึงคงความ consistent
+
+<Mermaid title="The mutation and revalidation flow" code={diagramSa3Th} />
+
+export const diagramSa3Th = `
+graph TD
+  A["Action validates input"] --> B["Writes to the database"]
+  B --> C["revalidateTag or revalidatePath"]
+  C --> D["Data Cache entry cleared"]
+  C --> E["Router Cache refreshed"]
+  D --> F["UI shows fresh data"]
+  E --> F
+  B --> G["Optional redirect after revalidate"]
+`;
+
+<Callout title="The one-line takeaway">
+validate, write แล้ว `revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Router Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
+</Callout>
+
+export const quizSa3Th = [
+  {
+    q: 'What is the correct order of the mutation flow?',
+    options: [
+      'Redirect, validate, write, revalidate',
+      'Validate, write, revalidate, then optionally redirect',
+      'Write, redirect, validate, revalidate',
+      'Revalidate, write, validate, redirect',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why must redirect come after revalidation in an action?',
+    options: [
+      'redirect is slower than revalidation',
+      'redirect throws internally and stops later code from running',
+      'revalidation requires a redirect to take effect',
+      'The order does not matter at all',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When is revalidateTag more useful than revalidatePath?',
+    options: [
+      'When the same data appears on several routes',
+      'When you never tagged any fetches',
+      'When you want to clear the entire app cache',
+      'When the action does not touch cached data',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'Which client-side cache does the action response refresh?',
+    options: [
+      'The browser image cache',
+      'The Router Cache for the current route',
+      'Only localStorage',
+      'The service worker cache',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="server-actions-and-mutations/mutations-and-revalidation" questions={quizSa3Th} />
+
+<ProgressTracker client:visible id="server-actions-and-mutations/mutations-and-revalidation" />

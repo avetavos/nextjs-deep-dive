@@ -1,0 +1,115 @@
+---
+title: 'Next.js คืออะไร และ App Router'
+description: 'Next.js ในฐานะ React framework เต็มรูปแบบ, App Router ในฐานะโมเดลปัจจุบันที่สร้างบน RSC, ต่างจาก Pages Router แบบเก่ายังไง และ create-next-app สร้างอะไรให้'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+Next.js คือ React framework ที่จัดการ routing, rendering, การ fetch data, bundling และ optimization ให้คุณ — และโมเดลปัจจุบันของมันคือ App Router รัน component บน server โดย default
+
+## Next.js เป็น React framework ไม่ใช่แค่ router
+
+React เปล่า ๆ ให้แค่โมเดล component เท่านั้น ไม่มี routing ไม่มี server ไม่มี build pipeline Next.js เข้ามาเติมช่องว่างตรงนี้ มันคือชั้นที่ตัดสินว่า URL หนึ่งจะ map ไปที่โค้ดไหน โค้ดนั้นรันที่ไหน และผลลัพธ์เดินทางไปถึง browser ยังไง
+
+พูดให้ชัด framework นี้ให้สิ่งเหล่านี้ —
+
+- **Routing** — โฟลเดอร์ใต้ `app/` กลายเป็น URL segment ไม่ต้องมีไฟล์ config route ให้ดูแล
+- **Rendering** — render บน server ได้ทั้ง static และ dynamic, stream HTML และ hydrate เฉพาะส่วนที่ต้องการ interactivity
+- **การ fetch data** — คุณ `await` data ตรง ๆ ในตัว component บน server ได้เลย ไม่ต้องวิ่งไป-กลับที่ client
+- **Bundling** — compile และ split โค้ดด้วย Turbopack แต่ละ route จึงส่งเฉพาะสิ่งที่ตัวเองต้องใช้
+- **Optimization** — image, font, script และ metadata มี component กับ API ที่ built-in มาให้หมด
+
+route ก็คือไฟล์ที่ default-export React component ออกมาเท่านั้น —
+
+```tsx
+// app/page.tsx — this is the "/" route
+export default function HomePage() {
+  return <h1>Hello from a Server Component</h1>;
+}
+```
+
+## App Router เทียบกับ Pages Router
+
+Next.js มีระบบ routing สองแบบ **App Router** (โฟลเดอร์ `app/`) คือโมเดลปัจจุบันที่แนะนำ สร้างบน React Server Components ส่วน **Pages Router** (โฟลเดอร์ `pages/`) คือโมเดลเก่า ยังใช้งานได้และ support เต็มที่ แต่ feature ใหม่ ๆ ไม่ได้มาลงที่นี่
+
+ความต่างเป็นเชิงโครงสร้าง ไม่ใช่แค่ผิวเผิน —
+
+```txt
+app/                    pages/
+  layout.tsx              _app.tsx
+  page.tsx                index.tsx
+  blog/                   blog/
+    page.tsx                index.tsx
+```
+
+ใน App Router component เป็น **Server Components โดย default** และการ fetch data เกิดขึ้นในบรรทัดเดียวกับ `async`/`await` ส่วนใน Pages Router ทุก component เป็น Client Component และ data มาจากฟังก์ชันพิเศษอย่าง `getServerSideProps` คอร์สนี้เป็นแบบ **App-Router-first** — Pages Router จะโผล่มาเฉพาะตรงที่การ migrate app เดิมสำคัญ
+
+## create-next-app ให้อะไรคุณบ้าง
+
+คุณ scaffold โปรเจกต์ใหม่ด้วยคำสั่งเดียว —
+
+```bash
+npx create-next-app@latest my-app
+```
+
+recommended defaults จะเซ็ตให้คุณด้วย TypeScript, ESLint, Tailwind CSS, App Router และไฟล์ `AGENTS.md` ต้นไม้ที่ถูกสร้างขึ้นจะมี `app/` เป็นศูนย์กลาง —
+
+```txt
+my-app/
+  app/
+    layout.tsx   # root layout (required)
+    page.tsx     # the "/" route
+  next.config.ts
+  package.json
+  tsconfig.json
+```
+
+จากจุดนี้ `npm run dev` จะสตาร์ท development server แล้วคุณก็กำลังมอง App Router app ที่รันจริงอยู่
+
+<Mermaid title="How a request flows through the App Router" code={diagramFramework} />
+
+export const diagramFramework = `flowchart LR
+  Req[Browser request] --> Router[App Router]
+  Router --> RSC[Server Components render on server]
+  RSC --> HTML[Streamed HTML]
+  Router --> Bundle[Minimal client bundle]
+  HTML --> Page[Interactive page]
+  Bundle --> Page`;
+
+<Callout title="The one-line takeaway">
+Next.js คือ framework ที่ครอบ React ไว้ จัดการ routing, rendering, data และ bundling — และ App Router คือโมเดลปัจจุบันของมันที่สร้างบน Server Component ส่วน Pages Router เก็บไว้เพื่อการ migrate เท่านั้น
+</Callout>
+
+export const quizWhatIsNext = [
+  {
+    q: 'App Router ใช้ component ชนิดไหนเป็น default',
+    options: ['Client Components', 'Server Components', 'ไฟล์ HTML แบบ static', 'Web Components'],
+    answer: 1,
+  },
+  {
+    q: 'โฟลเดอร์ไหนบอกว่าโปรเจกต์ใช้ App Router',
+    options: ['pages/', 'app/', 'routes/', 'src/config/'],
+    answer: 1,
+  },
+  {
+    q: 'ข้อไหนที่ Next.js ไม่ได้ให้มาในตัว',
+    options: ['routing จากโครงสร้างโฟลเดอร์', 'เครื่องมือทำ design mockup', 'การ render บน server และ streaming', 'การ bundle และ split โค้ด'],
+    answer: 1,
+  },
+  {
+    q: 'คอร์สนี้ปฏิบัติกับ Pages Router ยังไง',
+    options: ['เป็นโมเดลหลักที่ต้องเรียน', 'ถูกถอดออกจาก Next.js ไปแล้ว', 'เกี่ยวข้องหลัก ๆ ตอน migrate app เดิม', 'ต้องเรียนก่อน App Router'],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="foundations/what-is-nextjs-and-the-app-router" questions={quizWhatIsNext} />
+
+<ProgressTracker client:visible id="foundations/what-is-nextjs-and-the-app-router" />

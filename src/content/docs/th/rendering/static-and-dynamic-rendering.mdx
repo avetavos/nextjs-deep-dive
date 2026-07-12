@@ -1,0 +1,125 @@
+---
+title: 'Static และ Dynamic Rendering'
+description: 'Next.js render route แบบ static โดย default อะไรทำให้ route กลายเป็น dynamic (Dynamic API, uncached fetch, force-dynamic) generateStaticParams prerender dynamic segment ยังไง และอ่าน build output ยังไง'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Next.js prerender ทุก route เป็น static HTML ตอน build โดย default เว้นแต่ route นั้นต้องใช้ data ตอน request — พอถึงจุดนั้นมันจะกลายเป็น dynamic และ render ใหม่ทุก request
+
+## Static คือ default
+
+route ที่ไม่มี input ตอน request จะถูก render ครั้งเดียวตอน build แล้วเสิร์ฟเป็น static HTML ไม่มีอะไรรันต่อ request เลย ทุกคนได้ bytes ชุดเดียวกัน
+
+```tsx
+// app/about/page.tsx — no dynamic APIs, so this is prerendered at build time
+export default function AboutPage() {
+  return <h1>About us</h1>;
+}
+```
+
+นี่คือเส้นทางที่เร็วที่สุด HTML วางอยู่บน CDN แล้วตอบกลับทันที หน้า marketing, docs และ content ส่วนใหญ่ควรอยู่ตรงนี้
+
+## อะไรทำให้ route กลายเป็น dynamic
+
+route จะสลับไปเป็น **dynamic rendering** ทันทีที่มันพึ่งพาบางอย่างที่รู้ได้เฉพาะตอน request อย่างใดอย่างหนึ่งต่อไปนี้ทำให้มัน flip —
+
+- **Dynamic API** — `cookies()`, `headers()`, `draftMode()` หรือการอ่าน `searchParams` / `params` Promise ตอน request
+- **uncached data request** — `fetch()` ที่ใส่ `cache: 'no-store'` (หรือ fetch ใด ๆ ภายใต้ default ของ Next.js 15+ ที่คุณยังไม่ opt-in cache)
+- การ **`export const dynamic = 'force-dynamic'`** แบบตรง ๆ
+
+```tsx
+// app/dashboard/page.tsx — reading cookies() flips this route to dynamic
+import { cookies } from 'next/headers';
+
+export default async function Dashboard() {
+  const store = await cookies();
+  const theme = store.get('theme')?.value ?? 'light';
+  return <p>Active theme: {theme}</p>;
+}
+```
+
+คุณบังคับ mode เองได้ด้วย segment config export —
+
+```tsx
+// Force a route to render on every request, even with no dynamic API
+export const dynamic = 'force-dynamic';
+```
+
+## generateStaticParams prerender dynamic segment
+
+dynamic segment อย่าง `[slug]` ไม่มีค่าตายตัวตอน build `generateStaticParams` บอก Next.js ว่าค่าไหนบ้างที่ต้อง prerender เปลี่ยน dynamic route ให้เป็นชุดของ static page — เป็นตัวแทนของ `getStaticPaths` เดิมใน App Router
+
+```tsx
+// app/blog/[slug]/page.tsx
+export async function generateStaticParams() {
+  const posts = await fetch('https://api.example.com/posts').then((r) => r.json());
+  return posts.map((post) => ({ slug: post.slug }));
+}
+
+export default async function Post({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  return <article>Reading post: {slug}</article>;
+}
+```
+
+`slug` แต่ละตัวที่ return ออกมาจะถูก build เป็น static HTML ไฟล์ของตัวเองตอน build
+
+## อ่าน build output
+
+`next build` พิมพ์ legend ที่บอก mode ของทุก route จำสัญลักษณ์สามตัวได้แล้วคุณไม่ต้องเดาอีก —
+
+```txt
+Route (app)              Rendering
+○  /about                Static    prerendered as static HTML
+ƒ  /dashboard            Dynamic   server-rendered on each request
+●  /blog/[slug]          SSG       prerendered via generateStaticParams
+```
+
+ถ้า route ที่คุณคิดว่าเป็น static ขึ้น `ƒ` แปลว่ามีบางอย่างข้างในไปแตะ data ตอน request ให้ไล่กลับไปหา Dynamic API หรือ uncached fetch ที่เป็นต้นเหตุ
+
+<Mermaid title="How Next.js decides static vs dynamic" code={diagramStaticTh} />
+
+export const diagramStaticTh = `flowchart TD
+  A[Incoming request] --> B{Dynamic API or uncached fetch?}
+  B -- No --> C[Static render, prerendered at build]
+  B -- Yes --> D[Dynamic render, on each request]
+  E[generateStaticParams] --> C`;
+
+<Callout title="The one-line takeaway">
+route เป็น static โดย default และจะกลายเป็น dynamic ก็ต่อเมื่อมันแตะ data ตอน request — Dynamic API, uncached fetch หรือ force-dynamic — ส่วน generateStaticParams ช่วยให้ dynamic segment ยัง prerender ได้
+</Callout>
+
+export const quizStaticTh = [
+  {
+    q: 'Next.js render route แบบไหนโดย default?',
+    options: ['Dynamic ทุก request', 'Static, prerender ตอน build', 'บน client เท่านั้น', 'ไม่ render จนกว่าจะ deploy'],
+    answer: 1,
+  },
+  {
+    q: 'ข้อไหนทำให้ route flip ไปเป็น dynamic rendering?',
+    options: ['import ไฟล์ CSS', 'เรียก cookies() ใน component', 'export default component', 'เพิ่ม tag <title>'],
+    answer: 1,
+  },
+  {
+    q: 'generateStaticParams ทำอะไร?',
+    options: ['บังคับให้ route เป็น dynamic', 'ปิด cache ของ route', 'prerender ค่าเฉพาะของ dynamic segment ตอน build', 'รันเฉพาะบน browser'],
+    answer: 2,
+  },
+  {
+    q: 'ใน build output สัญลักษณ์ ƒ หมายถึงอะไร?',
+    options: ['route แบบ static ที่ prerender แล้ว', 'route แบบ dynamic ที่ render ตอน request', 'route ที่รันบน client เท่านั้น', 'route ที่พัง'],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="rendering/static-and-dynamic-rendering" questions={quizStaticTh} />
+
+<ProgressTracker client:visible id="rendering/static-and-dynamic-rendering" />

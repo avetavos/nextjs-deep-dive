@@ -1,0 +1,163 @@
+---
+title: 'Fetching in Server Components'
+description: 'Fetch directly inside async Server Components — no useEffect, no API round-trip — and avoid waterfalls with parallel fetching and Request Memoization.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A Server Component is an `async` function, so it can `await` a `fetch` or a database call **directly** in the component body — there is no `useEffect`, no loading state, and no client-to-API round trip.
+
+## Fetch directly in an async component
+
+In the App Router, the component runs on the server. You fetch where you render, and the data never touches the client bundle until the HTML is sent.
+
+```tsx
+// app/products/page.tsx
+export default async function ProductsPage() {
+  // Runs on the server — the API key and response stay server-side
+  const res = await fetch('https://api.example.com/products')
+  const products = await res.json()
+  return <ProductList products={products} />
+}
+```
+
+Because the code runs on the server, you can also talk to your database or ORM directly — no API route in between.
+
+```tsx
+// app/users/page.tsx
+import { db } from '@/lib/db'
+
+export default async function UsersPage() {
+  // Query the database straight from the Server Component
+  const users = await db.user.findMany()
+  return <UserList users={users} />
+}
+```
+
+## Sequential vs. parallel: avoid waterfalls
+
+If you `await` one request and then `await` the next, the second cannot start until the first resolves — a **waterfall**. When requests do not depend on each other, start them together with `Promise.all`.
+
+```tsx
+// app/dashboard/page.tsx
+async function getUser(id: string) {
+  const res = await fetch(`https://api.example.com/users/${id}`)
+  return res.json()
+}
+
+async function getPosts(id: string) {
+  const res = await fetch(`https://api.example.com/users/${id}/posts`)
+  return res.json()
+}
+
+export default async function Dashboard() {
+  // Parallel: both requests fire at once, no waterfall
+  const [user, posts] = await Promise.all([getUser('1'), getPosts('1')])
+  return <Profile user={user} posts={posts} />
+}
+```
+
+## Dedupe with Request Memoization and React.cache()
+
+Within a single render pass, Next.js memoizes identical `fetch` calls automatically — call the same URL in three components and the network sees one request. For non-`fetch` work like a database query, wrap it in React's `cache()` to get the same per-request deduplication.
+
+```tsx
+// lib/user.ts
+import { cache } from 'react'
+import { db } from '@/lib/db'
+
+// Called by many components in one render — the query runs once per request
+export const getUser = cache(async (id: string) => {
+  return db.user.findUnique({ where: { id } })
+})
+```
+
+## Where NOT to fetch
+
+A Client Component cannot `await` in its body and must not touch the database directly. It reaches data through a **Route Handler** (or a data library), which runs on the server on its behalf.
+
+```tsx
+// app/search/search-box.tsx
+'use client'
+import { useState } from 'react'
+
+export function SearchBox() {
+  const [results, setResults] = useState([])
+  async function onSearch(q: string) {
+    // Client components fetch through a Route Handler, never the DB
+    const res = await fetch(`/api/search?q=${q}`)
+    setResults(await res.json())
+  }
+  return <input onInput={(e) => onSearch(e.currentTarget.value)} />
+}
+```
+
+<Mermaid title="Sequential waterfall vs. parallel fetching" code={sfcDiagramEn} />
+
+export const sfcDiagramEn = `
+flowchart LR
+  A["Request"] --> B["await getUser()"]
+  B --> C["await getPosts()"]
+  C --> D["Render (late)"]
+  A --> E["Promise.all"]
+  E --> F["getUser() + getPosts() together"]
+  F --> G["Render (sooner)"]
+`;
+
+<Callout title="The one-line takeaway">
+Fetch **where you render**: an async Server Component can `await` data directly, and `Promise.all` plus Request Memoization keeps that fast and free of waterfalls.
+</Callout>
+
+export const sfcQuizEn = [
+  {
+    q: 'How does an async Server Component get its data?',
+    options: [
+      'With useEffect after the component mounts',
+      'By awaiting a fetch or database call directly in the component body',
+      'By calling its own API route over the network',
+      'Only through a client-side data library',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why wrap two independent fetches in Promise.all?',
+    options: [
+      'To retry them if they fail',
+      'To cache their results permanently',
+      'To run them in parallel and avoid a request waterfall',
+      'To force them to run one after another',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'What does React\'s cache() give a database query?',
+    options: [
+      'A persistent cache that survives across requests',
+      'Per-request deduplication so it runs once in a single render',
+      'Automatic revalidation every 60 seconds',
+      'Client-side caching in the browser',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'A Client Component needs server data. What should it do?',
+    options: [
+      'Query the database directly',
+      'Await the data in its render body',
+      'Call a Route Handler (or data library) that runs on the server',
+      'Import the ORM into the client bundle',
+    ],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="data-fetching-and-caching/fetching-in-server-components" questions={sfcQuizEn} />
+
+<ProgressTracker client:visible id="data-fetching-and-caching/fetching-in-server-components" />

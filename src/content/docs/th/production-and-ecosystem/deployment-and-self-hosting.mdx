@@ -1,0 +1,142 @@
+---
+title: Deployment และ Self-Hosting
+description: deploy บน Vercel เทียบกับ self-host, output standalone สำหรับ Docker image เล็ก ๆ, ISR กับ revalidateTag ทำงานยังไงข้ามหลาย instance และ go-live checklist
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+เรา deploy บน Vercel แบบ zero-config ได้ หรือจะ self-host เป็น Node server หลัง CDN ก็ได้ แต่พอรันมากกว่าหนึ่ง instance เมื่อไร caching และ ISR ต้องมี shared cache handler เพื่อให้ทุก instance ตรงกัน
+
+## Vercel versus self-hosting
+
+Vercel ตรวจเจอ Next.js app แล้วจัดการ build, CDN, image optimization และ runtime แบบ Edge/Node ให้โดยไม่ต้อง config self-hosting ให้เราคุมเองทั้งหมด เรา build แล้วรัน `next start` (Node server ที่อยู่ยาว) เอง โดยปกติวางไว้หลัง CDN ที่ cache static asset
+
+```bash
+# Self-hosting: build once, then run a long-lived Node server
+next build
+next start -p 3000
+```
+
+## A minimal Docker image with output standalone
+
+ตั้ง `output: 'standalone'` แล้ว Next.js จะ trace ว่า server ต้องใช้ไฟล์ไหนบ้างแล้ว copy เข้า `.next/standalone` เราได้ image เล็ก ๆ ที่ ship ได้โดยไม่ต้องมี `node_modules`
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  output: 'standalone',
+}
+
+export default nextConfig
+```
+
+```dockerfile
+# Minimal runtime image — copy only the traced standalone output
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+# standalone ships its own server.js — do NOT use "next start" here
+CMD ["node", "server.js"]
+```
+
+## Caching and ISR across instances
+
+ISR, full-route cache และ `revalidateTag` เขียนลง cache ทั้งหมด บน instance เดียว filesystem cache แบบ default ก็พอ แต่พอรันหลาย instance แต่ละตัวมี local cache ของตัวเอง เพราะฉะนั้น `revalidateTag` บน pod หนึ่งจะทิ้งตัวอื่นให้ค้างอยู่ ทางแก้คือ shared cache handler (หนุนหลังด้วย Redis หรือคล้าย ๆ กัน) ที่ทุก instance อ่านและเขียนร่วมกัน
+
+```ts
+// next.config.ts — shared cache for multi-instance self-hosting
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheHandler: require.resolve('./cache-handler.js'),
+  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+}
+
+export default nextConfig
+```
+
+พอมี shared handler การเรียก `revalidateTag('products')` ใน Server Action จะ invalidate entry ให้ทุก instance พร้อมกัน และเลือกต่อ route ด้วยว่าจะใช้ Node runtime (Node API ครบ) หรือ Edge runtime (เร็วแต่ API จำกัด) ตามที่แต่ละ route ต้องใช้จริง
+
+## Go-live checklist
+
+นี่คือจุดสุดท้าย เพราะฉะนั้นรวบทั้งคอร์สเข้าด้วยกันก่อน ship
+
+- เก็บ data fetching ไว้ใน Server Components mark leaf เป็น `'use client'` เฉพาะตอนที่ต้อง interactive จริง ๆ
+- เลือก rendering mode ต่อ route อย่างตั้งใจ ทั้ง static, dynamic หรือ ISR แล้ว confirm ว่าแต่ละตัวทำงานตามที่คาดใน production build
+- เข้าใจ caching layer ของตัวเอง (request memoization, Data Cache, full-route cache) แล้ววาง shared cache handler ก่อน scale เกินหนึ่ง instance
+- mutate ผ่าน Server Actions แล้วเรียก `revalidateTag` / `revalidatePath` เพื่อให้ cache ถูกต้องหลัง write
+- gate route ที่ป้องกันไว้ด้วย optimistic middleware redirect และ Data Access Layer check ควบคู่กัน
+- เก็บ secret แบบไม่มี prefix ไว้ใน `.env.local` เปิดเผยเฉพาะค่า `NEXT_PUBLIC_`
+
+<Mermaid title="Multi-instance self-hosting shares one cache" code={diagramDeployTh} />
+
+export const diagramDeployTh = `
+graph TD
+  A["CDN"] --> B["Instance 1 (next start)"]
+  A --> C["Instance 2 (next start)"]
+  B --> D["Shared cache handler (Redis)"]
+  C --> D
+  D --> E["revalidateTag invalidates all instances"]
+`;
+
+<Callout title="The one-line takeaway">
+Vercel คือ zero-config self-hosting ก็ทำได้ แต่นาทีที่รันมากกว่าหนึ่ง instance เราต้องมี shared cache handler ไม่งั้น ISR กับ `revalidateTag` จะค้าง
+</Callout>
+
+export const quizDeployTh = [
+  {
+    q: 'What does output: standalone produce?',
+    options: [
+      'A static HTML export',
+      'A traced minimal server bundle without node_modules',
+      'An Edge-only deployment',
+      'A serverless function per route',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you start a standalone build?',
+    options: [
+      'next start',
+      'node server.js',
+      'npm run dev',
+      'next export',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does multi-instance self-hosting need a shared cache handler?',
+    options: [
+      'To reduce the Docker image size',
+      'So revalidateTag and ISR stay consistent across instances',
+      'To enable the Edge runtime',
+      'To read NEXT_PUBLIC_ vars at runtime',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the main advantage of deploying to Vercel?',
+    options: [
+      'It requires a custom Dockerfile',
+      'Zero-config builds, CDN, and runtimes',
+      'It disables caching by default',
+      'It only supports the Edge runtime',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/deployment-and-self-hosting" questions={quizDeployTh} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/deployment-and-self-hosting" />

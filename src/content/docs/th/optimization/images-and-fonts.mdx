@@ -1,0 +1,160 @@
+---
+title: 'Image และ Font'
+description: 'next/image resize, แปลง format และ lazy-load image โดยไม่มี layout shift และ next/font self-host font ตอน build โดยไม่ยิง request ไป Google'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+`next/image` resize, แปลงเป็น format ใหม่ และ lazy-load image ให้พร้อมจองพื้นที่ไว้ล่วงหน้า ส่วน `next/font` self-host font ตอน build — หน้าเว็บจึงโหลดเร็วและไม่ขยับ
+
+## next/image resize, แปลง format และ lazy-load
+
+`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request มันสร้าง version ที่ resize ตามอุปกรณ์ ส่ง format ใหม่อย่าง WebP หรือ AVIF เมื่อ browser รองรับ และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
+
+เมื่อคุณ import ไฟล์ในเครื่อง Next.js อ่านขนาดจริงตอน build ดังนั้น `width` กับ `height` จึงถูกเติมให้เอง
+
+```tsx
+// app/page.tsx
+import Image from 'next/image'
+import hero from './hero.png'
+
+export default function Page() {
+  return <Image src={hero} alt="Product hero shot" />
+}
+```
+
+## width, height และ priority
+
+image ที่ Next.js เดาขนาดไม่ได้ — เช่น remote URL — คุณ **ต้อง** ส่ง `width` กับ `height` มันจองกล่องขนาดเป๊ะไว้ก่อน pixel จะมาถึง ซึ่งคือสิ่งที่กัน Cumulative Layout Shift ใส่ `priority` ให้ image ตัวที่เป็น Largest Contentful Paint เพื่อให้ Next.js preload มันและข้าม lazy-load
+
+```tsx
+// Remote image: width + height are required to reserve space
+import Image from 'next/image'
+
+export default function Avatar() {
+  return (
+    <Image
+      src="https://cdn.example.com/avatar.png"
+      alt="User avatar"
+      width={64}
+      height={64}
+      priority // preload the LCP image, skip lazy-loading
+    />
+  )
+}
+```
+
+เมื่อไม่รู้ขนาดจริง ๆ ใช้ `fill` ภายใน parent ที่ตั้ง position ไว้ แล้วปล่อยให้ CSS จัดการขนาดกล่องแทน
+
+```tsx
+// Unknown dimensions: use fill inside a positioned parent
+<div style={{ position: 'relative', width: 400, height: 300 }}>
+  <Image src={src} alt="" fill sizes="400px" style={{ objectFit: 'cover' }} />
+</div>
+```
+
+## remote image ต้องมี remotePatterns
+
+การ optimize external URL ตามใจชอบเท่ากับเปิด open proxy Next.js จึงปฏิเสธจนกว่าคุณจะ allowlist host นั้น ประกาศ `images.remotePatterns` ใน `next.config` และระบุให้เจาะจงที่สุดเท่าที่ทำได้
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'cdn.example.com', pathname: '/**' },
+    ],
+  },
+}
+
+export default nextConfig
+```
+
+## next/font self-host ตอน build
+
+`next/font` ดาวน์โหลดไฟล์ font ตอน build แล้วเสิร์ฟจาก origin ของคุณเอง ไม่มี request ตอน runtime ไป Google และเพราะรู้ metric ของ font ล่วงหน้า มันจึงจองพื้นที่ได้ถูกต้องและได้ layout shift เป็นศูนย์
+
+```tsx
+// app/layout.tsx — self-hosted, zero layout shift, no request to Google
+import { Inter } from 'next/font/google'
+import localFont from 'next/font/local'
+
+const inter = Inter({ subsets: ['latin'], display: 'swap' })
+const brand = localFont({ src: './brand.woff2' })
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className={inter.className}>
+      <body className={brand.className}>{children}</body>
+    </html>
+  )
+}
+```
+
+<Mermaid title="From source asset to a stable, fast page" code={diagramImgTh} />
+
+export const diagramImgTh = `flowchart LR
+  Src[Source asset] --> Build[Build step]
+  Build --> Opt["Resized, WebP/AVIF, self-hosted font"]
+  Opt --> Reserve["width + height reserve space"]
+  Reserve --> Page["No layout shift, fast LCP"]`;
+
+<Callout title="The one-line takeaway">
+`next/image` ต้องมี `width`/`height` (หรือ `fill`) เพื่อจองพื้นที่และใส่ `priority` ให้ image ที่เป็น LCP ส่วน `next/font` self-host font ตอน build ทุกอย่างจึงไม่ขยับและไม่มีอะไรยิงไป Google
+</Callout>
+
+export const quizImgTh = [
+  {
+    q: 'ทำไมต้องส่ง width และ height ให้ remote next/image',
+    options: [
+      'เพื่อเลือก format ของ image',
+      'เพื่อจองพื้นที่และกัน layout shift',
+      'เพื่อเปิด lazy-load',
+      'เพื่ออนุญาต remote host',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'prop priority ทำหน้าที่อะไร',
+    options: [
+      'บีบอัด image ให้หนักขึ้น',
+      'preload image ที่เป็น LCP และข้าม lazy-load',
+      'ทำเครื่องหมายว่า image เป็นแค่ของประดับ',
+      'บังคับใช้ format AVIF',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ต้องมีอะไรก่อน next/image จะ optimize remote URL',
+    options: [
+      'ไม่ต้องมีอะไร ใช้ได้กับทุก URL',
+      'host ต้องถูกลิสต์ไว้ใน images.remotePatterns',
+      'image ต้องเป็นไฟล์ WebP',
+      'ต้องมี prop priority บน image',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'next/font ทำอะไรตอน build',
+    options: [
+      'ยิง request ขอ font จาก Google ทุกครั้งที่โหลดหน้า',
+      'self-host font ไว้ จึงไม่มี request ไป Google',
+      'inline font เป็น base64 ในทุก component',
+      'ปิด font ไว้จนกว่า hydration จะเสร็จ',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/images-and-fonts" questions={quizImgTh} />
+
+<ProgressTracker client:visible id="optimization/images-and-fonts" />

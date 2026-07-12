@@ -1,0 +1,170 @@
+---
+title: Pages, Layouts, and Nested Routing
+description: How page.tsx makes a segment routable, how layout.tsx persists across navigation, and how loading.tsx and error.tsx work.
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+In the App Router a folder is a route segment, `page.tsx` makes that segment publicly routable, and `layout.tsx` wraps the segment plus every child and stays mounted across navigation.
+
+## Folder = route segment
+
+Each folder under `app/` maps to a URL segment. A segment only becomes a reachable URL when it contains a `page.tsx`.
+
+```txt
+app/
+  layout.tsx      // root layout (required)
+  page.tsx        // route: /
+  dashboard/
+    layout.tsx    // wraps /dashboard and its children
+    page.tsx      // route: /dashboard
+    settings/
+      page.tsx    // route: /dashboard/settings
+```
+
+A `page.tsx` is a Server Component by default and renders the unique UI for its segment.
+
+```tsx
+// app/dashboard/page.tsx
+export default function DashboardPage() {
+  return <h1>Dashboard</h1>
+}
+```
+
+## The required root layout
+
+Every App Router app needs one root layout. It is the only layout that renders the `<html>` and `<body>` tags, and it must render `children`.
+
+```tsx
+// app/layout.tsx — the required root layout
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  )
+}
+```
+
+## Nested layouts persist and compose
+
+A `layout.tsx` wraps its own segment and all descendants. Nested layouts compose from the outside in: root wraps dashboard wraps settings. Crucially a layout PERSISTS across navigation — when you move between sibling routes the shared layout does not re-render, so its state and scroll position are preserved.
+
+```tsx
+// app/dashboard/layout.tsx — persists across navigation
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <section>
+      <nav>{/* stays mounted, keeps scroll + local state */}</nav>
+      <main>{children}</main>
+    </section>
+  )
+}
+```
+
+## loading.tsx and error.tsx
+
+Add `loading.tsx` and Next.js automatically wraps the segment in a Suspense boundary — the fallback shows instantly while the server work streams in.
+
+```tsx
+// app/dashboard/loading.tsx — automatic Suspense boundary
+export default function Loading() {
+  return <p>Loading dashboard…</p>
+}
+```
+
+Add `error.tsx` and Next.js wraps the segment in an error boundary. It must be a Client Component and it receives `error` plus a `reset` function to retry rendering the segment.
+
+```tsx
+'use client' // error boundaries must be Client Components
+
+export default function Error({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string }
+  reset: () => void
+}) {
+  return (
+    <div>
+      <h2>Something went wrong</h2>
+      <button onClick={() => reset()}>Try again</button>
+    </div>
+  )
+}
+```
+
+<Mermaid title="Nested layouts compose and persist" code={diagramPagesEn} />
+
+export const diagramPagesEn = `
+graph TD
+  R["app/layout.tsx (root, persists)"] --> D["dashboard/layout.tsx (persists)"]
+  D --> P["dashboard/page.tsx"]
+  D --> S["settings/page.tsx"]
+`;
+
+<Callout title="The one-line takeaway">
+A folder is a segment, `page.tsx` makes it routable, and `layout.tsx` wraps its subtree and survives navigation without re-rendering.
+</Callout>
+
+export const quizPagesEn = [
+  {
+    q: 'What makes a folder segment publicly routable?',
+    options: [
+      'Adding a layout.tsx file',
+      'Adding a page.tsx file',
+      'Adding a route.ts file',
+      'Naming the folder with brackets',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is special about a layout across navigation?',
+    options: [
+      'It re-renders on every route change',
+      'It persists and preserves state and scroll',
+      'It only renders once then is removed',
+      'It must be a Client Component',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which layout renders the html and body tags?',
+    options: [
+      'Every layout in the tree',
+      'The nearest layout to the page',
+      'The required root layout',
+      'The loading.tsx file',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'What must error.tsx be, and what does it receive?',
+    options: [
+      'A Server Component receiving params',
+      'A Client Component receiving error and reset',
+      'A Server Component receiving error and retry',
+      'A Client Component receiving children only',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/pages-layouts-and-nested-routing" questions={quizPagesEn} />
+
+<ProgressTracker client:visible id="routing-and-navigation/pages-layouts-and-nested-routing" />

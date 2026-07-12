@@ -1,0 +1,141 @@
+---
+title: Turbopack and Build Performance
+description: Turbopack, the Rust-based bundler that is now the default for next dev and next build — incremental compilation, faster HMR and cold starts, how it differs from webpack, and build caching.
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Turbopack is Next.js's Rust-based bundler, now the default for both `next dev` and `next build`, and it speeds up your feedback loop by compiling incrementally instead of rebuilding everything.
+
+## Turbopack is now the default
+
+In current Next.js (16 at the time of writing), Turbopack is the default bundler for both `next dev` and `next build`. Development with Turbopack has been stable for some time; the production build path is the newer piece, so verify against the docs for your exact version. You do not need any flag to use it — a plain script is enough.
+
+```json
+{
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  }
+}
+```
+
+If you hit an issue and need the old bundler, you can opt back into webpack per command.
+
+```json
+{
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start"
+  }
+}
+```
+
+## What Turbopack speeds up
+
+The core idea is incremental compilation. Turbopack builds a dependency graph and only recomputes the parts affected by a change, so cold starts are faster and Hot Module Replacement stays near-instant even as the app grows. When you save a file, it recompiles just that module and its dependents rather than the whole route.
+
+## How it differs from webpack
+
+webpack is a mature JavaScript bundler with a huge plugin ecosystem, but that JavaScript core and its full-rebuild tendencies become the bottleneck on large apps. Turbopack is written in Rust, is multi-core by design, and treats fine-grained incremental work as the default rather than an add-on. Some webpack plugins and loaders do not apply — Next.js provides its own equivalents, and you configure Turbopack under the `turbopack` key.
+
+```ts
+// next.config.ts — Turbopack-specific configuration
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  turbopack: {
+    // e.g. custom rules for importing SVGs as components
+    rules: {},
+  },
+}
+
+export default nextConfig
+```
+
+## Build caching
+
+Turbopack can persist its work to disk so a later `dev` start or `build` reuses earlier compilation instead of starting cold. This filesystem cache is stable for development and still experimental for production builds, so treat the build-side flag as opt-in.
+
+```ts
+// next.config.ts — persistent filesystem cache
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    turbopackFileSystemCacheForDev: true,
+    turbopackFileSystemCacheForBuild: true,
+  },
+}
+
+export default nextConfig
+```
+
+<Mermaid title="Incremental compilation reuses unchanged work" code={diagramTurboEn} />
+
+export const diagramTurboEn = `flowchart LR
+  Save[Save a file] --> Graph[Dependency graph]
+  Graph --> Changed[Recompile changed module + dependents]
+  Graph --> Cache[Reuse unchanged from cache]
+  Changed --> HMR[Fast HMR / build]
+  Cache --> HMR`;
+
+<Callout title="The one-line takeaway">
+Turbopack is the Rust-based, incremental, now-default bundler for `next dev` and `next build` — faster cold starts and HMR, `--webpack` to opt out, and a filesystem cache that is stable in dev and experimental in build.
+</Callout>
+
+export const quizTurboEn = [
+  {
+    q: 'What language is Turbopack written in?',
+    options: [
+      'JavaScript',
+      'Go',
+      'Rust',
+      'C++',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'What is Turbopack the default bundler for in current Next.js?',
+    options: [
+      'Only next dev',
+      'Only next build',
+      'Both next dev and next build',
+      'Neither, it is opt-in',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'How do you opt back into webpack for a production build?',
+    options: [
+      'Delete next.config',
+      'Run next build --webpack',
+      'Set NODE_ENV=webpack',
+      'It is not possible',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What makes Turbopack fast on repeated work?',
+    options: [
+      'It rebuilds the whole app every time',
+      'Incremental compilation plus a filesystem cache',
+      'It skips type-checking',
+      'It runs only on a single core',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="optimization/turbopack-and-build-performance" questions={quizTurboEn} />
+
+<ProgressTracker client:visible id="optimization/turbopack-and-build-performance" />

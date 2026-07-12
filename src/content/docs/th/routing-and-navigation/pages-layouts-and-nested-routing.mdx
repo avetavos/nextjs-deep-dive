@@ -1,0 +1,170 @@
+---
+title: Pages, Layouts และ Nested Routing
+description: page.tsx ทำให้ segment กลายเป็น route ได้อย่างไร layout.tsx persist ข้ามการ navigate อย่างไร และ loading.tsx กับ error.tsx ทำงานยังไง
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+ใน App Router folder หนึ่งคือ route segment หนึ่ง `page.tsx` ทำให้ segment นั้นเข้าถึงเป็น URL ได้ ส่วน `layout.tsx` ห่อ segment นั้นพร้อม children ทุกตัว และยัง mount ค้างไว้ข้ามการ navigate
+
+## Folder = route segment
+
+ทุก folder ใต้ `app/` map ไปเป็น URL segment หนึ่ง segment จะกลายเป็น URL ที่เข้าถึงได้ก็ต่อเมื่อมี `page.tsx` อยู่ข้างใน
+
+```txt
+app/
+  layout.tsx      // root layout (required)
+  page.tsx        // route: /
+  dashboard/
+    layout.tsx    // wraps /dashboard and its children
+    page.tsx      // route: /dashboard
+    settings/
+      page.tsx    // route: /dashboard/settings
+```
+
+`page.tsx` เป็น Server Component โดย default และ render UI เฉพาะของ segment นั้น
+
+```tsx
+// app/dashboard/page.tsx
+export default function DashboardPage() {
+  return <h1>Dashboard</h1>
+}
+```
+
+## The required root layout
+
+ทุกแอป App Router ต้องมี root layout หนึ่งตัว มันเป็น layout เดียวที่ render tag `<html>` และ `<body>` และต้อง render `children` เสมอ
+
+```tsx
+// app/layout.tsx — the required root layout
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  )
+}
+```
+
+## Nested layouts persist and compose
+
+`layout.tsx` ห่อ segment ของตัวเองและ descendant ทั้งหมด nested layout compose จากนอกเข้าใน root ห่อ dashboard ห่อ settings จุดสำคัญคือ layout จะ persist ข้ามการ navigate เมื่อย้ายระหว่าง route พี่น้องกัน layout ที่ใช้ร่วมจะไม่ re-render ทำให้ state และตำแหน่ง scroll ถูกเก็บไว้
+
+```tsx
+// app/dashboard/layout.tsx — persists across navigation
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <section>
+      <nav>{/* stays mounted, keeps scroll + local state */}</nav>
+      <main>{children}</main>
+    </section>
+  )
+}
+```
+
+## loading.tsx and error.tsx
+
+ใส่ `loading.tsx` แล้ว Next.js จะห่อ segment ด้วย Suspense boundary ให้อัตโนมัติ fallback จะโชว์ทันทีระหว่างที่งานฝั่ง server ยัง stream เข้ามา
+
+```tsx
+// app/dashboard/loading.tsx — automatic Suspense boundary
+export default function Loading() {
+  return <p>Loading dashboard…</p>
+}
+```
+
+ใส่ `error.tsx` แล้ว Next.js จะห่อ segment ด้วย error boundary มันต้องเป็น Client Component และรับ `error` พร้อมฟังก์ชัน `reset` ไว้ลอง render segment ใหม่
+
+```tsx
+'use client' // error boundaries must be Client Components
+
+export default function Error({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string }
+  reset: () => void
+}) {
+  return (
+    <div>
+      <h2>Something went wrong</h2>
+      <button onClick={() => reset()}>Try again</button>
+    </div>
+  )
+}
+```
+
+<Mermaid title="Nested layouts compose และ persist" code={diagramPagesTh} />
+
+export const diagramPagesTh = `
+graph TD
+  R["app/layout.tsx (root, persists)"] --> D["dashboard/layout.tsx (persists)"]
+  D --> P["dashboard/page.tsx"]
+  D --> S["settings/page.tsx"]
+`;
+
+<Callout title="The one-line takeaway">
+folder คือ segment, `page.tsx` ทำให้มัน routable, ส่วน `layout.tsx` ห่อ subtree ของมันและอยู่รอดข้ามการ navigate โดยไม่ re-render
+</Callout>
+
+export const quizPagesTh = [
+  {
+    q: 'อะไรทำให้ folder segment เข้าถึงเป็น route ได้',
+    options: [
+      'การเพิ่มไฟล์ layout.tsx',
+      'การเพิ่มไฟล์ page.tsx',
+      'การเพิ่มไฟล์ route.ts',
+      'การตั้งชื่อ folder ด้วย bracket',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'layout มีความพิเศษอย่างไรตอน navigate',
+    options: [
+      'มัน re-render ทุกครั้งที่เปลี่ยน route',
+      'มัน persist และเก็บ state กับ scroll ไว้',
+      'มัน render ครั้งเดียวแล้วถูกลบทิ้ง',
+      'มันต้องเป็น Client Component',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'layout ตัวไหนที่ render tag html และ body',
+    options: [
+      'ทุก layout ใน tree',
+      'layout ที่ใกล้ page ที่สุด',
+      'root layout ที่จำเป็นต้องมี',
+      'ไฟล์ loading.tsx',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'error.tsx ต้องเป็นอะไร และรับอะไรบ้าง',
+    options: [
+      'Server Component ที่รับ params',
+      'Client Component ที่รับ error และ reset',
+      'Server Component ที่รับ error และ retry',
+      'Client Component ที่รับแค่ children',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="routing-and-navigation/pages-layouts-and-nested-routing" questions={quizPagesTh} />
+
+<ProgressTracker client:visible id="routing-and-navigation/pages-layouts-and-nested-routing" />
