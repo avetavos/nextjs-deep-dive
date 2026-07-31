@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 ไฟล์ `middleware.ts` ที่ root ของโปรเจกต์จะรันก่อน request จะเสร็จ บนทุก route ที่ match ทำให้เรา redirect, rewrite หรือ set header กับ cookie ได้ก่อนที่ Next.js จะ render อะไรออกมา
 
 ## Where middleware sits in the request lifecycle
 
-middleware ดัก request หลังจากมันมาถึงแต่ก่อน route จะถูก resolve เรา return `NextResponse` เพื่อ redirect, rewrite หรือปล่อยผ่านด้วย `NextResponse.next()`
+middleware ดัก request หลังจาก request มาถึงแต่ก่อน route จะถูก resolve เรา return `NextResponse` เพื่อ redirect, rewrite หรือปล่อยผ่านด้วย `NextResponse.next()`
 
 ```ts
 // middleware.ts — runs BEFORE the request completes, on every matching route
@@ -39,7 +39,7 @@ export function middleware(request: NextRequest) {
 
 ## Scope it with matcher
 
-ถ้าไม่มี `matcher` middleware จะรันทุก request รวมถึง static asset ด้วย เรา scope มันให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
+ถ้าไม่มี `matcher` middleware จะรันทุก request รวมถึง static asset ด้วย เราจึงควร scope ให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
 
 ```ts
 // middleware.ts — scope which routes run middleware
@@ -63,7 +63,7 @@ export function middleware(request: NextRequest) {
 }
 ```
 
-middleware รันบน Edge runtime เป็น default มันอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
+middleware รันบน Edge runtime เป็น default และอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
 
 <Mermaid title="Middleware intercepts before the route resolves" code={diagramMwTh} />
 
@@ -76,7 +76,7 @@ graph LR
 `;
 
 <Callout title="The one-line takeaway">
-middleware รันบน Edge ก่อนทุก request ที่ match ใช้มันทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
+middleware รันบน Edge ก่อนทุก request ที่ match ใช้ทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
 </Callout>
 
 export const quizMwTh = [

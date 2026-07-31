@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 Cache Components พลิกโมเดล แทนที่จะจำ cache option ต่อ `fetch` เรา mark function, file หรือ component ด้วย directive `'use cache'` เพื่อบอกว่า **"cache อันนี้"** แล้วปรับ lifetime กับ invalidation ด้วย `cacheLife` และ `cacheTag`
 
 ## directive `use cache`
 
-ใส่ string `'use cache'` ไว้บนสุดของ function หรือ file แล้วทุกอย่างที่มัน return จะถูก cache ไม่ว่าจะเป็น `fetch`, query database หรือทั้ง component ที่ render แล้ว มันแทนการโปรย `cache` option ตาม call ทีละอัน
+ใส่ string `'use cache'` ไว้บนสุดของ function หรือ file แล้วทุกอย่างที่ function นั้น return จะถูก cache ไม่ว่าจะเป็น `fetch`, query database หรือทั้ง component ที่ render แล้ว วิธีนี้มาแทนการโปรย `cache` option ตาม call ทีละอัน
 
 ```tsx
 // lib/data.ts
@@ -33,7 +33,7 @@ async function getData() {
 
 ## cacheLife และ cacheTag
 
-`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ `revalidateTag` ตัวเดิมที่เรารู้จักอยู่แล้ว invalidate มันได้แบบ on-demand
+`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ `revalidateTag` ตัวเดิมที่เรารู้จักอยู่แล้ว invalidate entry นั้นได้แบบ on-demand
 
 ```tsx
 import { cacheLife, cacheTag } from 'next/cache'
@@ -48,7 +48,7 @@ async function getProduct(id: string) {
 
 ## เปิดใช้: cacheComponents และ Partial Prerendering
 
-`'use cache'` ต้องใช้ flag `cacheComponents` ใน Next.js 16 flag ตัวเดียวกันนี้ **ยัง** เป็นวิธีเปิด **Partial Prerendering** ด้วย flag `ppr` แบบ experimental เดิมและ export `experimental_ppr` ถูกถอดออกไปแล้ว เมื่อเปิดมัน Next.js จะ prerender shell แบบ static และ stream ส่วน dynamic ที่ไม่ cache เข้ามาตอน request
+`'use cache'` ต้องใช้ flag `cacheComponents` ใน Next.js 16 flag ตัวเดียวกันนี้ **ยัง** เป็นวิธีเปิด **Partial Prerendering** ด้วย flag `ppr` แบบ experimental เดิมและ export `experimental_ppr` ถูกถอดออกไปแล้ว เมื่อเปิด flag นี้ Next.js จะ prerender shell แบบ static และ stream ส่วน dynamic ที่ไม่ cache เข้ามาตอน request
 
 ```ts
 // next.config.ts
@@ -63,7 +63,7 @@ export default nextConfig
 
 ## private และ remote cache
 
-มีสอง variant ที่ต่อยอดโมเดลนี้ `'use cache: private'` cache **ต่อ user** มันอ่าน `cookies()` ได้ จึงไม่แชร์ข้ามผู้เข้าชม ส่วน `'use cache: remote'` เก็บใน shared cache ฝั่ง server ที่แชร์ข้าม user ทั้งสองใช้ได้ในปัจจุบันแต่ยัง stabilizing ดังนั้น pin version ของ Next.js และเช็ค docs อีกครั้งก่อนพึ่งชื่อที่แน่นอน
+มีสอง variant ที่ต่อยอดโมเดลนี้ `'use cache: private'` cache **ต่อ user** และอ่าน `cookies()` ได้ จึงไม่แชร์ข้ามผู้เข้าชม ส่วน `'use cache: remote'` เก็บใน shared cache ฝั่ง server ที่แชร์ข้าม user ทั้งสองใช้ได้ในปัจจุบันแต่ยัง stabilizing ดังนั้น pin version ของ Next.js และเช็ค docs อีกครั้งก่อนพึ่งชื่อที่แน่นอน
 
 ```tsx
 import { cacheLife } from 'next/cache'
@@ -89,7 +89,7 @@ flowchart TD
 `;
 
 <Callout title="The one-line takeaway">
-`'use cache'` ทำให้ caching **explicit** mark ว่าจะ cache อะไร แล้วปรับด้วย `cacheLife` กับ `cacheTag` และ flag `cacheComponents` ของมันคือสวิตช์เดียวกับที่เปิด Partial Prerendering ใน Next.js 16
+`'use cache'` ทำให้ caching **explicit** mark ว่าจะ cache อะไร แล้วปรับด้วย `cacheLife` กับ `cacheTag` และ flag `cacheComponents` ของตัวเองคือสวิตช์เดียวกับที่เปิด Partial Prerendering ใน Next.js 16
 </Callout>
 
 export const uccQuizTh = [

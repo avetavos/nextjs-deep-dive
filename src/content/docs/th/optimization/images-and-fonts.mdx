@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## next/image resize, แปลง format และ lazy-load
 
-`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request มันสร้าง version ที่ resize ตามอุปกรณ์ ส่ง format ใหม่อย่าง WebP หรือ AVIF เมื่อ browser รองรับ และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
+`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request โดยสร้าง version ที่ resize ตามอุปกรณ์ ส่ง format ใหม่อย่าง WebP หรือ AVIF เมื่อ browser รองรับ และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
 
 เมื่อคุณ import ไฟล์ในเครื่อง Next.js อ่านขนาดจริงตอน build ดังนั้น `width` กับ `height` จึงถูกเติมให้เอง
 
@@ -32,7 +32,7 @@ export default function Page() {
 
 ## width, height และ priority
 
-image ที่ Next.js เดาขนาดไม่ได้ — เช่น remote URL — คุณ **ต้อง** ส่ง `width` กับ `height` มันจองกล่องขนาดเป๊ะไว้ก่อน pixel จะมาถึง ซึ่งคือสิ่งที่กัน Cumulative Layout Shift ใส่ `priority` ให้ image ตัวที่เป็น Largest Contentful Paint เพื่อให้ Next.js preload มันและข้าม lazy-load
+image ที่ Next.js เดาขนาดไม่ได้ — เช่น remote URL — คุณ **ต้อง** ส่ง `width` กับ `height` ค่าสองตัวนี้จองกล่องขนาดเป๊ะไว้ก่อน pixel จะมาถึง ซึ่งคือสิ่งที่กัน Cumulative Layout Shift ใส่ `priority` ให้ image ตัวที่เป็น Largest Contentful Paint เพื่อให้ Next.js preload ภาพนั้นและข้าม lazy-load
 
 ```tsx
 // Remote image: width + height are required to reserve space
@@ -81,7 +81,7 @@ export default nextConfig
 
 ## next/font self-host ตอน build
 
-`next/font` ดาวน์โหลดไฟล์ font ตอน build แล้วเสิร์ฟจาก origin ของคุณเอง ไม่มี request ตอน runtime ไป Google และเพราะรู้ metric ของ font ล่วงหน้า มันจึงจองพื้นที่ได้ถูกต้องและได้ layout shift เป็นศูนย์
+`next/font` ดาวน์โหลดไฟล์ font ตอน build แล้วเสิร์ฟจาก origin ของคุณเอง ไม่มี request ตอน runtime ไป Google และเพราะรู้ metric ของ font ล่วงหน้า จึงจองพื้นที่ได้ถูกต้องและได้ layout shift เป็นศูนย์
 
 ```tsx
 // app/layout.tsx — self-hosted, zero layout shift, no request to Google

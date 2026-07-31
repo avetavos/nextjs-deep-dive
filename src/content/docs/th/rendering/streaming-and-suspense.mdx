@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 streaming ให้ server ส่งส่วนที่พร้อมแล้วของหน้า — คือ static shell — ออกไปทันที แล้วค่อยดันส่วนที่ช้ากว่าตามมาทาง connection เดียวกันเมื่อ render เสร็จ
 
@@ -89,7 +89,7 @@ export const quizStreamTh = [
     answer: 1,
   },
   {
-    q: 'ไฟล์ loading.tsx สร้างอะไรให้ segment ของมัน?',
+    q: 'ไฟล์ loading.tsx สร้างอะไรให้ segment ของตัวเอง?',
     options: ['dynamic route', 'Suspense boundary อัตโนมัติ', 'API route แยกต่างหาก', 'client component'],
     answer: 1,
   },
@@ -100,7 +100,7 @@ export const quizStreamTh = [
   },
   {
     q: 'ทำไม streaming ช่วยเรื่อง time to first byte?',
-    options: ['มัน cache ทุก request', 'มันส่ง shell โดยไม่รอ data request', 'มันข้ามการ render ทั้งหมด', 'มันรันบน client เท่านั้น'],
+    options: ['cache ทุก request', 'ส่ง shell ออกไปโดยไม่รอ data request', 'ข้ามการ render ทั้งหมด', 'รันบน client เท่านั้น'],
     answer: 1,
   },
 ];

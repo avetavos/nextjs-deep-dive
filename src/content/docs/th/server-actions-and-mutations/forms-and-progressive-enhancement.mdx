@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 การต่อ Server Action เข้ากับ `<form action={action}>` ทำให้เราได้ form ที่ submit และ mutate ได้ตั้งแต่ก่อน JavaScript โหลด แล้ว upgrade เป็นประสบการณ์ฝั่ง client ที่สมบูรณ์ขึ้นเมื่อ React hydrate เสร็จ
 
 ## Progressive enhancement for free
 
-เพราะ action ผูกกับ `<form>` จริง browser จึง post มันด้วย HTTP request ธรรมดาได้ mutation ทำงานได้แม้ปิด JavaScript หรือยังโหลดไม่เสร็จ เมื่อ React hydrate หน้าเสร็จ form เดิมจะถูก intercept ฝั่ง client จึงไม่มีการ reload ทั้งหน้า เราได้ baseline ฟรี และได้ upgrade อัตโนมัติ
+เพราะ action ผูกกับ `<form>` จริง browser จึง post form ด้วย HTTP request ธรรมดาได้ mutation ทำงานได้แม้ปิด JavaScript หรือยังโหลดไม่เสร็จ เมื่อ React hydrate หน้าเสร็จ form เดิมจะถูก intercept ฝั่ง client จึงไม่มีการ reload ทั้งหน้า เราได้ baseline ฟรี และได้ upgrade อัตโนมัติ
 
 ```tsx
 // app/new-todo.tsx — works before JS, upgrades after hydration
@@ -76,7 +76,7 @@ export function NewTodoForm() {
 
 ## useFormStatus for the submit button
 
-`useFormStatus` อ่าน pending state ของ form ที่ครอบมันอยู่ วางไว้ใน child component ของ form เพื่อให้ปุ่ม disable ตัวเองระหว่าง action รันได้ โดยไม่ต้องส่ง props ลงไป
+`useFormStatus` อ่าน pending state ของ form ที่ครอบอยู่ วางไว้ใน child component ของ form เพื่อให้ปุ่ม disable ตัวเองระหว่าง action รันได้ โดยไม่ต้องส่ง props ลงไป
 
 ```tsx
 // app/submit-button.tsx — a child of the form

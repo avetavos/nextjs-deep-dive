@@ -1,6 +1,6 @@
 ---
 title: Security และ Patterns
-description: Server Action คือ public endpoint — ต้อง validate input และ authorize ผู้ใช้ภายในมันเสมอ — พร้อม built-in protection และ pattern ที่นำกลับมาใช้ซ้ำได้
+description: Server Action คือ public endpoint — ต้อง validate input และ authorize ผู้ใช้ภายใน action เสมอ — พร้อม built-in protection และ pattern ที่นำกลับมาใช้ซ้ำได้
 sidebar:
   order: 4
 ---
@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
-ทุก Server Action คือ public HTTP endpoint เราจึงต้อง validate input และ authorize ผู้เรียกภายใน action เอง อย่าเชื่อว่ามันถูกเรียกจาก UI ของเราเท่านั้น
+ทุก Server Action คือ public HTTP endpoint เราจึงต้อง validate input และ authorize ผู้เรียกภายใน action เอง อย่าเชื่อว่าถูกเรียกจาก UI ของเราเท่านั้น
 
 ## Validate and authorize inside the action
 
-ใครที่รู้ action ID ก็เรียกมันด้วย payload อะไรก็ได้ ดังนั้น action ต้องเช็คซ้ำว่าผู้ใช้คือใคร และ parse input ใหม่ทุกครั้งที่ถูกเรียก authorize ก่อน แล้ว validate แล้วค่อย mutate UI ที่ render form ไม่ใช่ security boundary
+ใครที่รู้ action ID ก็เรียก action ด้วย payload อะไรก็ได้ ดังนั้น action ต้องเช็คซ้ำว่าผู้ใช้คือใคร และ parse input ใหม่ทุกครั้งที่ถูกเรียก authorize ก่อน แล้ว validate แล้วค่อย mutate UI ที่ render form ไม่ใช่ security boundary
 
 ```ts
 // app/actions.ts — authorize, then validate, then mutate
@@ -46,7 +46,7 @@ export async function updatePost(formData: FormData) {
 
 ## The built-in protections are not authorization
 
-Next.js เข้ารหัสตัวแปรที่เรา close over ใน action สร้าง action ID ที่เดาไม่ได้ และ dead-code-eliminate action ที่เราไม่เคยใช้ ทำให้มันไม่กลายเป็น public endpoint สิ่งเหล่านี้ลด attack surface แต่ไม่มีตัวไหนเช็คว่าผู้ใช้คนนี้ทำ action นี้ได้ไหม authorization และ validation จึงยังเป็นหน้าที่ของเรา
+Next.js เข้ารหัสตัวแปรที่เรา close over ใน action สร้าง action ID ที่เดาไม่ได้ และ dead-code-eliminate action ที่เราไม่เคยใช้ ทำให้ action พวกนั้นไม่กลายเป็น public endpoint สิ่งเหล่านี้ลด attack surface แต่ไม่มีตัวไหนเช็คว่าผู้ใช้คนนี้ทำ action นี้ได้ไหม authorization และ validation จึงยังเป็นหน้าที่ของเรา
 
 ```ts
 // app/actions.ts — unused actions are stripped at build; used ones get an ID

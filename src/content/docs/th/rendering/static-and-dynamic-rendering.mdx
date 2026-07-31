@@ -10,9 +10,9 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
-Next.js prerender ทุก route เป็น static HTML ตอน build โดย default เว้นแต่ route นั้นต้องใช้ data ตอน request — พอถึงจุดนั้นมันจะกลายเป็น dynamic และ render ใหม่ทุก request
+Next.js prerender ทุก route เป็น static HTML ตอน build โดย default เว้นแต่ route นั้นต้องใช้ data ตอน request — พอถึงจุดนั้น route จะกลายเป็น dynamic และ render ใหม่ทุก request
 
 ## Static คือ default
 
@@ -29,7 +29,7 @@ export default function AboutPage() {
 
 ## อะไรทำให้ route กลายเป็น dynamic
 
-route จะสลับไปเป็น **dynamic rendering** ทันทีที่มันพึ่งพาบางอย่างที่รู้ได้เฉพาะตอน request อย่างใดอย่างหนึ่งต่อไปนี้ทำให้มัน flip —
+route จะสลับไปเป็น **dynamic rendering** ทันทีที่พึ่งพาบางอย่างที่รู้ได้เฉพาะตอน request อย่างใดอย่างหนึ่งต่อไปนี้ทำให้ route flip —
 
 - **Dynamic API** — `cookies()`, `headers()`, `draftMode()` หรือการอ่าน `searchParams` / `params` Promise ตอน request
 - **uncached data request** — `fetch()` ที่ใส่ `cache: 'no-store'` (หรือ fetch ใด ๆ ภายใต้ default ของ Next.js 15+ ที่คุณยังไม่ opt-in cache)
@@ -94,7 +94,7 @@ export const diagramStaticTh = `flowchart TD
   E[generateStaticParams] --> C`;
 
 <Callout title="The one-line takeaway">
-route เป็น static โดย default และจะกลายเป็น dynamic ก็ต่อเมื่อมันแตะ data ตอน request — Dynamic API, uncached fetch หรือ force-dynamic — ส่วน generateStaticParams ช่วยให้ dynamic segment ยัง prerender ได้
+route เป็น static โดย default และจะกลายเป็น dynamic ก็ต่อเมื่อแตะ data ตอน request — Dynamic API, uncached fetch หรือ force-dynamic — ส่วน generateStaticParams ช่วยให้ dynamic segment ยัง prerender ได้
 </Callout>
 
 export const quizStaticTh = [

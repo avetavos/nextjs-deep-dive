@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## scaffold แล้วรัน
 
-สร้างโปรเจกต์และสตาร์ทมันด้วยสอง command —
+สร้างโปรเจกต์และสตาร์ท dev server ด้วยสอง command —
 
 ```bash
 npx create-next-app@latest my-app
@@ -42,9 +42,9 @@ script ใน `package.json` คือชุดที่คุณจะรัน
 
 ## Turbopack คือ bundler เริ่มต้น
 
-ตั้งแต่ Next.js 16 Turbopack เป็น bundler เริ่มต้นสำหรับ**ทั้ง** `next dev` และ `next build` — คุณไม่ต้อง opt in มันคือสิ่งที่รันอยู่แล้ว มันคือทายาทของ webpack ที่เขียนด้วย Rust ออกแบบมาเพื่อ cold start ที่เร็วและ update แบบ incremental
+ตั้งแต่ Next.js 16 Turbopack เป็น bundler เริ่มต้นสำหรับ**ทั้ง** `next dev` และ `next build` — คุณไม่ต้อง opt in เพราะ Turbopack รันอยู่แล้ว เป็นทายาทของ webpack ที่เขียนด้วย Rust ออกแบบมาเพื่อ cold start ที่เร็วและ update แบบ incremental
 
-คุณ config มันได้ตอนที่ต้องการ ผ่าน key `turbopack` ระดับบนสุดในไฟล์ config —
+คุณ config Turbopack ได้ตอนที่ต้องการ ผ่าน key `turbopack` ระดับบนสุดในไฟล์ config —
 
 ```ts
 // next.config.ts
@@ -63,10 +63,10 @@ export default nextConfig;
 
 Next.js รองรับ TypeScript แบบ first-class ไฟล์ config เองก็เป็น `next.config.ts` ที่ type ด้วย `NextConfig` และ framework จะ generate `next-env.d.ts` ที่คุณไม่ควรแก้ TypeScript เปิดใช้งานโดย default เมื่อใช้ setup ที่แนะนำ
 
-นิสัยที่ทำให้ Next.js เข้าใจง่ายขึ้นคือการหัด **อ่าน convention** ของมัน ชื่อจำนวนหนึ่งถูกจองไว้และมีความหมายทุกที่ใต้ `app/` —
+นิสัยที่ทำให้ Next.js เข้าใจง่ายขึ้นคือการหัด **อ่าน convention** ของตัวเอง ชื่อจำนวนหนึ่งถูกจองไว้และมีความหมายทุกที่ใต้ `app/` —
 
 - ชื่อไฟล์อย่าง `page`, `layout`, `loading`, `error` และ `route` คือพฤติกรรม ไม่ใช่ module ทั่ว ๆ ไป
-- โฟลเดอร์คือ route segment ส่วนการครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง `[slug]` ทำให้มันเป็น dynamic
+- โฟลเดอร์คือ route segment ส่วนการครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง `[slug]` ทำให้ segment นั้นเป็น dynamic
 - `next.config.ts` คือที่เดียวสำหรับเปลี่ยนพฤติกรรมระดับ framework
 
 พอคุณมอง tree แล้วเดา URL และจุดที่โค้ดรันได้ framework ก็เลิกรู้สึกเหมือนเวทมนตร์ —
@@ -112,7 +112,7 @@ export const quizToolchain = [
   },
   {
     q: 'การครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง [slug] ทำอะไร',
-    options: ['ซ่อนมันจาก routing', 'ทำให้เป็น dynamic route segment', 'มาร์กมันเป็น layout', 'เปลี่ยนมันเป็น API route'],
+    options: ['ซ่อนโฟลเดอร์นั้นจาก routing', 'ทำให้เป็น dynamic route segment', 'มาร์กเป็น layout', 'เปลี่ยนเป็น API route'],
     answer: 1,
   },
 ];

@@ -1,6 +1,6 @@
 ---
 title: 'Server และ Client Components'
-description: 'mental model หลักของ App Router: Server Components เป็น default, boundary ของ "use client" และทำไมมันเป็น transitive, การส่ง Server Components เข้าไปใน Client Components และ serializable props'
+description: 'mental model หลักของ App Router: Server Components เป็น default, boundary ของ "use client" และทำไม boundary นี้ถึงเป็น transitive, การส่ง Server Components เข้าไปใน Client Components และ serializable props'
 sidebar:
   order: 3
 ---
@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## Server Components คือ default
 
-component ใน `app/` รันบน server เว้นแต่คุณจะ opt out นั่นแปลว่ามันเป็น `async` ได้, `await` data ได้ และแตะ database, filesystem หรือ secret ตรง ๆ ได้ — โค้ดพวกนี้ไม่ถูกส่งไป browser เลย
+component ใน `app/` รันบน server เว้นแต่คุณจะ opt out นั่นแปลว่าเป็น `async` ได้, `await` data ได้ และแตะ database, filesystem หรือ secret ตรง ๆ ได้ — โค้ดพวกนี้ไม่ถูกส่งไป browser เลย
 
 ```tsx
 // app/dashboard/page.tsx — a Server Component (no directive needed)
@@ -28,11 +28,11 @@ export default async function Dashboard() {
 }
 ```
 
-เพราะสิ่งนี้ไม่เคยถูกส่งไป client browser จึงดาวน์โหลด JavaScript ศูนย์ไบต์สำหรับมัน Server Components ใช้ `useState`, `useEffect`, event handler หรือ browser API ไม่ได้ — มัน render ครั้งเดียวบน server
+เพราะสิ่งนี้ไม่เคยถูกส่งไป client browser จึงไม่ต้องดาวน์โหลด JavaScript ของ component พวกนี้เลยสักไบต์ Server Components ใช้ `useState`, `useEffect`, event handler หรือ browser API ไม่ได้ — เพราะ render ครั้งเดียวบน server แล้วจบ
 
 ## "use client" มาร์กให้เป็น Client Component
 
-วาง `"use client"` ไว้บนสุดของไฟล์ แล้วทุกอย่างที่มัน export จะกลายเป็น Client Component มันรันใน browser และใช้ hook, state, effect, event handler และ browser API ได้
+วาง `"use client"` ไว้บนสุดของไฟล์ แล้วทุกอย่างที่ไฟล์นั้น export จะกลายเป็น Client Component ซึ่งรันใน browser และใช้ hook, state, effect, event handler และ browser API ได้
 
 ```tsx
 'use client';
@@ -45,14 +45,14 @@ export default function Counter() {
 }
 ```
 
-จุดที่ละเอียดอ่อนคือ **boundary นี้เป็น transitive** ทุก module ที่ Client Component import เข้ามาจะถูกดึงเข้า client bundle ด้วย ไม่ว่ามันจะมี directive ของตัวเองหรือไม่ คุณมาร์ก boundary ครั้งเดียวที่บนสุดของ tree — ไม่ต้องใส่ `"use client"` ซ้ำในทุก child
+จุดที่ละเอียดอ่อนคือ **boundary นี้เป็น transitive** ทุก module ที่ Client Component import เข้ามาจะถูกดึงเข้า client bundle ด้วย ไม่ว่าจะมี directive ของตัวเองหรือไม่ คุณมาร์ก boundary ครั้งเดียวที่บนสุดของ tree — ไม่ต้องใส่ `"use client"` ซ้ำในทุก child
 
 ## การประกอบข้าม boundary
 
-มีสองกฎที่คุมว่าทั้งสองชนิดผสมกันยังไง และมันไม่สมมาตร —
+มีสองกฎที่คุมว่าทั้งสองชนิดผสมกันยังไง และไม่สมมาตร —
 
 - **Server Component import และ render Client Component** ได้ตรง ๆ
-- **Client Component import Server Component ไม่ได้** — แต่รับมันเป็น `children` หรือ prop ได้
+- **Client Component import Server Component ไม่ได้** — แต่รับเข้ามาเป็น `children` หรือ prop ได้
 
 กฎข้อที่สองคือ **doughnut (slot) pattern** — Client Component เป็นวงแหวน และ Server Component เติมเข้าไปในรู เนื้อหาที่ render บน server ยังอยู่บน server แม้จะมี client component ล้อมรอบ
 
@@ -70,7 +70,7 @@ export default function Page() {
 }
 ```
 
-มีข้อจำกัดหนึ่งที่ทำให้สิ่งนี้ทำงานได้ — **prop ที่ข้าม boundary ต้อง serializable** คุณส่ง string, number, plain object, array และ JSX ได้ แต่ส่ง function, class instance หรือ Date เป็น prop ดิบ ๆ ไม่ได้ — มันรอดการเดินทางจาก server ไป client ไม่ได้
+มีข้อจำกัดหนึ่งที่ทำให้สิ่งนี้ทำงานได้ — **prop ที่ข้าม boundary ต้อง serializable** คุณส่ง string, number, plain object, array และ JSX ได้ แต่ส่ง function, class instance หรือ Date เป็น prop ดิบ ๆ ไม่ได้ — ค่าพวกนี้รอดการเดินทางจาก server ไป client ไม่ได้
 
 <Mermaid title="Where the client boundary sits" code={diagramBoundary} />
 
@@ -82,7 +82,7 @@ export const diagramBoundary = `flowchart LR
   Client -. renders server child .-> Server`;
 
 <Callout title="The one-line takeaway">
-server คือ default ส่วน `"use client"` เปิด boundary แบบ transitive ที่กลืนทุกอย่างที่มัน import — ดังนั้นวางมันไว้ต่ำ ๆ ใน tree แล้วส่ง Server Components เข้าไปเป็น children ด้วย serializable props
+server คือ default ส่วน `"use client"` เปิด boundary แบบ transitive ที่กลืนทุกอย่างที่ถูก import ต่อจากนั้น — ดังนั้นวาง directive นี้ไว้ต่ำ ๆ ใน tree แล้วส่ง Server Components เข้าไปเป็น children ด้วย serializable props
 </Callout>
 
 export const quizServerClient = [
@@ -93,12 +93,12 @@ export const quizServerClient = [
   },
   {
     q: '"use client" ทำอะไรกับ module ที่ไฟล์นั้น import เข้ามา',
-    options: ['ไม่ทำอะไร — เปลี่ยนแค่ไฟล์นั้น', 'ดึงมันเข้า client bundle ด้วย', 'บังคับให้มันรันบน server', 'ลบ import ของมันทิ้ง'],
+    options: ['ไม่ทำอะไร — เปลี่ยนแค่ไฟล์นั้น', 'ดึงไฟล์นั้นเข้า client bundle ด้วย', 'บังคับให้ไฟล์นั้นรันบน server', 'ลบ import ของตัวเองทิ้ง'],
     answer: 1,
   },
   {
     q: 'Client Component จะรวมเนื้อหาแบบ Server Component ได้ยังไง',
-    options: ['import Server Component เข้ามาตรง ๆ', 'ทำไม่ได้เลย', 'รับมันเป็น children หรือ prop', 'ใส่ "use server" ให้มัน'],
+    options: ['import Server Component เข้ามาตรง ๆ', 'ทำไม่ได้เลย', 'รับเข้ามาเป็น children หรือ prop', 'ใส่ "use server" ให้ component นั้น'],
     answer: 2,
   },
   {

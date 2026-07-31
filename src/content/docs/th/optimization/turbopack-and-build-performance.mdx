@@ -12,11 +12,11 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
-Turbopack คือ bundler ของ Next.js ที่เขียนด้วย Rust ตอนนี้เป็น default ทั้ง `next dev` และ `next build` และมันเร่ง feedback loop ด้วยการ compile แบบ incremental แทนที่จะ rebuild ทุกอย่างใหม่
+Turbopack คือ bundler ของ Next.js ที่เขียนด้วย Rust ตอนนี้เป็น default ทั้ง `next dev` และ `next build` และเร่ง feedback loop ด้วยการ compile แบบ incremental แทนที่จะ rebuild ทุกอย่างใหม่
 
 ## Turbopack เป็น default แล้ว
 
-ใน Next.js ปัจจุบัน (เวอร์ชัน 16 ณ ตอนที่เขียน) Turbopack เป็น bundler default ทั้ง `next dev` และ `next build` ฝั่ง development กับ Turbopack นิ่งมาระยะหนึ่งแล้ว ส่วน path ของ production build เป็นชิ้นที่ใหม่กว่า ควรเช็กกับ docs ของเวอร์ชันที่คุณใช้จริง คุณไม่ต้องใส่ flag อะไรเพื่อใช้มัน — script ธรรมดาก็พอ
+ใน Next.js ปัจจุบัน (เวอร์ชัน 16 ณ ตอนที่เขียน) Turbopack เป็น bundler default ทั้ง `next dev` และ `next build` ฝั่ง development กับ Turbopack นิ่งมาระยะหนึ่งแล้ว ส่วน path ของ production build เป็นชิ้นที่ใหม่กว่า ควรเช็กกับ docs ของเวอร์ชันที่คุณใช้จริง คุณไม่ต้องใส่ flag อะไรเพื่อเปิดใช้ — script ธรรมดาก็พอ
 
 ```json
 {
@@ -42,7 +42,7 @@ Turbopack คือ bundler ของ Next.js ที่เขียนด้ว�
 
 ## Turbopack เร่งอะไรบ้าง
 
-แก่นคือ incremental compilation Turbopack สร้าง dependency graph แล้วคำนวณใหม่เฉพาะส่วนที่ได้รับผลจากการเปลี่ยนแปลง cold start จึงเร็วขึ้นและ Hot Module Replacement ยังเกือบทันทีแม้แอปจะโตขึ้น เมื่อคุณ save ไฟล์ มัน recompile เฉพาะ module นั้นกับตัวที่ขึ้นกับมัน ไม่ใช่ทั้ง route
+แก่นคือ incremental compilation Turbopack สร้าง dependency graph แล้วคำนวณใหม่เฉพาะส่วนที่ได้รับผลจากการเปลี่ยนแปลง cold start จึงเร็วขึ้นและ Hot Module Replacement ยังเกือบทันทีแม้แอปจะโตขึ้น เมื่อคุณ save ไฟล์ Turbopack จะ recompile เฉพาะ module นั้นกับตัวที่ขึ้นกับ module นั้น ไม่ใช่ทั้ง route
 
 ## ต่างจาก webpack ยังไง
 
@@ -127,10 +127,10 @@ export const quizTurboTh = [
   {
     q: 'อะไรทำให้ Turbopack เร็วเมื่อทำงานซ้ำ',
     options: [
-      'มัน rebuild ทั้งแอปทุกครั้ง',
+      'rebuild ทั้งแอปทุกครั้ง',
       'incremental compilation บวกกับ filesystem cache',
-      'มันข้ามการ type-check',
-      'มันรันบน core เดียว',
+      'ข้ามการ type-check',
+      'รันบน core เดียว',
     ],
     answer: 1,
   },

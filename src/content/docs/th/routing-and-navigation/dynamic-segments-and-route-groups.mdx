@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 folder ที่อยู่ใน bracket เปลี่ยนส่วนของ URL ให้เป็น param ที่เราอ่านจาก Promise ส่วน folder ในวงเล็บและที่ขึ้นต้นด้วย underscore จัดโครงสร้าง file tree ใหม่โดยไม่แตะ URL
 
 ## Dynamic segments read from a Promise
 
-folder ชื่อ `[id]` จับ URL ส่วนหนึ่งมาเป็น param ใน Next.js ปัจจุบัน `params` เป็น Promise เราจึงต้อง `await` มัน `searchParams` ก็เป็นแบบเดียวกัน
+folder ชื่อ `[id]` จับ URL ส่วนหนึ่งมาเป็น param ใน Next.js ปัจจุบัน `params` เป็น Promise เราจึงต้อง `await` ก่อนใช้ `searchParams` ก็เป็นแบบเดียวกัน
 
 ```tsx
 // app/blog/[id]/page.tsx
@@ -35,7 +35,7 @@ export default async function Post({
 
 ## Catch-all and optional catch-all
 
-ใช้ `[...slug]` จับหลาย segment มาเป็น array ใช้ `[[...slug]]` เพื่อทำให้มัน optional เพื่อให้ route แม่ match ได้ด้วยแม้ไม่มี segment ต่อท้าย
+ใช้ `[...slug]` จับหลาย segment มาเป็น array ใช้ `[[...slug]]` เพื่อทำให้ segment เป็น optional เพื่อให้ route แม่ match ได้ด้วยแม้ไม่มี segment ต่อท้าย
 
 ```txt
 app/
@@ -70,7 +70,7 @@ export function generateStaticParams() {
 
 ## Route groups and private folders
 
-folder ในวงเล็บอย่าง `(marketing)` คือ route group มันจัดระเบียบไฟล์และถือ shared layout ของตัวเองได้ แต่ชื่อของมันจะถูกตัดออกจาก URL ส่วน folder ที่ขึ้นต้นด้วย underscore อย่าง `_components` เป็น private folder ที่ opt out จาก routing ทั้งหมด
+folder ในวงเล็บอย่าง `(marketing)` คือ route group ใช้จัดระเบียบไฟล์และถือ shared layout ของตัวเองได้ แต่ชื่อโฟลเดอร์จะถูกตัดออกจาก URL ส่วน folder ที่ขึ้นต้นด้วย underscore อย่าง `_components` เป็น private folder ที่ opt out จาก routing ทั้งหมด
 
 ```txt
 app/
@@ -111,10 +111,10 @@ export const quizDynamicTh = [
   {
     q: '[[...slug]] ให้อะไรเพิ่มจาก [...slug]',
     options: [
-      'มัน match แค่ segment เดียวเท่านั้น',
-      'มันทำให้ catch-all optional เพื่อให้ route แม่ match ได้ด้วย',
-      'มันปิด prerendering ของ route',
-      'มันเปลี่ยน folder เป็น route group',
+      'match แค่ segment เดียวเท่านั้น',
+      'ทำให้ catch-all optional เพื่อให้ route แม่ match ได้ด้วย',
+      'ปิด prerendering ของ route',
+      'เปลี่ยน folder เป็น route group',
     ],
     answer: 1,
   },
@@ -131,10 +131,10 @@ export const quizDynamicTh = [
   {
     q: 'route group (marketing) ส่งผลต่อ URL อย่างไร',
     options: [
-      'มันเพิ่ม /marketing เข้าไปใน URL',
-      'มันไม่ส่งผลต่อ URL เลย',
-      'มันทำให้ route กลายเป็น dynamic',
-      'มันเอา segment ออกจาก routing ทั้งหมด',
+      'เพิ่ม /marketing เข้าไปใน URL',
+      'ไม่ส่งผลต่อ URL เลย',
+      'ทำให้ route กลายเป็น dynamic',
+      'เอา segment ออกจาก routing ทั้งหมด',
     ],
     answer: 1,
   },

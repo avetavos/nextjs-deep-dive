@@ -46,7 +46,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
   <Card title="server-first และรู้ขอบเขต" icon="rocket">
-    component ใน App Router เป็น Server Components โดย default ส่วน `"use client"` คือเส้นแบ่ง boundary ที่ลามไปถึงทุกอย่างที่ถูก import ต่อจากมัน คอร์สนี้สอนว่าเส้นนั้นอยู่ตรงไหนและทำไมมันถึงสำคัญ ไม่ใช่แค่ syntax
+    component ใน App Router เป็น Server Components โดย default ส่วน `"use client"` คือเส้นแบ่ง boundary ที่ลามไปถึงทุกอย่างที่ถูก import ต่อจากจุดนั้น คอร์สนี้สอนว่าเส้นนั้นอยู่ตรงไหนและทำไมถึงสำคัญ ไม่ใช่แค่ syntax
   </Card>
   <Card title="พฤติกรรมปัจจุบัน ที่ verify แล้ว" icon="random">
     เขียนตามพฤติกรรมปัจจุบันของ Next.js และตรวจสอบกับ official docs ผ่าน context7 — รวมถึงการเปลี่ยนแปลงใหญ่ที่ tutorial ส่วนใหญ่พลาด คือ `fetch` และ GET Route Handlers ไม่ถูก cache โดย default อีกต่อไป และการ cache ตอนนี้ต้อง opt-in ผ่าน `use cache` / `cacheComponents`

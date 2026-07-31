@@ -11,7 +11,7 @@ import Callout from '../../../../components/Callout.astro';
 
 มีสองเรื่องที่ tutorial หลายที่สอนผิด เพราะโมเดลของ Next.js เปลี่ยนไป —
 
-- **component เป็น Server Components โดย default** ใน App Router component จะรันบน server เว้นแต่ไฟล์นั้น (หรือไฟล์ที่อยู่เหนือมันในสาย import) ถูกมาร์กด้วย `"use client"` และ boundary นี้ไม่ได้แยกเป็นราย component — ทุกอย่างที่ถูก import เข้าไปใน Client Component จะกลายเป็นส่วนหนึ่งของ client bundle ด้วย การรู้ว่าเส้น boundary อยู่ตรงไหนพอดีคือทักษะหลักของ App Router
+- **component เป็น Server Components โดย default** ใน App Router component จะรันบน server เว้นแต่ไฟล์นั้น (หรือไฟล์ที่อยู่เหนือขึ้นไปในสาย import) ถูกมาร์กด้วย `"use client"` และ boundary นี้ไม่ได้แยกเป็นราย component — ทุกอย่างที่ถูก import เข้าไปใน Client Component จะกลายเป็นส่วนหนึ่งของ client bundle ด้วย การรู้ว่าเส้น boundary อยู่ตรงไหนพอดีคือทักษะหลักของ App Router
 - **`fetch` ไม่ถูก cache โดย default อีกต่อไป** ตั้งแต่ Next.js 15 request จาก `fetch()` และ `GET` Route Handlers จะ**ไม่**ถูก cache เว้นแต่คุณ opt-in เอง (`cache: 'force-cache'`, `next: { revalidate }` หรือ directive `use cache` แบบใหม่) tutorial เก่าที่บอกว่า "Next.js cache ทุก fetch ให้อัตโนมัติ" คือพฤติกรรมของ Next.js 14 คอร์สนี้สอน default ปัจจุบันและ caching 4 ชั้นที่อยู่เบื้องหลัง
 
 ## สิ่งที่คอร์สนี้ครอบคลุม
@@ -31,5 +31,5 @@ import Callout from '../../../../components/Callout.astro';
 แต่ละบทเริ่มด้วยไอเดียหลักในหนึ่งประโยค แสดง TypeScript/React และ CLI command จริง มีไดอะแกรมของกลไกที่เกี่ยวข้อง และปิดท้ายด้วย takeaway หนึ่งบรรทัดพร้อม quiz สั้น ๆ อ่านเรียงจากบนลงล่าง — module หลัง ๆ จะอ้างอิงคำศัพท์เรื่อง Server/Client boundary และ caching จากบทแรก ๆ เหล่านี้
 
 <Callout title="The one-line takeaway">
-App Router ของ Next.js เป็นแบบ **server-first** — component รันบน server เว้นแต่จะมี boundary `"use client"` บอกเป็นอย่างอื่น — และ caching ของมันเป็นแบบ **แบ่งชั้นและ opt-in** ตั้งแต่ v15 ไม่ใช่อัตโนมัติ คอร์สนี้สอนว่าโค้ดรันที่ไหน, caching 4 ชั้น, rendering กับ streaming ทำงานยังไง และ mutation ไหลผ่าน Server Actions ยังไง ทั้งหมดอิงพฤติกรรมปัจจุบันของ Next.js — เริ่มจาก App Router เอง
+App Router ของ Next.js เป็นแบบ **server-first** — component รันบน server เว้นแต่จะมี boundary `"use client"` บอกเป็นอย่างอื่น — และ caching ของตัวเองเป็นแบบ **แบ่งชั้นและ opt-in** ตั้งแต่ v15 ไม่ใช่อัตโนมัติ คอร์สนี้สอนว่าโค้ดรันที่ไหน, caching 4 ชั้น, rendering กับ streaming ทำงานยังไง และ mutation ไหลผ่าน Server Actions ยังไง ทั้งหมดอิงพฤติกรรมปัจจุบันของ Next.js — เริ่มจาก App Router เอง
 </Callout>

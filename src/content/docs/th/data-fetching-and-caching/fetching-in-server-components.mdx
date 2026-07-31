@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 Server Component เป็น `async` function จึง `await` `fetch` หรือ query database ได้ **ตรง ๆ** ในตัว component ไม่ต้องมี `useEffect` ไม่ต้องมี loading state และไม่ต้องยิงจาก client ไปหา API
 
@@ -81,7 +81,7 @@ export const getUser = cache(async (id: string) => {
 
 ## จุดที่ไม่ควร fetch
 
-Client Component `await` ในตัวมันไม่ได้ และห้ามแตะ database ตรง ๆ มันต้องเข้าถึง data ผ่าน **Route Handler** หรือ data library ที่รันบน server แทนมัน
+Client Component ใช้ `await` ในตัวเองไม่ได้ และห้ามแตะ database ตรง ๆ ต้องเข้าถึง data ผ่าน **Route Handler** หรือ data library ที่รันบน server แทน
 
 ```tsx
 // app/search/search-box.tsx

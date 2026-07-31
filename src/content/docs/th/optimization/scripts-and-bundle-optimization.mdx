@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ส่ง JavaScript ให้น้อยลงด้วยการโหลด third-party script ในจังหวะที่เหมาะสมผ่าน `next/script`, code-split client component ที่หนักด้วย `next/dynamic` และรักษาเส้น Server/Client boundary ให้แคบไว้
 
-## next/script และ strategy ของมัน
+## next/script และ strategy ของตัวเอง
 
 tag `<script>` ดิบ ๆ block การ parse และรันทันทีที่ browser ไปถึง `next/script` ให้คุณเลือกจังหวะด้วย `strategy` เลือกตัวที่ช้าที่สุดเท่าที่ script ทนได้
 
@@ -38,7 +38,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
 ## code-split client component ด้วย next/dynamic
 
-`next/dynamic` (สร้างบน `React.lazy`) แยก client component ที่หนักออกเป็น chunk ของตัวเองที่โหลดเฉพาะตอน render สำหรับ component ที่แตะ browser-only API ให้ส่ง `ssr: false` เพื่อไม่ให้มันรันบน server เลย โปรดจำว่า `ssr: false` ใช้ได้เฉพาะภายใน Client Component
+`next/dynamic` (สร้างบน `React.lazy`) แยก client component ที่หนักออกเป็น chunk ของตัวเองที่โหลดเฉพาะตอน render สำหรับ component ที่แตะ browser-only API ให้ส่ง `ssr: false` เพื่อไม่ให้ component นั้นรันบน server เลย โปรดจำว่า `ssr: false` ใช้ได้เฉพาะภายใน Client Component
 
 ```tsx
 'use client'
@@ -134,10 +134,10 @@ export const quizBundleTh = [
   {
     q: 'ทำไมต้องดัน "use client" ลงไปให้ลึกที่สุด',
     options: [
-      'มันทำให้ server render เร็วขึ้นอย่างเดียว',
+      'ทำให้ server render เร็วขึ้นอย่างเดียว',
       'ทุกอย่างที่ผ่านเส้น boundary กลายเป็น client JavaScript',
-      'มันจำเป็นสำหรับ metadata',
-      'มันปิด Suspense',
+      'จำเป็นสำหรับ metadata',
+      'ปิด Suspense',
     ],
     answer: 1,
   },

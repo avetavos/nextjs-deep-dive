@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 ทำ optimistic check เบา ๆ ใน middleware เพื่อ redirect request ที่ไม่ auth ชัด ๆ ออกไป แต่ทำ authorization จริงให้ใกล้ data ที่สุด ใน Data Access Layer ที่ verify session ก่อนจะ return อะไรออกมา
 
@@ -32,7 +32,7 @@ export async function getSession() {
 
 ## Optimistic check in middleware
 
-middleware เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render มันเร็วก็จริง แต่มันแค่ redirect ห้ามใช้เป็นด่านเดียว
+middleware เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render วิธีนี้เร็วก็จริง แต่แค่ redirect ห้ามใช้เป็นด่านเดียว
 
 ```ts
 // middleware.ts — optimistic redirect only
@@ -53,7 +53,7 @@ export function middleware(request: NextRequest) {
 
 ## Real authorization lives in a Data Access Layer
 
-middleware อย่างเดียวไม่พอ มันไม่ได้รันบนทุก data path และ layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate เพราะฉะนั้น request ที่เก่าหรือถูกปลอมอาจหลุดผ่านไปได้ ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
+middleware อย่างเดียวไม่พอ ไม่ได้รันบนทุก data path และ layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate เพราะฉะนั้น request ที่เก่าหรือถูกปลอมอาจหลุดผ่านไปได้ ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
 
 ```ts
 // app/lib/dal.ts — verify the session close to the data
@@ -71,7 +71,7 @@ export const verifySession = cache(async () => {
 })
 ```
 
-จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Lucia จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับบนมันอยู่ดี
+จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Lucia จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับ library พวกนี้อยู่ดี
 
 <Mermaid title="Optimistic gate in middleware, real check in the DAL" code={diagramAuthTh} />
 

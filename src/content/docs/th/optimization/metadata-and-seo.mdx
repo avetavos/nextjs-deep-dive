@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## metadata แบบ static
 
-คุณ export object `metadata` จาก `layout` หรือ `page` ไหนก็ได้ แล้ว Next.js เปลี่ยนมันเป็น `<title>`, `<meta>` และ link tag มันรันบน server ดังนั้น tag จึงอยู่ใน HTML ชุดแรกที่ crawler อ่าน
+คุณ export object `metadata` จาก `layout` หรือ `page` ไหนก็ได้ แล้ว Next.js เปลี่ยนค่านั้นเป็น `<title>`, `<meta>` และ link tag ขั้นตอนนี้รันบน server ดังนั้น tag จึงอยู่ใน HTML ชุดแรกที่ crawler อ่าน
 
 ```tsx
 // app/about/page.tsx
@@ -35,7 +35,7 @@ export default function AboutPage() {
 
 ## metadata แบบ dynamic และ title template
 
-เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน มันรับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง
+เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน function นี้รับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง
 
 ```tsx
 // app/blog/[slug]/page.tsx
@@ -131,18 +131,18 @@ export const quizMetaTh = [
     options: [
       'เขียน public/sitemap.xml ด้วยมือ',
       'export default function จาก app/sitemap.ts',
-      'return มันจาก generateMetadata',
-      'เพิ่มมันใน next.config',
+      'return sitemap จาก generateMetadata',
+      'เพิ่ม sitemap ใน next.config',
     ],
     answer: 1,
   },
   {
     q: 'ทำไม Metadata API ดีกว่าการจัดการ head ด้วยมือ',
     options: [
-      'มันรันบน client เท่านั้น',
-      'มัน render tag ที่ merge แล้วบน server และเพี้ยนออกจากกันไม่ได้',
-      'มันปิดการทำงานของ crawler',
-      'มันตัดความจำเป็นของ title ออก',
+      'รันบน client เท่านั้น',
+      'render tag ที่ merge แล้วบน server และเพี้ยนออกจากกันไม่ได้',
+      'ปิดการทำงานของ crawler',
+      'ตัดความจำเป็นของ title ออก',
     ],
     answer: 1,
   },

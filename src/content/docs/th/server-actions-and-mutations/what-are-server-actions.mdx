@@ -10,9 +10,9 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
-Server Action คือ async function ที่ mark ด้วย directive `"use server"` และรันบน server เท่านั้น เราเรียกมันตรง ๆ จาก `<form>` หรือจาก Client Component ได้เลยโดยไม่ต้องเขียน API route
+Server Action คือ async function ที่ mark ด้วย directive `"use server"` และรันบน server เท่านั้น เราเรียก action ตรง ๆ จาก `<form>` หรือจาก Client Component ได้เลยโดยไม่ต้องเขียน API route
 
 ## The `"use server"` directive
 
@@ -38,7 +38,7 @@ export default function Page() {
 
 ## A shared actions module
 
-เมื่อหลาย component ต้องใช้ action เดียวกัน ให้ย้ายมันไปไว้ในไฟล์เฉพาะ ใส่ `'use server'` หนึ่งครั้งบนสุด แล้วทุก export จะกลายเป็น action ที่เรียกได้ วิธีนี้รวม logic ของ mutation ไว้ที่เดียว และให้ Client Component import ไปใช้ได้
+เมื่อหลาย component ต้องใช้ action เดียวกัน ให้ย้าย action ไปไว้ในไฟล์เฉพาะ ใส่ `'use server'` หนึ่งครั้งบนสุด แล้วทุก export จะกลายเป็น action ที่เรียกได้ วิธีนี้รวม logic ของ mutation ไว้ที่เดียว และให้ Client Component import ไปใช้ได้
 
 ```ts
 // app/actions.ts — every export here is a Server Action

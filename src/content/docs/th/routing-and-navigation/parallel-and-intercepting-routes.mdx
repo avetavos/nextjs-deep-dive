@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 parallel routes ให้ layout เดียว render หลาย slot อิสระพร้อมกัน ส่วน intercepting routes ให้ route หนึ่ง render ภายใน layout ปัจจุบันแทนที่จะเปิดเป็นหน้าของตัวเอง
 
@@ -54,7 +54,7 @@ export default function Layout({
 
 ## The default.tsx fallback
 
-เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีมัน การ navigate ตรงไปยัง slot ที่ไม่ match จะ throw จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
+เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีไฟล์นี้ การ navigate ตรงไปยัง slot ที่ไม่ match จะ throw จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
 
 ```tsx
 // app/dashboard/@team/default.tsx
@@ -65,7 +65,7 @@ export default function Default() {
 
 ## Intercepting routes
 
-intercepting route convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update prefix จับตาม segment level `(.)` สำหรับ level เดียวกัน `(..)` สำหรับขึ้นไปหนึ่ง level และ `(...)` จาก app root use case คลาสสิกคือ photo modal คลิกรูปใน feed แล้วมันเปิดเป็น modal ทับ feed แต่การเข้า URL นั้นตรง ๆ จะ render หน้าเต็ม
+intercepting route convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update prefix จับตาม segment level `(.)` สำหรับ level เดียวกัน `(..)` สำหรับขึ้นไปหนึ่ง level และ `(...)` จาก app root use case คลาสสิกคือ photo modal คลิกรูปใน feed แล้วรูปเปิดเป็น modal ทับ feed แต่การเข้า URL นั้นตรง ๆ จะ render หน้าเต็ม
 
 ```txt
 app/

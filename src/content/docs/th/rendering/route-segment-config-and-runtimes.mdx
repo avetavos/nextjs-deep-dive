@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 Route Segment Config คือชุดของค่า `export const` ระดับไฟล์ ที่ให้คุณ override ว่า route segment เดียว render, cache และรันบน runtime ไหน
 
 ## segment config exports
 
-แต่ละตัวเป็น named export อยู่บนสุดของ `layout.tsx`, `page.tsx` หรือ `route.ts` มันมีผลกับ segment นั้นและลูกของมัน
+แต่ละตัวเป็น named export อยู่บนสุดของ `layout.tsx`, `page.tsx` หรือ `route.ts` มีผลกับ segment นั้นและลูกของตัวเอง
 
 ```tsx
 // app/blog/page.tsx — route segment config exports
@@ -45,11 +45,11 @@ export const runtime = 'edge';
 เลือกตามสิ่งที่ route ต้องการ —
 
 - **Node.js (default)** — Node API เต็ม, native module, library ใหญ่ ๆ, database driver เลือกเมื่อคุณต้องการ ecosystem ทั้งหมดหรืองานหนัก
-- **Edge** — bundle เล็ก, cold start เกือบเป็นศูนย์, รันใกล้ผู้ใช้เชิงภูมิศาสตร์ เลือกสำหรับ route เบา ๆ ที่ไวต่อ latency เช่น personalization, redirect หรือ auth check ง่าย ๆ ตราบใดที่มันอยู่ในชุด Edge API ที่จำกัด
+- **Edge** — bundle เล็ก, cold start เกือบเป็นศูนย์, รันใกล้ผู้ใช้เชิงภูมิศาสตร์ เลือกสำหรับ route เบา ๆ ที่ไวต่อ latency เช่น personalization, redirect หรือ auth check ง่าย ๆ ตราบใดที่อยู่ในชุด Edge API ที่จำกัด
 
 ## ISR ผ่าน revalidate
 
-Incremental Static Regeneration ทำให้ route ยัง static และเร็ว แต่ยังปล่อยให้มัน stale แล้ว refresh ตามเวลาได้ ตั้ง `revalidate` เป็นจำนวนวินาที Next.js จะเสิร์ฟ static page ที่ cache ไว้ แล้ว rebuild เบื้องหลังหลังพ้นช่วงนั้น
+Incremental Static Regeneration ทำให้ route ยัง static และเร็ว แต่ยอมให้ content stale ได้แล้ว refresh ตามเวลา ตั้ง `revalidate` เป็นจำนวนวินาที Next.js จะเสิร์ฟ static page ที่ cache ไว้ แล้ว rebuild เบื้องหลังหลังพ้นช่วงนั้น
 
 ```tsx
 // app/products/page.tsx — serve static, refresh in the background every 60s

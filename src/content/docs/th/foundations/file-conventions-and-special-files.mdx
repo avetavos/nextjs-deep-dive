@@ -12,19 +12,19 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
-ใน App Router โฟลเดอร์นิยาม route segment และชื่อไฟล์ที่จองไว้ชุดเล็ก ๆ ให้พฤติกรรมกับแต่ละโฟลเดอร์ — โฟลเดอร์จะเข้าถึงเป็น URL ได้ก็ต่อเมื่อมันมี `page` อยู่ข้างใน
+ใน App Router โฟลเดอร์นิยาม route segment และชื่อไฟล์ที่จองไว้ชุดเล็ก ๆ ให้พฤติกรรมกับแต่ละโฟลเดอร์ — โฟลเดอร์จะเข้าถึงเป็น URL ได้ก็ต่อเมื่อมี `page` อยู่ข้างใน
 
 ## โฟลเดอร์คือ segment ส่วนไฟล์พิเศษคือพฤติกรรม
 
-โฟลเดอร์ใต้ `app/` คือ URL segment แต่โฟลเดอร์เปล่า ๆ ไม่ทำอะไร สิ่งที่มันทำถูกตัดสินโดยไฟล์ที่จองไว้ข้างใน ชื่อไฟล์แต่ละอันมีหน้าที่เดียว —
+โฟลเดอร์ใต้ `app/` คือ URL segment แต่โฟลเดอร์เปล่า ๆ ไม่ทำอะไร สิ่งที่ทำถูกตัดสินโดยไฟล์ที่จองไว้ข้างใน ชื่อไฟล์แต่ละอันมีหน้าที่เดียว —
 
 - **`page.tsx`** — UI ของ route และเป็นตัวที่ทำให้ segment นั้น route ได้แบบ public
 - **`layout.tsx`** — wrapper ที่ใช้ร่วมกัน คงอยู่ข้ามการ navigate และ nest ซ้อนใน parent layout
 - **`loading.tsx`** — Suspense fallback ที่แสดงระหว่าง segment กำลัง stream เข้ามา
-- **`error.tsx`** — error boundary ของ segment มันต้องเป็น Client Component
+- **`error.tsx`** — error boundary ของ segment และต้องเป็น Client Component
 - **`not-found.tsx`** — UI ที่ render เมื่อ `notFound()` ถูกเรียก
 - **`route.ts`** — Route Handler คือ API endpoint แทนที่จะเป็น page
-- **`template.tsx`** — คล้าย layout แต่มัน re-mount instance ใหม่ทุกครั้งที่ navigate
+- **`template.tsx`** — คล้าย layout แต่ re-mount instance ใหม่ทุกครั้งที่ navigate
 
 ```txt
 app/
@@ -56,7 +56,7 @@ export default async function BlogPost({
 }
 ```
 
-`layout` ครอบ segment และทุกอย่างที่อยู่ใต้มัน มันเก็บ state ไว้ข้ามการ navigate ระหว่าง sibling page ดังนั้น chrome ที่ใช้ร่วมกันอย่าง sidebar จึงไม่ remount —
+`layout` ครอบ segment และทุกอย่างที่อยู่ข้างใต้ และเก็บ state ไว้ข้ามการ navigate ระหว่าง sibling page ดังนั้น chrome ที่ใช้ร่วมกันอย่าง sidebar จึงไม่ remount —
 
 ```tsx
 // app/dashboard/layout.tsx
@@ -76,7 +76,7 @@ export default function DashboardLayout({
 
 ## root layout เป็นสิ่งที่ต้องมี
 
-ทุก App Router app ต้องมี root layout หนึ่งอันที่ `app/layout.tsx` มันเป็น layout เดียวที่ render tag `<html>` และ `<body>` เพราะ Next.js ไม่ได้ปล่อย tag พวกนี้ให้คุณ —
+ทุก App Router app ต้องมี root layout หนึ่งอันที่ `app/layout.tsx` เป็น layout เดียวที่ render tag `<html>` และ `<body>` เพราะ Next.js ไม่ได้ปล่อย tag พวกนี้ให้คุณ —
 
 ```tsx
 // app/layout.tsx
@@ -93,7 +93,7 @@ export default function RootLayout({
 }
 ```
 
-มีสองกฎที่ตามมาจากทั้งหมดนี้ กฎแรก โฟลเดอร์ที่**ไม่มี** `page.tsx` (หรือ `route.ts`) จะ route ไม่ได้ — คุณ nest โฟลเดอร์เพื่อจัดระเบียบไฟล์ล้วน ๆ ได้ และมันจะไม่ตอบสนองต่อ URL เลย กฎที่สอง `error.tsx` ต้องขึ้นต้นด้วย `"use client"` เพราะ error boundary พึ่งพา React ฝั่ง client
+มีสองกฎที่ตามมาจากทั้งหมดนี้ กฎแรก โฟลเดอร์ที่**ไม่มี** `page.tsx` (หรือ `route.ts`) จะ route ไม่ได้ — คุณ nest โฟลเดอร์เพื่อจัดระเบียบไฟล์ล้วน ๆ ได้ และจะไม่ตอบสนองต่อ URL เลย กฎที่สอง `error.tsx` ต้องขึ้นต้นด้วย `"use client"` เพราะ error boundary พึ่งพา React ฝั่ง client
 
 <Mermaid title="How special files map onto a route segment" code={diagramFileConventions} />
 
@@ -116,7 +116,7 @@ export const quizFileConventions = [
   },
   {
     q: 'อะไรคือสิ่งพิเศษของ error.tsx',
-    options: ['มันต้องเป็น Server Component', 'มันต้องเป็น Client Component', 'มันแทนที่ root layout', 'มัน import อะไรไม่ได้เลย'],
+    options: ['ต้องเป็น Server Component', 'ต้องเป็น Client Component', 'แทนที่ root layout', 'import อะไรไม่ได้เลย'],
     answer: 1,
   },
   {

@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 ใน App Router folder หนึ่งคือ route segment หนึ่ง `page.tsx` ทำให้ segment นั้นเข้าถึงเป็น URL ได้ ส่วน `layout.tsx` ห่อ segment นั้นพร้อม children ทุกตัว และยัง mount ค้างไว้ข้ามการ navigate
 
@@ -40,7 +40,7 @@ export default function DashboardPage() {
 
 ## The required root layout
 
-ทุกแอป App Router ต้องมี root layout หนึ่งตัว มันเป็น layout เดียวที่ render tag `<html>` และ `<body>` และต้อง render `children` เสมอ
+ทุกแอป App Router ต้องมี root layout หนึ่งตัว เป็น layout เดียวที่ render tag `<html>` และ `<body>` และต้อง render `children` เสมอ
 
 ```tsx
 // app/layout.tsx — the required root layout
@@ -88,7 +88,7 @@ export default function Loading() {
 }
 ```
 
-ใส่ `error.tsx` แล้ว Next.js จะห่อ segment ด้วย error boundary มันต้องเป็น Client Component และรับ `error` พร้อมฟังก์ชัน `reset` ไว้ลอง render segment ใหม่
+ใส่ `error.tsx` แล้ว Next.js จะห่อ segment ด้วย error boundary ไฟล์นี้ต้องเป็น Client Component และรับ `error` พร้อมฟังก์ชัน `reset` ไว้ลอง render segment ใหม่
 
 ```tsx
 'use client' // error boundaries must be Client Components
@@ -119,7 +119,7 @@ graph TD
 `;
 
 <Callout title="The one-line takeaway">
-folder คือ segment, `page.tsx` ทำให้มัน routable, ส่วน `layout.tsx` ห่อ subtree ของมันและอยู่รอดข้ามการ navigate โดยไม่ re-render
+folder คือ segment, `page.tsx` ทำให้ segment นั้น routable, ส่วน `layout.tsx` ห่อ subtree ของตัวเองและอยู่รอดข้ามการ navigate โดยไม่ re-render
 </Callout>
 
 export const quizPagesTh = [
@@ -136,10 +136,10 @@ export const quizPagesTh = [
   {
     q: 'layout มีความพิเศษอย่างไรตอน navigate',
     options: [
-      'มัน re-render ทุกครั้งที่เปลี่ยน route',
-      'มัน persist และเก็บ state กับ scroll ไว้',
-      'มัน render ครั้งเดียวแล้วถูกลบทิ้ง',
-      'มันต้องเป็น Client Component',
+      're-render ทุกครั้งที่เปลี่ยน route',
+      'persist และเก็บ state กับ scroll ไว้',
+      'render ครั้งเดียวแล้วถูกลบทิ้ง',
+      'ต้องเป็น Client Component',
     ],
     answer: 1,
   },

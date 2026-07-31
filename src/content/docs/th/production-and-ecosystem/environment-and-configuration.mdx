@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 env var เป็น server-only เป็น default มีแค่ตัวที่ขึ้นต้นด้วย `NEXT_PUBLIC_` เท่านั้นที่ถูก inline เข้า client bundle เพราะฉะนั้น secret ห้ามมี prefix นั้นเด็ดขาด
 
 ## Server-only versus NEXT_PUBLIC_
 
-env var ธรรมดาใช้ได้แค่ฝั่ง server พอใส่ prefix `NEXT_PUBLIC_` Next.js จะ inline ค่าของมันเข้าไปใน JavaScript ที่ส่งไป browser ตอน build มันเหมาะกับ analytics id สาธารณะ แต่หายนะถ้าเป็น API secret
+env var ธรรมดาใช้ได้แค่ฝั่ง server พอใส่ prefix `NEXT_PUBLIC_` Next.js จะ inline ค่านั้นเข้าไปใน JavaScript ที่ส่งไป browser ตอน build เหมาะกับ analytics id สาธารณะ แต่หายนะถ้าเป็น API secret
 
 ```ts
 // Server Component or route — both work on the server
@@ -30,7 +30,7 @@ DATABASE_URL="postgres://user:pass@host:5432/db"   # never prefix a secret
 NEXT_PUBLIC_ANALYTICS_ID="abcdefghijk"             # safe to expose
 ```
 
-เพราะค่า `NEXT_PUBLIC_` ถูกฝังตอน build การเปลี่ยนค่าแปลว่าต้อง rebuild ใหม่ มันไม่ได้อ่านตอน runtime บน browser
+เพราะค่า `NEXT_PUBLIC_` ถูกฝังตอน build การเปลี่ยนค่าแปลว่าต้อง rebuild ใหม่ ไม่ได้อ่านตอน runtime บน browser
 
 ## .env files and load order
 
@@ -86,7 +86,7 @@ graph TD
 `;
 
 <Callout title="The one-line takeaway">
-มีแค่ var `NEXT_PUBLIC_` เท่านั้นที่ไปถึง browser และมันถูกฝังตอน build เก็บ secret ทุกตัวไว้แบบไม่มี prefix และไว้ใน `.env.local`
+มีแค่ var `NEXT_PUBLIC_` เท่านั้นที่ไปถึง browser และถูกฝังตอน build เก็บ secret ทุกตัวไว้แบบไม่มี prefix และไว้ใน `.env.local`
 </Callout>
 
 export const quizEnvTh = [

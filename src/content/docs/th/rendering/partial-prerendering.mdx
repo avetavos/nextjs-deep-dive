@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 Partial Prerendering เสิร์ฟ static shell ที่ prerender ไว้แล้วทันที และ stream "hole" ที่เป็น dynamic — แต่ละอันห่อด้วย Suspense — เข้ามาใน shell ตอน request ทำให้ route เดียวได้ทั้งความเร็วของ static และความสดของ dynamic
 
@@ -102,7 +102,7 @@ export const quizPprTh = [
   },
   {
     q: 'PPR ต่างจาก route แบบ dynamic ล้วนยังไง?',
-    options: ['ไม่ render อะไรเลยตอน build', 'shell ถูก prerender ส่วนที่ dynamic มีแค่ hole', 'มันเอา Suspense boundary ออก', 'มันรันบน edge เท่านั้น'],
+    options: ['ไม่ render อะไรเลยตอน build', 'shell ถูก prerender ส่วนที่ dynamic มีแค่ hole', 'เอา Suspense boundary ออก', 'รันบน edge เท่านั้น'],
     answer: 1,
   },
 ];
