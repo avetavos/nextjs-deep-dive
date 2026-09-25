@@ -38,6 +38,7 @@ export default defineConfig({
         { label: 'Server Actions & Mutations', items: [{ autogenerate: { directory: 'server-actions-and-mutations' } }] },
         { label: 'Optimization', items: [{ autogenerate: { directory: 'optimization' } }] },
         { label: 'Production & Ecosystem', items: [{ autogenerate: { directory: 'production-and-ecosystem' } }] },
+        { label: 'Glossary', translations: { th: 'อภิธานศัพท์' }, link: 'glossary' },
       ],
       }), preact()],
 });
