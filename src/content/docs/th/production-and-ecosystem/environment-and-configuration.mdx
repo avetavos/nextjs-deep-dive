@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 env var เป็น server-only เป็น default มีแค่ตัวที่ขึ้นต้นด้วย `NEXT_PUBLIC_` เท่านั้นที่ถูก inline เข้า client bundle เพราะฉะนั้น secret ห้ามมี prefix นั้นเด็ดขาด
 
-## Server-only versus NEXT_PUBLIC_
+## Server-only เทียบกับ NEXT_PUBLIC_
 
 env var ธรรมดาใช้ได้แค่ฝั่ง server พอใส่ prefix `NEXT_PUBLIC_` Next.js จะ inline ค่านั้นเข้าไปใน JavaScript ที่ส่งไป browser ตอน build เหมาะกับ analytics id สาธารณะ แต่หายนะถ้าเป็น API secret
 
@@ -32,7 +32,7 @@ NEXT_PUBLIC_ANALYTICS_ID="abcdefghijk"             # safe to expose
 
 เพราะค่า `NEXT_PUBLIC_` ถูกฝังตอน build การเปลี่ยนค่าแปลว่าต้อง rebuild ใหม่ ไม่ได้อ่านตอน runtime บน browser
 
-## .env files and load order
+## ไฟล์ .env และลำดับการโหลด
 
 Next.js โหลดไฟล์ `.env` หลายตัวและตัวที่ match ก่อนชนะ สำหรับ production ลำดับคือ `.env.production.local` แล้ว `.env.local` แล้ว `.env.production` แล้ว `.env` เก็บ secret ไว้ใน `.env.local` (gitignore) แล้ว commit เฉพาะ default ที่ปลอดภัย
 
@@ -43,7 +43,7 @@ Next.js โหลดไฟล์ `.env` หลายตัวและตัว�
 .env.production       # loaded during next build / next start
 ```
 
-## next.config.ts essentials
+## ของสำคัญใน next.config.ts
 
 `next.config.ts` คือที่ที่เรา config ตัว framework เอง สี่ตัวที่ใช้บ่อยสุดคือ `images.remotePatterns` (อนุญาต image host ภายนอก), `redirects`, `rewrites` และ `headers`
 
@@ -76,7 +76,7 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-<Mermaid title="Where each env var can be read" code={diagramEnvTh} />
+<Mermaid title="env var แต่ละแบบอ่านได้จากที่ไหน" code={diagramEnvTh} />
 
 export const diagramEnvTh = `
 graph TD
@@ -85,43 +85,43 @@ graph TD
   C --> D["Inlined into client bundle at build time"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 มีแค่ var `NEXT_PUBLIC_` เท่านั้นที่ไปถึง browser และถูกฝังตอน build เก็บ secret ทุกตัวไว้แบบไม่มี prefix และไว้ใน `.env.local`
 </Callout>
 
 export const quizEnvTh = [
   {
-    q: 'Where is a plain (unprefixed) env var available?',
+    q: 'env var ธรรมดา (ไม่มี prefix) ใช้ได้ที่ไหน',
     options: [
-      'Only in the browser',
-      'Only on the server',
-      'Both server and client',
-      'Nowhere until rebuilt',
+      'ใน browser เท่านั้น',
+      'บน server เท่านั้น',
+      'ทั้ง server และ client',
+      'ไม่มีที่ไหนเลยจนกว่าจะ rebuild',
     ],
     answer: 1,
   },
   {
-    q: 'What does the NEXT_PUBLIC_ prefix do?',
+    q: 'prefix NEXT_PUBLIC_ ทำอะไร',
     options: [
-      'Encrypts the value',
-      'Inlines the value into the client bundle at build time',
-      'Makes it read at runtime in the browser',
-      'Marks it as required',
+      'เข้ารหัสค่า',
+      'inline ค่าเข้า client bundle ตอน build',
+      'ทำให้อ่านค่าตอน runtime บน browser',
+      'mark ว่าเป็นค่าบังคับ',
     ],
     answer: 1,
   },
   {
-    q: 'Which file should hold real secrets?',
+    q: 'secret จริงควรเก็บไว้ในไฟล์ไหน',
     options: [
-      '.env (committed)',
-      '.env.local (gitignored)',
+      '.env (commit เข้า repo)',
+      '.env.local (gitignore ไว้)',
       'next.config.ts',
       'package.json',
     ],
     answer: 1,
   },
   {
-    q: 'Which next.config.ts key allows external image hosts?',
+    q: 'key ไหนใน next.config.ts ที่อนุญาต image host ภายนอก',
     options: [
       'images.remotePatterns',
       'redirects',

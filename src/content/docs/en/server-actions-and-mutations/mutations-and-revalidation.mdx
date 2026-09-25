@@ -1,6 +1,6 @@
 ---
 title: Mutations and Revalidation
-description: The full mutation flow — validate, write to the DB, revalidateTag or revalidatePath, and optionally redirect — and how the client caches get refreshed.
+description: The full mutation flow — validate, write to the DB, updateTag / revalidateTag / revalidatePath, and optionally redirect — and how the client caches get refreshed.
 sidebar:
   order: 3
 ---
@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## The idea in one sentence
 
-A mutation is a four-step flow: validate the input, write to the database, call `revalidateTag` or `revalidatePath` to refresh the affected cached data, and optionally `redirect` — so the UI reflects the change without a manual reload.
+A mutation is a four-step flow: validate the input, write to the database, call `updateTag`, `revalidateTag`, or `revalidatePath` to refresh the affected cached data, and optionally `redirect` — so the UI reflects the change without a manual reload.
 
 ## The full mutation flow
 
@@ -41,9 +41,9 @@ export async function createPost(formData: FormData) {
 }
 ```
 
-## revalidateTag vs revalidatePath
+## updateTag, revalidateTag, and revalidatePath
 
-`revalidatePath('/posts')` invalidates everything cached for that route. `revalidateTag('posts')` invalidates only the fetches you tagged with `'posts'`, so it is more surgical when the same data appears on several routes. Tag your reads, then invalidate by tag after the write.
+`revalidatePath('/posts')` invalidates everything cached for that route. Tag-based invalidation is more surgical when the same data appears on several routes: tag your reads, then expire the tag after the write. Inside a Server Action use `updateTag('posts')` — it expires the tag immediately, so the very next request waits for fresh data and the user reads their own write. `revalidateTag(tag, profile)` instead marks the tag stale and keeps serving the old data while it refreshes in the background; in Next.js 16 the second `profile` argument is required (the one-argument form is deprecated and a TypeScript error) and `'max'` is the recommended value. Reach for `revalidateTag` in Route Handlers and webhooks, where `updateTag` is not allowed.
 
 ```ts
 // app/posts/data.ts — tag the read so you can revalidate by tag later
@@ -56,14 +56,24 @@ export async function getPosts() {
 ```
 
 ```ts
-// app/actions.ts — invalidate only the tagged data
+// app/actions.ts — expire only the tagged data so the next request sees the write
 'use server'
 
-import { revalidateTag } from 'next/cache'
+import { updateTag } from 'next/cache'
 
 export async function publishPost(id: string) {
   await db.post.update({ where: { id }, data: { published: true } })
-  revalidateTag('posts')
+  updateTag('posts')
+}
+```
+
+```ts
+// app/api/revalidate/route.ts — outside a Server Action, use revalidateTag with a profile
+import { revalidateTag } from 'next/cache'
+
+export async function POST() {
+  revalidateTag('posts', 'max')
+  return Response.json({ revalidated: true })
 }
 ```
 
@@ -76,7 +86,7 @@ This ties back to the caching module. On the server, revalidation clears the Dat
 export const diagramSa3En = `
 graph TD
   A["Action validates input"] --> B["Writes to the database"]
-  B --> C["revalidateTag or revalidatePath"]
+  B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
   C --> E["Router Cache refreshed"]
   D --> F["UI shows fresh data"]
@@ -85,7 +95,7 @@ graph TD
 `;
 
 <Callout title="The one-line takeaway">
-Validate, write, then `revalidateTag`/`revalidatePath` to clear the Data Cache and refresh the Router Cache — that is what makes the UI reflect a mutation without a manual reload.
+Validate, write, then `updateTag`/`revalidateTag`/`revalidatePath` to clear the Data Cache and refresh the Router Cache — that is what makes the UI reflect a mutation without a manual reload.
 </Callout>
 
 export const quizSa3En = [
@@ -110,7 +120,7 @@ export const quizSa3En = [
     answer: 1,
   },
   {
-    q: 'When is revalidateTag more useful than revalidatePath?',
+    q: 'When is tag-based invalidation (updateTag / revalidateTag) more useful than revalidatePath?',
     options: [
       'When the same data appears on several routes',
       'When you never tagged any fetches',

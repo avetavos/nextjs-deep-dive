@@ -1,6 +1,6 @@
 ---
-title: Authentication Patterns
-description: session และ cookie ทำ optimistic check ใน middleware แต่ทำ authorization จริงใน Data Access Layer และทำไม middleware อย่างเดียวไม่พอ
+title: Pattern การทำ Authentication
+description: session และ cookie ทำ optimistic check ใน proxy แต่ทำ authorization จริงใน Data Access Layer และทำไม proxy อย่างเดียวไม่พอ
 sidebar:
   order: 2
 ---
@@ -12,9 +12,9 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในหนึ่งประโยค
 
-ทำ optimistic check เบา ๆ ใน middleware เพื่อ redirect request ที่ไม่ auth ชัด ๆ ออกไป แต่ทำ authorization จริงให้ใกล้ data ที่สุด ใน Data Access Layer ที่ verify session ก่อนจะ return อะไรออกมา
+ทำ optimistic check เบา ๆ ใน proxy เพื่อ redirect request ที่ไม่ auth ชัด ๆ ออกไป แต่ทำ authorization จริงให้ใกล้ data ที่สุด ใน Data Access Layer ที่ verify session ก่อนจะ return อะไรออกมา
 
-## Sessions and cookies
+## Session และ cookie
 
 auth ส่วนใหญ่วิ่งอยู่บน session ที่เก็บใน cookie แบบ HTTP-only ฝั่ง server เราอ่าน cookie นั้นด้วย `cookies()` จาก `next/headers`
 
@@ -30,18 +30,18 @@ export async function getSession() {
 }
 ```
 
-## Optimistic check in middleware
+## Optimistic check ใน proxy
 
-middleware เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render วิธีนี้เร็วก็จริง แต่แค่ redirect ห้ามใช้เป็นด่านเดียว
+proxy (`proxy.ts`) เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render วิธีนี้เร็วก็จริง แต่แค่ redirect ห้ามใช้เป็นด่านเดียว
 
 ```ts
-// middleware.ts — optimistic redirect only
+// proxy.ts — optimistic redirect only
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 const protectedRoutes = ['/dashboard']
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname
   const hasSession = request.cookies.has('session')
   if (protectedRoutes.some((p) => path.startsWith(p)) && !hasSession) {
@@ -51,9 +51,9 @@ export function middleware(request: NextRequest) {
 }
 ```
 
-## Real authorization lives in a Data Access Layer
+## Authorization ตัวจริงอยู่ใน Data Access Layer
 
-middleware อย่างเดียวไม่พอ ไม่ได้รันบนทุก data path และ layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate เพราะฉะนั้น request ที่เก่าหรือถูกปลอมอาจหลุดผ่านไปได้ ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
+proxy อย่างเดียวไม่พอ `matcher` ที่ exclude path ไหนก็จะข้าม Server Action call บน path นั้นไปด้วย layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate และ check ที่อยู่แค่หน้า app อาจถูก bypass ได้ทั้งดุ้น [CVE-2025-29927](https://github.com/advisories/GHSA-f82v-jwr5-mffw) เปิดให้ผู้โจมตีข้าม middleware ทั้งหมดด้วย header `x-middleware-subrequest` ที่ปลอมขึ้นมา (แก้แล้วใน Next.js 15.2.3) ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
 
 ```ts
 // app/lib/dal.ts — verify the session close to the data
@@ -71,61 +71,61 @@ export const verifySession = cache(async () => {
 })
 ```
 
-จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Lucia จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับ library พวกนี้อยู่ดี
+จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Better Auth จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับ library พวกนี้อยู่ดี
 
-<Mermaid title="Optimistic gate in middleware, real check in the DAL" code={diagramAuthTh} />
+<Mermaid title="gate แบบ optimistic ใน proxy, check ตัวจริงใน DAL" code={diagramAuthTh} />
 
 export const diagramAuthTh = `
 graph TD
-  A["Request"] --> B["middleware: optimistic redirect"]
+  A["Request"] --> B["proxy: optimistic redirect"]
   B --> C["Page / Server Action"]
   C --> D["verifySession() in DAL"]
   D -->|no session| E["redirect to /login"]
   D -->|valid| F["Return protected data"]
 `;
 
-<Callout title="The one-line takeaway">
-ใช้ middleware ทำ optimistic redirect เร็ว ๆ แต่วาง authorization check ตัวจริงไว้ใน Data Access Layer ที่ verify session ก่อน return data
+<Callout title="สรุปในหนึ่งบรรทัด">
+ใช้ proxy ทำ optimistic redirect เร็ว ๆ แต่วาง authorization check ตัวจริงไว้ใน Data Access Layer ที่ verify session ก่อน return data
 </Callout>
 
 export const quizAuthTh = [
   {
-    q: 'How do you read the session cookie on the server?',
+    q: 'อ่าน session cookie ฝั่ง server ได้อย่างไร',
     options: [
       'document.cookie',
-      'cookies() from next/headers',
+      'cookies() จาก next/headers',
       'localStorage.getItem',
-      'useCookie() hook',
+      'hook useCookie()',
     ],
     answer: 1,
   },
   {
-    q: 'What should middleware do for auth?',
+    q: 'proxy ควรทำอะไรสำหรับ auth',
     options: [
-      'Run the full authorization check',
-      'A lightweight optimistic redirect',
-      'Query the database for permissions',
-      'Nothing — auth cannot use middleware',
+      'รัน authorization check แบบเต็ม',
+      'optimistic redirect เบา ๆ',
+      'query database เพื่อเช็ค permission',
+      'ไม่ทำอะไรเลย auth ใช้ proxy ไม่ได้',
     ],
     answer: 1,
   },
   {
-    q: 'Why is middleware alone not sufficient for authorization?',
+    q: 'ทำไม proxy อย่างเดียวถึงไม่พอสำหรับ authorization',
     options: [
-      'It cannot read cookies',
-      'It does not run for every data path and layouts do not re-run every navigation',
-      'It only runs in development',
-      'It cannot redirect requests',
+      'มันอ่าน cookie ไม่ได้',
+      'matcher อาจข้ามบาง path, layout ไม่ re-run ทุกครั้งที่ navigate และมันถูก bypass ได้',
+      'มันรันแค่ตอน development',
+      'มัน redirect request ไม่ได้',
     ],
     answer: 1,
   },
   {
-    q: 'Where does the authoritative authorization check belong?',
+    q: 'authorization check ตัวจริงควรอยู่ตรงไหน',
     options: [
-      'In a Data Access Layer close to the data',
-      'Only in middleware',
-      'In the browser before fetching',
-      'In the root layout only',
+      'ใน Data Access Layer ที่อยู่ใกล้ data',
+      'ใน proxy เท่านั้น',
+      'ใน browser ก่อน fetch',
+      'ใน root layout เท่านั้น',
     ],
     answer: 0,
   },

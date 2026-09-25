@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 การต่อ Server Action เข้ากับ `<form action={action}>` ทำให้เราได้ form ที่ submit และ mutate ได้ตั้งแต่ก่อน JavaScript โหลด แล้ว upgrade เป็นประสบการณ์ฝั่ง client ที่สมบูรณ์ขึ้นเมื่อ React hydrate เสร็จ
 
-## Progressive enhancement for free
+## ได้ progressive enhancement ฟรี
 
 เพราะ action ผูกกับ `<form>` จริง browser จึง post form ด้วย HTTP request ธรรมดาได้ mutation ทำงานได้แม้ปิด JavaScript หรือยังโหลดไม่เสร็จ เมื่อ React hydrate หน้าเสร็จ form เดิมจะถูก intercept ฝั่ง client จึงไม่มีการ reload ทั้งหน้า เราได้ baseline ฟรี และได้ upgrade อัตโนมัติ
 
@@ -32,7 +32,7 @@ export function NewTodoForm() {
 }
 ```
 
-## useActionState for result, pending, and errors
+## useActionState สำหรับผลลัพธ์, pending และ error
 
 `useActionState(action, initialState)` ห่อ action ไว้ เราจึงได้ state ล่าสุดที่ return กลับมา ได้ form action ไว้ bind และได้ flag `pending` action ของเรารับ state ก่อนหน้าเป็น argument แรก และ return state ใหม่ เหมาะมากกับการโชว์ validation error ข้าง field
 
@@ -74,7 +74,7 @@ export function NewTodoForm() {
 }
 ```
 
-## useFormStatus for the submit button
+## useFormStatus สำหรับปุ่ม submit
 
 `useFormStatus` อ่าน pending state ของ form ที่ครอบอยู่ วางไว้ใน child component ของ form เพื่อให้ปุ่ม disable ตัวเองระหว่าง action รันได้ โดยไม่ต้องส่ง props ลงไป
 
@@ -94,7 +94,7 @@ export function SubmitButton() {
 }
 ```
 
-## useOptimistic for instant feedback
+## useOptimistic สำหรับ feedback ทันที
 
 `useOptimistic` ให้เราโชว์ผลลัพธ์ที่คาดไว้ทันที ก่อน server ตอบกลับ เรา render list แบบ optimistic เพิ่ม item ใหม่ตอน submit แล้ว React จะ reconcile เมื่อข้อมูลจริงมาถึง
 
@@ -129,7 +129,7 @@ export function Thread({ messages }: { messages: Message[] }) {
 }
 ```
 
-<Mermaid title="Baseline submit then hydrated upgrade" code={diagramSa2Th} />
+<Mermaid title="submit แบบ baseline แล้ว upgrade หลัง hydrate" code={diagramSa2Th} />
 
 export const diagramSa2Th = `
 graph TD
@@ -139,48 +139,48 @@ graph TD
   D --> E["useActionState + useFormStatus + useOptimistic"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 form action mutate ได้แม้ไม่มี JavaScript และ `useActionState`, `useFormStatus`, `useOptimistic` เสริม pending, validation error และ optimistic UI เมื่อ hydrate แล้ว
 </Callout>
 
 export const quizSa2Th = [
   {
-    q: 'Why does a form action work before JavaScript loads?',
+    q: 'ทำไม form action ถึงทำงานได้ก่อน JavaScript โหลด',
     options: [
-      'Next.js ships a service worker to handle it',
-      'The action is attached to a real form the browser can POST',
-      'React hydrates synchronously before paint',
-      'It secretly polls an API route',
+      'Next.js ส่ง service worker มาจัดการให้',
+      'action ผูกกับ form จริงที่ browser POST ได้เอง',
+      'React hydrate แบบ synchronous ก่อน paint',
+      'มัน poll API route อยู่เงียบ ๆ',
     ],
     answer: 1,
   },
   {
-    q: 'What does useActionState give you back?',
+    q: 'useActionState คืนอะไรกลับมา',
     options: [
-      'Only the pending boolean',
-      'The returned state, a form action, and a pending flag',
-      'A ref to the form element',
-      'The raw FormData object',
+      'boolean pending อย่างเดียว',
+      'state ที่ return กลับมา, form action และ flag pending',
+      'ref ไปยัง element ของ form',
+      'object FormData ดิบ ๆ',
     ],
     answer: 1,
   },
   {
-    q: 'Where must useFormStatus be called to read the form pending state?',
+    q: 'ต้องเรียก useFormStatus ที่ไหนถึงจะอ่าน pending state ของ form ได้',
     options: [
-      'In the Server Action itself',
-      'In the same component that renders the form tag',
-      'In a child component of the form',
-      'In the root layout',
+      'ใน Server Action เอง',
+      'ใน component เดียวกับที่ render tag form',
+      'ใน child component ของ form',
+      'ใน root layout',
     ],
     answer: 2,
   },
   {
-    q: 'What is the purpose of useOptimistic?',
+    q: 'useOptimistic มีไว้ทำอะไร',
     options: [
-      'To validate input on the server',
-      'To show the expected result before the server responds',
-      'To cache the action result on disk',
-      'To retry the action automatically on failure',
+      'validate input บน server',
+      'โชว์ผลลัพธ์ที่คาดไว้ก่อน server ตอบกลับ',
+      'cache ผลลัพธ์ของ action ลง disk',
+      'retry action อัตโนมัติเมื่อล้มเหลว',
     ],
     answer: 1,
   },

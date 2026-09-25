@@ -1,6 +1,6 @@
 ---
 title: Mutations และ Revalidation
-description: flow ของ mutation แบบเต็ม — validate, เขียนลง DB, revalidateTag หรือ revalidatePath และ redirect แล้ว client cache ถูก refresh อย่างไร
+description: flow ของ mutation แบบเต็ม — validate, เขียนลง DB, updateTag / revalidateTag / revalidatePath และ redirect แล้ว client cache ถูก refresh อย่างไร
 sidebar:
   order: 3
 ---
@@ -12,9 +12,9 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในหนึ่งประโยค
 
-mutation คือ flow สี่ขั้น validate input, เขียนลง database, เรียก `revalidateTag` หรือ `revalidatePath` เพื่อ refresh ข้อมูลที่ cache ไว้ซึ่งได้รับผลกระทบ และ redirect ถ้าจำเป็น เพื่อให้ UI สะท้อนการเปลี่ยนแปลงโดยไม่ต้อง reload เอง
+mutation คือ flow สี่ขั้น validate input, เขียนลง database, เรียก `updateTag`, `revalidateTag` หรือ `revalidatePath` เพื่อ refresh ข้อมูลที่ cache ไว้ซึ่งได้รับผลกระทบ และ redirect ถ้าจำเป็น เพื่อให้ UI สะท้อนการเปลี่ยนแปลงโดยไม่ต้อง reload เอง
 
-## The full mutation flow
+## Flow ของ mutation แบบเต็ม
 
 ภายใน action เรา validate ก่อน แล้วค่อย mutate แล้วค่อย revalidate ข้อมูลที่เพิ่งเปลี่ยน หลัง revalidate แล้วจึง redirect เพราะ `redirect` throw ภายในและหยุดโค้ดที่เหลือของ function ไม่ให้รันต่อ
 
@@ -41,9 +41,9 @@ export async function createPost(formData: FormData) {
 }
 ```
 
-## revalidateTag vs revalidatePath
+## updateTag, revalidateTag และ revalidatePath
 
-`revalidatePath('/posts')` invalidate ทุกอย่างที่ cache ไว้สำหรับ route นั้น ส่วน `revalidateTag('posts')` invalidate เฉพาะ fetch ที่เรา tag ด้วย `'posts'` จึงตรงจุดกว่าเมื่อข้อมูลเดียวกันโผล่ในหลาย route ให้ tag ตอน read แล้ว invalidate ด้วย tag หลัง write
+`revalidatePath('/posts')` invalidate ทุกอย่างที่ cache ไว้สำหรับ route นั้น การ invalidate ด้วย tag ตรงจุดกว่าเมื่อข้อมูลเดียวกันโผล่ในหลาย route ให้ tag ตอน read แล้ว expire tag หลัง write ภายใน Server Action ให้ใช้ `updateTag('posts')` ซึ่ง expire tag ทันที request ถัดไปจึงรอข้อมูลใหม่และผู้ใช้เห็นสิ่งที่ตัวเองเพิ่งเขียน ส่วน `revalidateTag(tag, profile)` จะ mark tag ว่า stale และยังเสิร์ฟข้อมูลเก่าระหว่าง refresh เบื้องหลัง ใน Next.js 16 argument ตัวที่สอง `profile` เป็นค่าบังคับ (แบบ argument เดียวถูก deprecate และเป็น TypeScript error) และ `'max'` คือค่าที่แนะนำ ใช้ `revalidateTag` ใน Route Handler และ webhook ซึ่งเรียก `updateTag` ไม่ได้
 
 ```ts
 // app/posts/data.ts — tag the read so you can revalidate by tag later
@@ -56,27 +56,37 @@ export async function getPosts() {
 ```
 
 ```ts
-// app/actions.ts — invalidate only the tagged data
+// app/actions.ts — expire only the tagged data so the next request sees the write
 'use server'
 
-import { revalidateTag } from 'next/cache'
+import { updateTag } from 'next/cache'
 
 export async function publishPost(id: string) {
   await db.post.update({ where: { id }, data: { published: true } })
-  revalidateTag('posts')
+  updateTag('posts')
 }
 ```
 
-## How the client caches get refreshed
+```ts
+// app/api/revalidate/route.ts — outside a Server Action, use revalidateTag with a profile
+import { revalidateTag } from 'next/cache'
+
+export async function POST() {
+  revalidateTag('posts', 'max')
+  return Response.json({ revalidated: true })
+}
+```
+
+## Client cache ถูก refresh อย่างไร
 
 ส่วนนี้โยงกลับไปที่ caching module ฝั่ง server การ revalidate จะล้าง entry ใน Data Cache ของ fetch ที่ได้รับผลกระทบ ฝั่ง client response ของ Server Action ยัง refresh Router Cache ของ route ปัจจุบันด้วย segment ที่ render ไปแล้วจึงถูกแทนด้วย output ใหม่จาก server ผู้ใช้เห็นข้อมูลใหม่โดยไม่ต้อง hard reload cache ทั้งสองตัวจึงคงความ consistent
 
-<Mermaid title="The mutation and revalidation flow" code={diagramSa3Th} />
+<Mermaid title="flow ของ mutation และ revalidation" code={diagramSa3Th} />
 
 export const diagramSa3Th = `
 graph TD
   A["Action validates input"] --> B["Writes to the database"]
-  B --> C["revalidateTag or revalidatePath"]
+  B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
   C --> E["Router Cache refreshed"]
   D --> F["UI shows fresh data"]
@@ -84,48 +94,48 @@ graph TD
   B --> G["Optional redirect after revalidate"]
 `;
 
-<Callout title="The one-line takeaway">
-validate, write แล้ว `revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Router Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
+<Callout title="สรุปในหนึ่งบรรทัด">
+validate, write แล้ว `updateTag`/`revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Router Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
 </Callout>
 
 export const quizSa3Th = [
   {
-    q: 'What is the correct order of the mutation flow?',
+    q: 'ลำดับที่ถูกต้องของ mutation flow คืออะไร',
     options: [
-      'Redirect, validate, write, revalidate',
-      'Validate, write, revalidate, then optionally redirect',
-      'Write, redirect, validate, revalidate',
-      'Revalidate, write, validate, redirect',
+      'redirect, validate, write, revalidate',
+      'validate, write, revalidate แล้ว redirect ถ้าจำเป็น',
+      'write, redirect, validate, revalidate',
+      'revalidate, write, validate, redirect',
     ],
     answer: 1,
   },
   {
-    q: 'Why must redirect come after revalidation in an action?',
+    q: 'ทำไม redirect ต้องมาหลัง revalidate ใน action',
     options: [
-      'redirect is slower than revalidation',
-      'redirect throws internally and stops later code from running',
-      'revalidation requires a redirect to take effect',
-      'The order does not matter at all',
+      'redirect ช้ากว่า revalidate',
+      'redirect throw ภายในและหยุดโค้ดที่เหลือไม่ให้รันต่อ',
+      'revalidate ต้องมี redirect ถึงจะมีผล',
+      'ลำดับไม่สำคัญเลย',
     ],
     answer: 1,
   },
   {
-    q: 'When is revalidateTag more useful than revalidatePath?',
+    q: 'การ invalidate ด้วย tag (updateTag / revalidateTag) มีประโยชน์กว่า revalidatePath เมื่อไร',
     options: [
-      'When the same data appears on several routes',
-      'When you never tagged any fetches',
-      'When you want to clear the entire app cache',
-      'When the action does not touch cached data',
+      'เมื่อข้อมูลเดียวกันโผล่ในหลาย route',
+      'เมื่อไม่เคย tag fetch ไหนเลย',
+      'เมื่ออยากล้าง cache ทั้ง app',
+      'เมื่อ action ไม่แตะข้อมูลที่ cache ไว้',
     ],
     answer: 0,
   },
   {
-    q: 'Which client-side cache does the action response refresh?',
+    q: 'response ของ action refresh cache ฝั่ง client ตัวไหน',
     options: [
-      'The browser image cache',
-      'The Router Cache for the current route',
-      'Only localStorage',
-      'The service worker cache',
+      'image cache ของ browser',
+      'Router Cache ของ route ปัจจุบัน',
+      'localStorage เท่านั้น',
+      'cache ของ service worker',
     ],
     answer: 1,
   },

@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 Server Action คือ async function ที่ mark ด้วย directive `"use server"` และรันบน server เท่านั้น เราเรียก action ตรง ๆ จาก `<form>` หรือจาก Client Component ได้เลยโดยไม่ต้องเขียน API route
 
-## The `"use server"` directive
+## Directive `"use server"` คืออะไร
 
 เรา mark function ให้เป็น Server Action ได้สองแบบ แบบแรกใส่ `"use server"` ไว้บนสุดของ inline async function ภายใน Server Component แบบที่สองใส่ `'use server'` ไว้บนสุดของทั้ง module file แล้วทุก export ในไฟล์นั้นจะกลายเป็น action
 
@@ -36,7 +36,7 @@ export default function Page() {
 }
 ```
 
-## A shared actions module
+## Actions module ที่แชร์กัน
 
 เมื่อหลาย component ต้องใช้ action เดียวกัน ให้ย้าย action ไปไว้ในไฟล์เฉพาะ ใส่ `'use server'` หนึ่งครั้งบนสุด แล้วทุก export จะกลายเป็น action ที่เรียกได้ วิธีนี้รวม logic ของ mutation ไว้ที่เดียว และให้ Client Component import ไปใช้ได้
 
@@ -54,7 +54,7 @@ export async function deleteTodo(id: string) {
 }
 ```
 
-## Calling from a form and from a Client Component
+## เรียกจาก form และจาก Client Component
 
 เราต่อ Server Action เข้ากับ form ตรง ๆ ด้วย `<form action={createTodo}>` แล้ว Next.js จะ post ข้อมูล form ไปที่ action บน server หรือจะ import action เข้าไปใน Client Component แล้วเรียกเหมือน function ปกติก็ได้ Next.js จะแปลง call นั้นเป็น network request ให้เอง
 
@@ -69,11 +69,11 @@ export function DeleteButton({ id }: { id: string }) {
 }
 ```
 
-## How it differs from a Route Handler
+## ต่างจาก Route Handler อย่างไร
 
 Route Handler ใน `route.ts` คือ URL สาธารณะที่เราออกแบบ ต่อ และ `fetch` เอง ส่วน Server Action คือ function ที่เราเรียกตรง ๆ Next.js สร้าง endpoint และ network call ให้ และรองรับ progressive enhancement ผ่าน form เลือก Route Handler เมื่อต้องการ public API หรือ webhook จริง ๆ และเลือก Server Action สำหรับ flow ของ form และ mutation ภายใน app ของเราเอง
 
-<Mermaid title="How a Server Action call reaches the server" code={diagramSa1Th} />
+<Mermaid title="การเรียก Server Action ไปถึง server ได้อย่างไร" code={diagramSa1Th} />
 
 export const diagramSa1Th = `
 graph LR
@@ -82,48 +82,48 @@ graph LR
   C -->|"reads or writes"| D["Database"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 Server Action คือ async function แบบ `"use server"` ที่รันบน server เท่านั้น และเรียกได้จาก form หรือ Client Component โดยไม่ต้องเขียน API route เอง
 </Callout>
 
 export const quizSa1Th = [
   {
-    q: 'What does the "use server" directive mark a function as?',
+    q: 'directive "use server" mark function ให้เป็นอะไร',
     options: [
-      'A Client Component that runs in the browser',
-      'A Server Action that runs only on the server',
-      'A Route Handler exposed at a fixed URL',
-      'A middleware function that runs on every request',
+      'Client Component ที่รันใน browser',
+      'Server Action ที่รันบน server เท่านั้น',
+      'Route Handler ที่เปิดไว้ที่ URL ตายตัว',
+      'function middleware ที่รันทุก request',
     ],
     answer: 1,
   },
   {
-    q: 'What happens when you add \'use server\' at the top of a module file?',
+    q: 'จะเกิดอะไรขึ้นเมื่อใส่ \'use server\' ไว้บนสุดของ module file',
     options: [
-      'Only the default export becomes an action',
-      'Every export in that file becomes a Server Action',
-      'The file is treated as a Client Component',
-      'Nothing, the directive is ignored in module files',
+      'เฉพาะ default export เท่านั้นที่กลายเป็น action',
+      'ทุก export ในไฟล์นั้นกลายเป็น Server Action',
+      'ไฟล์ถูกมองเป็น Client Component',
+      'ไม่เกิดอะไรขึ้น directive ถูกเมินใน module file',
     ],
     answer: 1,
   },
   {
-    q: 'How do you call a Server Action from a Client Component?',
+    q: 'เรียก Server Action จาก Client Component ได้อย่างไร',
     options: [
-      'Write a fetch call to a route you defined',
-      'Import the action and call it like a normal function',
-      'You cannot call actions from Client Components',
-      'Register it in middleware first',
+      'เขียน fetch ไปยัง route ที่เรากำหนดเอง',
+      'import action แล้วเรียกเหมือน function ปกติ',
+      'เรียก action จาก Client Component ไม่ได้',
+      'ต้อง register ใน middleware ก่อน',
     ],
     answer: 1,
   },
   {
-    q: 'When should you reach for a Route Handler instead of a Server Action?',
+    q: 'ควรเลือก Route Handler แทน Server Action เมื่อไร',
     options: [
-      'For form submissions inside your own app',
-      'When you need a real public API or webhook endpoint',
-      'Whenever you write to the database',
-      'To avoid running code on the server',
+      'สำหรับการ submit form ภายใน app ของเราเอง',
+      'เมื่อต้องการ public API หรือ webhook endpoint จริง ๆ',
+      'ทุกครั้งที่เขียนลง database',
+      'เพื่อเลี่ยงการรันโค้ดบน server',
     ],
     answer: 1,
   },

@@ -16,7 +16,7 @@ You can deploy to Vercel with zero config or self-host a Node server behind a CD
 
 ## Vercel versus self-hosting
 
-Vercel detects a Next.js app and wires up builds, the CDN, image optimization, and Edge/Node runtimes with no configuration. Self-hosting gives you full control: you build the app and run `next start` (a long-lived Node server) yourself, usually behind a CDN that caches static assets.
+Vercel detects a Next.js app and wires up builds, the CDN, image optimization, and the server runtime with no configuration. Self-hosting gives you full control: you build the app and run `next start` (a long-lived Node server) yourself, usually behind a CDN that caches static assets.
 
 ```bash
 # Self-hosting: build once, then run a long-lived Node server
@@ -66,7 +66,7 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-With a shared handler, `revalidateTag('products')` in a Server Action invalidates the entry for every instance at once. Also decide per route between the Node runtime (full Node APIs) and the Edge runtime (fast, limited APIs) based on what each route actually needs.
+With a shared handler, `updateTag('products')` or `revalidateTag('products', 'max')` in a Server Action invalidates the entry for every instance at once. Routes run on the Node.js runtime; the per-route `runtime = 'edge'` segment config is deprecated in Next.js 16, so remove it rather than plan around it.
 
 ## Go-live checklist
 
@@ -75,8 +75,8 @@ This is the last stop, so pull the whole course together before you ship:
 - Keep data fetching in Server Components; only mark a leaf `'use client'` when it truly needs interactivity.
 - Choose the rendering mode per route deliberately — static, dynamic, or ISR — and confirm each behaves as expected in a production build.
 - Understand your caching layers (request memoization, Data Cache, full-route cache) and wire a shared cache handler before scaling past one instance.
-- Mutate through Server Actions and call `revalidateTag` / `revalidatePath` so caches stay correct after writes.
-- Gate protected routes with an optimistic middleware redirect AND a Data Access Layer check.
+- Mutate through Server Actions and call `updateTag` / `revalidateTag` / `revalidatePath` so caches stay correct after writes.
+- Gate protected routes with an optimistic proxy redirect AND a Data Access Layer check.
 - Keep secrets unprefixed in `.env.local`; expose only `NEXT_PUBLIC_` values.
 
 <Mermaid title="Multi-instance self-hosting shares one cache" code={diagramDeployEn} />

@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ทุก Server Action คือ public HTTP endpoint เราจึงต้อง validate input และ authorize ผู้เรียกภายใน action เอง อย่าเชื่อว่าถูกเรียกจาก UI ของเราเท่านั้น
 
-## Validate and authorize inside the action
+## Validate และ authorize ภายใน action
 
 ใครที่รู้ action ID ก็เรียก action ด้วย payload อะไรก็ได้ ดังนั้น action ต้องเช็คซ้ำว่าผู้ใช้คือใคร และ parse input ใหม่ทุกครั้งที่ถูกเรียก authorize ก่อน แล้ว validate แล้วค่อย mutate UI ที่ render form ไม่ใช่ security boundary
 
@@ -44,7 +44,7 @@ export async function updatePost(formData: FormData) {
 }
 ```
 
-## The built-in protections are not authorization
+## Built-in protection ไม่ใช่ authorization
 
 Next.js เข้ารหัสตัวแปรที่เรา close over ใน action สร้าง action ID ที่เดาไม่ได้ และ dead-code-eliminate action ที่เราไม่เคยใช้ ทำให้ action พวกนั้นไม่กลายเป็น public endpoint สิ่งเหล่านี้ลด attack surface แต่ไม่มีตัวไหนเช็คว่าผู้ใช้คนนี้ทำ action นี้ได้ไหม authorization และ validation จึงยังเป็นหน้าที่ของเรา
 
@@ -59,7 +59,7 @@ export async function updateUser(formData: FormData) {}
 export async function deleteUser(formData: FormData) {}
 ```
 
-## A reusable action wrapper with typed results
+## Action wrapper ที่ใช้ซ้ำได้พร้อม typed result
 
 เพื่อเลี่ยงการเขียน auth และ validation ซ้ำ ให้ห่อ action ด้วย helper ที่ authorize, parse ด้วย schema และ return ผลลัพธ์แบบ typed ทุก action จะ return รูปแบบ success หรือ error เดียวกัน ซึ่งเข้ากับ `useActionState` ได้อย่างสะอาด
 
@@ -87,7 +87,7 @@ export function authedAction<S extends z.ZodType, T>(
 }
 ```
 
-## Keep DB access in a data-access layer
+## เก็บการเข้าถึง DB ไว้ใน data-access layer
 
 อย่ากระจาย query ดิบไปทั่ว action ให้ทุก read และ write ผ่าน data-access layer ที่แต่ละ function บังคับ ownership check ของตัวเอง action เรียก layer นั้น authorization จึงอยู่ติดกับข้อมูลและลืมยาก
 
@@ -103,7 +103,7 @@ export async function updatePostForUser(id: string, userId: string, title: strin
 }
 ```
 
-<Mermaid title="Every request re-checks auth and input" code={diagramSa4Th} />
+<Mermaid title="ทุก request เช็ค auth และ input ซ้ำ" code={diagramSa4Th} />
 
 export const diagramSa4Th = `
 graph TD
@@ -115,48 +115,48 @@ graph TD
   F --> G["Mutate the database"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 มองทุก Server Action เป็น public endpoint authorize ผู้ใช้และ validate input ภายใน action built-in protection ช่วยเสริมความแข็งแรงแต่ไม่แทน authorization ของเรา
 </Callout>
 
 export const quizSa4Th = [
   {
-    q: 'Why must you authorize and validate inside every Server Action?',
+    q: 'ทำไมต้อง authorize และ validate ภายในทุก Server Action',
     options: [
-      'Because actions are slow otherwise',
-      'Because an action is a public endpoint anyone can call directly',
-      'Because React requires it for hydration',
-      'Because the form already guarantees safe input',
+      'เพราะไม่งั้น action จะช้า',
+      'เพราะ action คือ public endpoint ที่ใครก็เรียกตรง ๆ ได้',
+      'เพราะ React ต้องการเพื่อ hydration',
+      'เพราะ form รับประกัน input ที่ปลอดภัยอยู่แล้ว',
     ],
     answer: 1,
   },
   {
-    q: 'What do the built-in protections like unguessable action IDs provide?',
+    q: 'built-in protection อย่าง action ID ที่เดาไม่ได้ให้อะไรกับเรา',
     options: [
-      'Full authorization so you can skip auth checks',
-      'A reduced attack surface, but not authorization',
-      'Automatic input validation for every field',
-      'Encryption of the database at rest',
+      'authorization เต็มรูปแบบ ข้าม auth check ได้เลย',
+      'attack surface ที่ลดลง แต่ไม่ใช่ authorization',
+      'validate input ทุก field ให้อัตโนมัติ',
+      'เข้ารหัส database ตอนเก็บ',
     ],
     answer: 1,
   },
   {
-    q: 'What happens to a Server Action that is never used anywhere?',
+    q: 'Server Action ที่ไม่เคยถูกใช้ที่ไหนเลยจะเป็นอย่างไร',
     options: [
-      'It is exposed as a default public endpoint',
-      'It is dead-code-eliminated and gets no public endpoint',
-      'It throws an error at runtime',
-      'It is cached and called automatically',
+      'ถูกเปิดเป็น public endpoint แบบ default',
+      'ถูก dead-code-eliminate และไม่มี public endpoint',
+      'throw error ตอน runtime',
+      'ถูก cache และเรียกอัตโนมัติ',
     ],
     answer: 1,
   },
   {
-    q: 'What is the point of a data-access layer for mutations?',
+    q: 'data-access layer สำหรับ mutation มีไว้เพื่ออะไร',
     options: [
-      'To make queries run on the client',
-      'To centralize DB access so ownership checks are enforced consistently',
-      'To avoid using a database entirely',
-      'To disable revalidation',
+      'ให้ query รันบน client',
+      'รวมการเข้าถึง DB ไว้ที่เดียวเพื่อบังคับ ownership check อย่างสม่ำเสมอ',
+      'เพื่อไม่ต้องใช้ database เลย',
+      'เพื่อปิด revalidation',
     ],
     answer: 1,
   },

@@ -1,6 +1,6 @@
 ---
-title: Middleware และ Request Lifecycle
-description: middleware.ts ทำงานก่อน request จะเสร็จบนทุก route ที่ match วิธี scope ด้วย matcher และงานแบบไหนควรอยู่บน Edge runtime
+title: Proxy (Middleware) และ Request Lifecycle
+description: proxy.ts (ชื่อใหม่ของ middleware.ts ใน Next.js 16) ทำงานก่อน request จะเสร็จบนทุก route ที่ match วิธี scope ด้วย matcher และทำไมมันรันบน Node.js runtime เสมอ
 sidebar:
   order: 1
 ---
@@ -12,18 +12,18 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในหนึ่งประโยค
 
-ไฟล์ `middleware.ts` ที่ root ของโปรเจกต์จะรันก่อน request จะเสร็จ บนทุก route ที่ match ทำให้เรา redirect, rewrite หรือ set header กับ cookie ได้ก่อนที่ Next.js จะ render อะไรออกมา
+ไฟล์ `proxy.ts` ที่ root ของโปรเจกต์จะรันก่อน request จะเสร็จ บนทุก route ที่ match ทำให้เรา redirect, rewrite หรือ set header กับ cookie ได้ก่อนที่ Next.js จะ render อะไรออกมา Next.js 16 เปลี่ยนชื่อไฟล์นี้จาก `middleware.ts` เป็น `proxy.ts`
 
-## Where middleware sits in the request lifecycle
+## proxy อยู่ตรงไหนใน request lifecycle
 
-middleware ดัก request หลังจาก request มาถึงแต่ก่อน route จะถูก resolve เรา return `NextResponse` เพื่อ redirect, rewrite หรือปล่อยผ่านด้วย `NextResponse.next()`
+proxy ดัก request หลังจาก request มาถึงแต่ก่อน route จะถูก resolve เรา export function ชื่อ `proxy` (หรือ default export) แล้ว return `NextResponse` เพื่อ redirect, rewrite หรือปล่อยผ่านด้วย `NextResponse.next()`
 
 ```ts
-// middleware.ts — runs BEFORE the request completes, on every matching route
+// proxy.ts — runs BEFORE the request completes, on every matching route
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   // Lightweight auth gate: redirect logged-out users away from /dashboard
   const isLoggedIn = request.cookies.has('session')
   if (request.nextUrl.pathname.startsWith('/dashboard') && !isLoggedIn) {
@@ -37,86 +37,90 @@ export function middleware(request: NextRequest) {
 }
 ```
 
-## Scope it with matcher
+## จำกัดขอบเขตด้วย matcher
 
-ถ้าไม่มี `matcher` middleware จะรันทุก request รวมถึง static asset ด้วย เราจึงควร scope ให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
+ถ้าไม่มี `matcher` proxy จะรันทุก request รวมถึง static asset ด้วย เราจึงควร scope ให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
 
 ```ts
-// middleware.ts — scope which routes run middleware
+// proxy.ts — scope which routes run proxy
 export const config = {
   matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
 }
 ```
 
-## Redirects, rewrites, and the Edge runtime
+## Redirect, rewrite และ Node.js runtime
 
-ใช้ middleware สำหรับ redirect, rewrite (URL เดิมแต่เสิร์ฟ content ต่างกัน) และ set header หรือ cookie การ rewrite เสิร์ฟ content คนละแบบโดยไม่เปลี่ยน URL บน browser เหมาะกับ A/B test หรือ geo routing
+ใช้ proxy สำหรับ redirect, rewrite (URL เดิมแต่เสิร์ฟ content ต่างกัน) และ set header หรือ cookie การ rewrite เสิร์ฟ content คนละแบบโดยไม่เปลี่ยน URL บน browser เหมาะกับ A/B test หรือ geo routing
 
 ```ts
 // A/B or geo rewrite — same URL, different content served
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const country = request.headers.get('x-vercel-ip-country') ?? 'us'
   return NextResponse.rewrite(new URL(`/${country}${request.nextUrl.pathname}`, request.url))
 }
 ```
 
-middleware รันบน Edge runtime เป็น default และอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
+proxy รันบน Node.js runtime เสมอและเปลี่ยนไม่ได้ ถ้า export `runtime` จาก `proxy.ts` จะ build ไม่ผ่าน แต่มันยังอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
 
-<Mermaid title="Middleware intercepts before the route resolves" code={diagramMwTh} />
+<Callout title="middleware.ts ถูก deprecate แล้ว">
+ไฟล์ `middleware.ts` และ `export function middleware` แบบเดิมยังใช้ได้ใน Next.js 16 แต่ `next build` จะพิมพ์ deprecation warning ออกมา migrate ด้วย `npx @next/codemod@canary middleware-to-proxy .` ซึ่งจะเปลี่ยนชื่อทั้งไฟล์และ function ให้ เหตุผลเดียวที่จะเก็บ `middleware.ts` ไว้คือถ้ายังต้องใช้ Edge runtime (ซึ่งถูก deprecate เช่นกัน)
+</Callout>
+
+<Mermaid title="proxy ดัก request ก่อน route จะถูก resolve" code={diagramMwTh} />
 
 export const diagramMwTh = `
 graph LR
-  A["Incoming request"] --> B["middleware.ts (Edge)"]
+  A["Incoming request"] --> B["proxy.ts (Node.js)"]
   B -->|redirect| C["NextResponse.redirect"]
   B -->|rewrite| D["NextResponse.rewrite"]
   B -->|next| E["Route handler / page"]
 `;
 
-<Callout title="The one-line takeaway">
-middleware รันบน Edge ก่อนทุก request ที่ match ใช้ทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
+<Callout title="สรุปในหนึ่งบรรทัด">
+proxy รันบน Node.js ก่อนทุก request ที่ match ใช้ทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
 </Callout>
 
 export const quizMwTh = [
   {
-    q: 'When does middleware.ts run?',
+    q: 'proxy.ts รันตอนไหน',
     options: [
-      'After the page finishes rendering',
-      'Before the request completes, on matching routes',
-      'Only on the first request of a session',
-      'Only for API routes',
+      'หลังจาก page render เสร็จ',
+      'ก่อน request จะเสร็จ บน route ที่ match',
+      'เฉพาะ request แรกของ session',
+      'เฉพาะ API route',
     ],
     answer: 1,
   },
   {
-    q: 'What is the matcher config used for?',
+    q: 'config matcher ใช้ทำอะไร',
     options: [
-      'Choosing which routes middleware runs on',
-      'Matching database rows',
-      'Validating form input',
-      'Selecting the rendering mode',
+      'เลือกว่า proxy จะรันบน route ไหน',
+      'match แถวใน database',
+      'validate input ของ form',
+      'เลือก rendering mode',
     ],
     answer: 0,
   },
   {
-    q: 'What runtime does middleware use by default?',
+    q: 'proxy ใช้ runtime อะไร',
     options: [
-      'The Node.js runtime',
-      'A separate worker thread',
-      'The Edge runtime',
-      'The browser main thread',
+      'Node.js runtime และเปลี่ยนไม่ได้',
+      'worker thread แยกต่างหาก',
+      'Edge runtime เป็น default',
+      'main thread ของ browser',
     ],
-    answer: 2,
+    answer: 0,
   },
   {
-    q: 'Which of these belongs in middleware?',
+    q: 'ข้อไหนควรอยู่ใน proxy',
     options: [
-      'A heavy database aggregation',
-      'A lightweight redirect based on a cookie',
-      'Rendering the full page HTML',
-      'Sending a transactional email',
+      'database aggregation หนัก ๆ',
+      'redirect เบา ๆ ตาม cookie',
+      'render HTML ทั้งหน้า',
+      'ส่ง transactional email',
     ],
     answer: 1,
   },

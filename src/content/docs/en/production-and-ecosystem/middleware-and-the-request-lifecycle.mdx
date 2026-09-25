@@ -1,6 +1,6 @@
 ---
-title: Middleware and the Request Lifecycle
-description: How middleware.ts runs before a request completes on every matching route, how to scope it with matcher, and what belongs on the Edge runtime.
+title: Proxy (Middleware) and the Request Lifecycle
+description: How proxy.ts — the Next.js 16 name for middleware.ts — runs before a request completes on every matching route, how to scope it with matcher, and why it always runs on the Node.js runtime.
 sidebar:
   order: 1
 ---
@@ -12,18 +12,18 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## The idea in one sentence
 
-A `middleware.ts` file at the root of your project runs BEFORE a request finishes, on every matching route, so you can redirect, rewrite, or set headers and cookies before Next.js renders anything.
+A `proxy.ts` file at the root of your project runs BEFORE a request finishes, on every matching route, so you can redirect, rewrite, or set headers and cookies before Next.js renders anything — Next.js 16 renamed this file from `middleware.ts` to `proxy.ts`.
 
-## Where middleware sits in the request lifecycle
+## Where proxy sits in the request lifecycle
 
-Middleware intercepts the request after it arrives but before the route is resolved. You return a `NextResponse` to redirect, rewrite, or continue with `NextResponse.next()`.
+Proxy intercepts the request after it arrives but before the route is resolved. You export a function named `proxy` (or a default export) and return a `NextResponse` to redirect, rewrite, or continue with `NextResponse.next()`.
 
 ```ts
-// middleware.ts — runs BEFORE the request completes, on every matching route
+// proxy.ts — runs BEFORE the request completes, on every matching route
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   // Lightweight auth gate: redirect logged-out users away from /dashboard
   const isLoggedIn = request.cookies.has('session')
   if (request.nextUrl.pathname.startsWith('/dashboard') && !isLoggedIn) {
@@ -39,49 +39,53 @@ export function middleware(request: NextRequest) {
 
 ## Scope it with matcher
 
-Without a `matcher`, middleware runs on every request — including static assets. Scope it so it only runs where you need it. The `matcher` config accepts path patterns and can exclude internals.
+Without a `matcher`, proxy runs on every request — including static assets. Scope it so it only runs where you need it. The `matcher` config accepts path patterns and can exclude internals.
 
 ```ts
-// middleware.ts — scope which routes run middleware
+// proxy.ts — scope which routes run proxy
 export const config = {
   matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
 }
 ```
 
-## Redirects, rewrites, and the Edge runtime
+## Redirects, rewrites, and the Node.js runtime
 
-Use middleware for redirects, rewrites (same URL, different content), and setting headers or cookies. A rewrite serves different content without changing the browser URL — useful for A/B tests or geo routing.
+Use proxy for redirects, rewrites (same URL, different content), and setting headers or cookies. A rewrite serves different content without changing the browser URL — useful for A/B tests or geo routing.
 
 ```ts
 // A/B or geo rewrite — same URL, different content served
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const country = request.headers.get('x-vercel-ip-country') ?? 'us'
   return NextResponse.rewrite(new URL(`/${country}${request.nextUrl.pathname}`, request.url))
 }
 ```
 
-Middleware runs on the Edge runtime by default. It sits in front of every matching request, so keep it fast: no database calls, no heavy computation, no large dependencies. Do the lightweight decision here and push real work to the route.
+Proxy always runs on the Node.js runtime, and that is not configurable — exporting `runtime` from `proxy.ts` is a build error. It still sits in front of every matching request, so keep it fast: no database calls, no heavy computation, no large dependencies. Do the lightweight decision here and push real work to the route.
 
-<Mermaid title="Middleware intercepts before the route resolves" code={diagramMwEn} />
+<Callout title="middleware.ts is deprecated">
+The old `middleware.ts` file and `export function middleware` still work in Next.js 16, but `next build` prints a deprecation warning. Migrate with `npx @next/codemod@canary middleware-to-proxy .` — it renames the file and the function. The only reason to keep `middleware.ts` is if you need the (also deprecated) Edge runtime.
+</Callout>
+
+<Mermaid title="Proxy intercepts before the route resolves" code={diagramMwEn} />
 
 export const diagramMwEn = `
 graph LR
-  A["Incoming request"] --> B["middleware.ts (Edge)"]
+  A["Incoming request"] --> B["proxy.ts (Node.js)"]
   B -->|redirect| C["NextResponse.redirect"]
   B -->|rewrite| D["NextResponse.rewrite"]
   B -->|next| E["Route handler / page"]
 `;
 
 <Callout title="The one-line takeaway">
-Middleware runs on the Edge before every matching request — use it for fast redirects, rewrites, and headers, and scope it with `matcher` so it never touches routes it should not.
+Proxy runs on Node.js before every matching request — use it for fast redirects, rewrites, and headers, and scope it with `matcher` so it never touches routes it should not.
 </Callout>
 
 export const quizMwEn = [
   {
-    q: 'When does middleware.ts run?',
+    q: 'When does proxy.ts run?',
     options: [
       'After the page finishes rendering',
       'Before the request completes, on matching routes',
@@ -93,7 +97,7 @@ export const quizMwEn = [
   {
     q: 'What is the matcher config used for?',
     options: [
-      'Choosing which routes middleware runs on',
+      'Choosing which routes proxy runs on',
       'Matching database rows',
       'Validating form input',
       'Selecting the rendering mode',
@@ -101,17 +105,17 @@ export const quizMwEn = [
     answer: 0,
   },
   {
-    q: 'What runtime does middleware use by default?',
+    q: 'What runtime does proxy use?',
     options: [
-      'The Node.js runtime',
+      'The Node.js runtime, and it cannot be changed',
       'A separate worker thread',
-      'The Edge runtime',
+      'The Edge runtime by default',
       'The browser main thread',
     ],
-    answer: 2,
+    answer: 0,
   },
   {
-    q: 'Which of these belongs in middleware?',
+    q: 'Which of these belongs in proxy?',
     options: [
       'A heavy database aggregation',
       'A lightweight redirect based on a cookie',

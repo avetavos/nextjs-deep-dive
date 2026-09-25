@@ -1,6 +1,6 @@
 ---
 title: Authentication Patterns
-description: Sessions and cookies, optimistic checks in middleware versus real authorization in a Data Access Layer, and why middleware alone is not enough.
+description: Sessions and cookies, optimistic checks in proxy versus real authorization in a Data Access Layer, and why proxy alone is not enough.
 sidebar:
   order: 2
 ---
@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## The idea in one sentence
 
-Do a lightweight optimistic check in middleware to redirect obviously-unauthed requests, but do the REAL authorization close to the data — in a Data Access Layer that verifies the session before returning anything.
+Do a lightweight optimistic check in proxy to redirect obviously-unauthed requests, but do the REAL authorization close to the data — in a Data Access Layer that verifies the session before returning anything.
 
 ## Sessions and cookies
 
@@ -30,18 +30,18 @@ export async function getSession() {
 }
 ```
 
-## Optimistic check in middleware
+## Optimistic check in proxy
 
-Middleware is the right place for a cheap, optimistic gate: if there is clearly no session, redirect before rendering. This is fast, but it only redirects — it must not be your only line of defense.
+Proxy (`proxy.ts`) is the right place for a cheap, optimistic gate: if there is clearly no session, redirect before rendering. This is fast, but it only redirects — it must not be your only line of defense.
 
 ```ts
-// middleware.ts — optimistic redirect only
+// proxy.ts — optimistic redirect only
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 const protectedRoutes = ['/dashboard']
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname
   const hasSession = request.cookies.has('session')
   if (protectedRoutes.some((p) => path.startsWith(p)) && !hasSession) {
@@ -53,7 +53,7 @@ export function middleware(request: NextRequest) {
 
 ## Real authorization lives in a Data Access Layer
 
-Middleware alone is not sufficient. It does not run for every data path, and layouts do not re-run on every navigation — so a stale or forged request can slip past. The fix is a Data Access Layer (DAL): a single place that verifies the session right before it returns data. Wrap it in React `cache` so it runs once per request.
+Proxy alone is not sufficient. A `matcher` that excludes a path also skips the Server Action calls on that path, layouts do not re-run on every navigation, and a check that lives only in front of the app can be bypassed outright — [CVE-2025-29927](https://github.com/advisories/GHSA-f82v-jwr5-mffw) let attackers skip middleware entirely with a crafted `x-middleware-subrequest` header (fixed in Next.js 15.2.3). The fix is a Data Access Layer (DAL): a single place that verifies the session right before it returns data. Wrap it in React `cache` so it runs once per request.
 
 ```ts
 // app/lib/dal.ts — verify the session close to the data
@@ -71,13 +71,13 @@ export const verifySession = cache(async () => {
 })
 ```
 
-Then every page, Server Action, or route handler that touches protected data calls `verifySession()` first. For real projects, libraries like NextAuth (Auth.js), Clerk, or Lucia handle sessions, providers, and tokens for you — but the DAL pattern for authorization still applies on top of them.
+Then every page, Server Action, or route handler that touches protected data calls `verifySession()` first. For real projects, libraries like NextAuth (Auth.js), Clerk, or Better Auth handle sessions, providers, and tokens for you — but the DAL pattern for authorization still applies on top of them.
 
-<Mermaid title="Optimistic gate in middleware, real check in the DAL" code={diagramAuthEn} />
+<Mermaid title="Optimistic gate in proxy, real check in the DAL" code={diagramAuthEn} />
 
 export const diagramAuthEn = `
 graph TD
-  A["Request"] --> B["middleware: optimistic redirect"]
+  A["Request"] --> B["proxy: optimistic redirect"]
   B --> C["Page / Server Action"]
   C --> D["verifySession() in DAL"]
   D -->|no session| E["redirect to /login"]
@@ -85,7 +85,7 @@ graph TD
 `;
 
 <Callout title="The one-line takeaway">
-Use middleware for a fast optimistic redirect, but put the authoritative authorization check in a Data Access Layer that verifies the session right before returning data.
+Use proxy for a fast optimistic redirect, but put the authoritative authorization check in a Data Access Layer that verifies the session right before returning data.
 </Callout>
 
 export const quizAuthEn = [
@@ -100,20 +100,20 @@ export const quizAuthEn = [
     answer: 1,
   },
   {
-    q: 'What should middleware do for auth?',
+    q: 'What should proxy do for auth?',
     options: [
       'Run the full authorization check',
       'A lightweight optimistic redirect',
       'Query the database for permissions',
-      'Nothing — auth cannot use middleware',
+      'Nothing — auth cannot use proxy',
     ],
     answer: 1,
   },
   {
-    q: 'Why is middleware alone not sufficient for authorization?',
+    q: 'Why is proxy alone not sufficient for authorization?',
     options: [
       'It cannot read cookies',
-      'It does not run for every data path and layouts do not re-run every navigation',
+      'Its matcher can skip paths, layouts do not re-run every navigation, and it can be bypassed',
       'It only runs in development',
       'It cannot redirect requests',
     ],
@@ -123,7 +123,7 @@ export const quizAuthEn = [
     q: 'Where does the authoritative authorization check belong?',
     options: [
       'In a Data Access Layer close to the data',
-      'Only in middleware',
+      'Only in proxy',
       'In the browser before fetching',
       'In the root layout only',
     ],
