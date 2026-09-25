@@ -1,6 +1,6 @@
 ---
 title: Linking and Navigation
-description: Client-side navigation with Link and prefetching, programmatic navigation with useRouter, the navigation hooks, and server-side redirect and notFound.
+description: Client-side navigation with Link and its prefetch modes, programmatic navigation with useRouter, and why redirect() throwing NEXT_REDIRECT means a try/catch around it silently swallows the navigation.
 sidebar:
   order: 3
 ---
@@ -9,14 +9,15 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
 `<Link>` handles most navigation with client-side transitions and automatic prefetching, while `useRouter` and the `next/navigation` helpers cover programmatic and server-side navigation.
 
-## Link and automatic prefetching
+## Link and its prefetch modes
 
-`<Link>` navigates on the client without a full page reload. Any `<Link>` that scrolls into the viewport is automatically prefetched, so the destination is often ready before the click.
+`<Link>` navigates on the client without a full page reload. It extends the native `<a>` element, so it also works for a plain external URL — but prefetching and client-side transitions only apply to routes inside your own app.
 
 ```tsx
 import Link from 'next/link'
@@ -27,10 +28,19 @@ export default function Nav() {
       <Link href="/">Home</Link>
       <Link href="/blog/42">Post 42</Link>
       <Link href="/dashboard" prefetch={false}>Dashboard</Link>
+      <Link href="https://nextjs.org">External site (plain anchor behavior)</Link>
     </nav>
   )
 }
 ```
+
+As of Next.js 16.3.6, the App Router's `prefetch` prop accepts exactly three values (verified against the bundled docs for this version):
+
+| Value | Behavior |
+|---|---|
+| `"auto"` or `null` (default) | Static routes prefetch in full; dynamic routes prefetch only down to the nearest `loading.js` boundary |
+| `true` | The full route prefetches regardless of static or dynamic — with Partial Prefetching enabled, this includes the App Shell and cached URL-dependent content |
+| `false` | Prefetching never happens — not on entering the viewport, and not on hover either |
 
 Prefetched routes land in the Client Cache, so a navigation may be served instantly from a cached RSC payload instead of a fresh request. The Client Cache is covered fully in the Data Fetching module.
 
@@ -53,7 +63,7 @@ export default function SaveButton() {
 }
 ```
 
-`router.push` adds a history entry, `router.replace` swaps the current one, `router.back` goes back, and `router.refresh` refetches the current route from the server while keeping client state.
+`router.push` adds a history entry, `router.replace` swaps the current one, `router.back` goes back, and `router.refresh` re-fetches data and re-renders Server Components for the current route — it clears the Client Cache for that route, but does **not** invalidate any server-side cache (`revalidatePath`/`revalidateTag` do that).
 
 ## Reading the current route
 
@@ -72,25 +82,60 @@ export default function Debug() {
 }
 ```
 
-## Server-side redirect and notFound
+## Server-side redirect and notFound — and why try/catch swallows them
 
-In Server Components, route handlers, and Server Actions you navigate by throwing with `redirect()` or `notFound()` from `next/navigation`.
+`redirect()` and `permanentRedirect()` (both from `next/navigation`) work by **throwing**. The thrown error's `digest` string encodes the destination and status right in the text, which is how Next.js recognizes it further up the call stack and turns it into a real HTTP redirect instead of a crash. Wrapping the call in your own `try/catch` intercepts that throw before Next.js ever sees it — the redirect is silently discarded.
 
-```tsx
-import { redirect, notFound } from 'next/navigation'
+This is the same failure shape the mutations module proves for `notFound()` inside a Server Action (see server-actions-and-mutations's mutations-and-revalidation lesson, which also covers `unstable_rethrow`); here is the equivalent bug on the routing side, in a Route Handler doing an auth check:
 
-export default async function Page({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
-  const { id } = await params
-  const post = await getPost(id)
-  if (!post) notFound()          // renders the nearest not-found UI
-  if (post.archived) redirect('/blog') // sends the user elsewhere
-  return <article>{post.title}</article>
+```ts
+// app/api/redirect-bad/route.ts
+import { redirect } from 'next/navigation'
+
+// BUG: try/catch swallows redirect()
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  try {
+    const authed = searchParams.get('authed') === 'true'
+    if (!authed) redirect('/login')
+    return Response.json({ ok: true })
+  } catch (err) {
+    console.error('redirect-bad caught this instead of letting it redirect:', err)
+    return Response.json({ ok: false, error: 'caught, no real redirect happened' })
+  }
 }
 ```
+
+Built, started, and requested for real (`?authed=false`, so the redirect should fire):
+
+```text
+GET /api/redirect-bad?authed=false -> HTTP 200
+{"ok":false,"error":"caught, no real redirect happened"}
+
+server log:
+redirect-bad caught this instead of letting it redirect: Error: NEXT_REDIRECT
+  digest: 'NEXT_REDIRECT;replace;/login;307;'
+```
+
+The `catch` block ran, logged the exact error `redirect()` throws, and returned a normal 200 JSON response instead of ever redirecting — the digest `NEXT_REDIRECT;replace;/login;307;` shows Next.js had already computed the destination, the navigation type (`replace`, the default outside Server Actions), and the 307 status, and none of it escaped the `catch`. The fix is simply to keep `redirect()` outside any `try/catch` that doesn't explicitly rethrow it:
+
+```ts
+// app/api/redirect-good/route.ts
+import { redirect } from 'next/navigation'
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const authed = searchParams.get('authed') === 'true'
+  if (!authed) redirect('/login')
+  return Response.json({ ok: true })
+}
+```
+
+```text
+GET /api/redirect-good?authed=false -> HTTP 307
+```
+
+`redirect()` can also be called during render in a Client Component (but not inside an event handler — use `useRouter` there instead), and it accepts absolute URLs for redirecting to an external site.
 
 <Mermaid title="Which navigation tool to reach for" code={diagramLinkingEn} />
 
@@ -98,29 +143,79 @@ export const diagramLinkingEn = `
 graph TD
   N["Need to navigate"] --> UI["From a link or UI?"]
   N --> LOGIC["From logic in the client?"]
-  N --> SERVER["From the server?"]
+  N --> SERVER["From the server, or during render?"]
   UI --> L["Link (prefetch + client nav)"]
   LOGIC --> R["useRouter push/replace/back/refresh"]
-  SERVER --> S["redirect() / notFound()"]
+  SERVER --> S["redirect() / notFound() (throws NEXT_REDIRECT / NEXT_HTTP_ERROR_FALLBACK)"]
+  S -->|"wrapped in try/catch?"| SWALLOW["Silently swallowed unless rethrown"]
 `;
 
+## Mental Model
+
+`redirect()` and `permanentRedirect()` are not "return a response" functions — they are exceptions with a purpose-built `digest` string that Next.js's own machinery recognizes as it unwinds the stack. Anywhere you would worry about an unhandled exception crashing a request, you should equally worry about a `try/catch` accidentally catching one of these before it reaches Next.js.
+
+## Trade-offs
+
+| Tool | Runs where | Effect |
+|---|---|---|
+| `<Link prefetch="auto"\|null>` (default) | Client | Prefetches static routes fully, dynamic routes down to `loading.js` |
+| `<Link prefetch={true}>` | Client | Always prefetches the full route |
+| `<Link prefetch={false}>` | Client | Never prefetches — not on viewport, not on hover |
+| `useRouter().push/replace` | Client, inside an event handler | Client-side navigation, adds/swaps a history entry |
+| `redirect()` / `permanentRedirect()` | Server, or during Client Component render | Throws `NEXT_REDIRECT`; swallowed by an unguarded `try/catch` |
+
+## Common Misconceptions
+
+- **"A try/catch around code that might redirect is always safer."** Proven above: it silently discards a real 307/308 redirect and returns 200 instead — exactly like the `notFound()` case the mutations module covers.
+- **"`prefetch={false}` still prefetches on hover, like older docs describe."** In the App Router as of 16.3.6, `false` means never — no viewport prefetch and no hover prefetch.
+- **"`redirect()` works the same inside a Client Component event handler as during render."** It doesn't — inside an event handler you need `useRouter().push`/`replace` instead.
+
+## Reading AI-generated code
+
+When a generated snippet does navigation, check for these before trusting it:
+
+- Is `redirect()` or `permanentRedirect()` called inside a `try/catch` that doesn't rethrow? That swallows the navigation — proven above with a real 200 instead of a 307.
+- Is `redirect()` called from inside a Client Component event handler (an `onClick`, not render)? That's not supported there — it needs `useRouter().push`/`replace`.
+- Does an internal navigation use a plain `<a href="/...">` instead of `<Link>`? It still works, but loses client-side transitions and prefetching for no reason.
+- Is `prefetch={false}` used somewhere that actually wants hover-prefetch? In the App Router that value disables prefetching entirely, not just on-viewport.
+- Does the code assume `router.refresh()` invalidates server-side cached data? It only clears the Client Cache for the current route — use `revalidatePath`/`revalidateTag` for the server side.
+
+<SpotTheBug code={`// app/api/checkout/route.ts
+import { redirect } from 'next/navigation'
+
+export async function POST(request: Request) {
+  try {
+    const order = await createOrder(request)
+    if (order.requiresPayment) {
+      redirect('/pay/' + order.id)
+    }
+    return Response.json({ ok: true, order })
+  } catch (err) {
+    console.error('checkout failed', err)
+    return Response.json({ ok: false, error: 'checkout failed' }, { status: 500 })
+  }
+}`}>
+`redirect()` throws a `NEXT_REDIRECT`-digest error so Next.js can turn it into a real HTTP redirect further up the stack. Here it's called inside a `try` block whose `catch` logs *any* error and returns a 500 JSON body — including the one `redirect()` just threw. Proven with the same pattern built and requested for real: the response comes back 200/500 with a JSON body instead of a 307 redirect to `/pay/[id]`. The fix is to call `redirect()` after the `try/catch` (do the write inside the guarded block, decide and redirect outside it), or to rethrow `NEXT_REDIRECT`-shaped errors before your own error handling runs.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Reach for `<Link>` first for prefetched client navigation, `useRouter` for programmatic moves, and `redirect()` / `notFound()` on the server.
+Reach for `<Link>` first for prefetched client navigation (`false` truly disables prefetching in 16.3), `useRouter` for programmatic moves from an event handler, and `redirect()`/`notFound()` on the server or during render — always outside any `try/catch` that doesn't explicitly rethrow, or the navigation is silently swallowed.
 </Callout>
 
 export const quizLinkingEn = [
   {
-    q: 'What does Link do automatically for routes in the viewport?',
+    q: 'As of Next.js 16.3.6, what does prefetch={false} do on a <Link> in the App Router?',
     options: [
-      'It reloads the whole page',
-      'It prefetches them into the Client Cache',
-      'It disables client-side navigation',
-      'It redirects them on the server',
+      'It still prefetches on hover',
+      'It disables prefetching entirely — not on viewport, not on hover',
+      'It prefetches only in development',
+      'It has no effect in the App Router',
     ],
     answer: 1,
+    explain: 'Verified against the bundled Next.js 16.3.6 docs: in the App Router, false means prefetching never happens at all.',
   },
   {
-    q: 'Which method refetches the current route while keeping client state?',
+    q: 'Which method refetches the current route while keeping client state, but does not invalidate server-side caches?',
     options: [
       'router.push',
       'router.replace',
@@ -128,16 +223,18 @@ export const quizLinkingEn = [
       'router.back',
     ],
     answer: 2,
+    explain: 'router.refresh() re-renders Server Components and clears the Client Cache for the current route, but revalidatePath/revalidateTag are what invalidate server-side cached data.',
   },
   {
-    q: 'Which hook reads the current URL path in a Client Component?',
+    q: '```ts\ntry {\n  if (!authed) redirect(\'/login\')\n  return Response.json({ ok: true })\n} catch (err) {\n  console.error(err)\n  return Response.json({ ok: false })\n}\n```\nRequested for real with authed=false, what does the server return?',
     options: [
-      'useParams',
-      'useSearchParams',
-      'usePathname',
-      'useRouter',
+      'HTTP 307 redirecting to /login',
+      'HTTP 200 with { ok: false } — the catch block swallows the redirect',
+      'HTTP 500, because redirect() cannot be called in a Route Handler',
+      'The process crashes',
     ],
-    answer: 2,
+    answer: 1,
+    explain: 'Proven with a real build/start request: redirect() throws an Error with digest "NEXT_REDIRECT;replace;/login;307;", and this catch block logs and discards it instead of letting Next.js turn it into a real redirect.',
   },
   {
     q: 'How do you navigate away from a Server Component?',
@@ -148,6 +245,29 @@ export const quizLinkingEn = [
       'Throw a new Error',
     ],
     answer: 1,
+    explain: 'useRouter is a Client Component hook — a Server Component navigates by calling redirect() (or notFound()), which throws and is handled by Next.js.',
+  },
+  {
+    q: 'Can redirect() be called inside a Client Component onClick handler?',
+    options: [
+      'Yes, exactly like during render',
+      'No — it is supported during render in a Client Component, but not inside an event handler; use useRouter().push/replace there',
+      'No, redirect() only works in Server Components',
+      'Yes, but only with permanentRedirect() instead',
+    ],
+    answer: 1,
+    explain: 'The docs are explicit: redirect can be called in Client Components during the rendering process but not in event handlers — useRouter is the tool for that case.',
+  },
+  {
+    q: '```ts\n// server log after a real request:\nError: NEXT_REDIRECT\n  digest: \'NEXT_REDIRECT;replace;/login;307;\'\n```\nWhat does this digest tell you?',
+    options: [
+      'Nothing actionable — it is an opaque hash',
+      'The destination (/login), the navigation type (replace), and the HTTP status (307) that redirect() had already computed before being caught',
+      'That the request crashed with an unrelated server error',
+      'That the redirect succeeded and this is just informational logging',
+    ],
+    answer: 1,
+    explain: 'The digest string format is exactly how Next.js recognizes a thrown redirect further up the stack — this one shows a caught, never-delivered redirect to /login as a 307 replace.',
   },
 ];
 

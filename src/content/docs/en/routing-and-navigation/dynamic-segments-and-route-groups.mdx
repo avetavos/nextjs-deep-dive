@@ -1,6 +1,6 @@
 ---
 title: Dynamic Segments and Route Groups
-description: Dynamic segments, catch-all routes, generateStaticParams for prerendering, plus route groups and private folders that opt out of routing.
+description: Dynamic segments, catch-all routes, generateStaticParams and dynamicParams for prerendering, plus route groups, private folders, and why crossing a route group with a different root layout forces a full page reload.
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -57,6 +58,29 @@ export default async function Docs({
 }
 ```
 
+### The optional catch-all's empty case is `undefined`, not an empty array
+
+When `[[...slug]]` matches the parent path with no extra segments at all, `params.slug` is `undefined` — not `[]`. Built and requested for real:
+
+```tsx
+// app/shop/[[...slug]]/page.tsx
+export default async function Shop({
+  params,
+}: {
+  params: Promise<{ slug?: string[] }>
+}) {
+  const { slug } = await params
+  return <p>slug: {String(slug)}</p>
+}
+```
+
+```text
+curl http://localhost:3000/shop
+-> slug: undefined
+```
+
+Code that does `slug.length` or `slug.map(...)` without first checking `slug?.length` throws at runtime for exactly the route the optional catch-all was meant to also match — the un-nested base path.
+
 ## generateStaticParams prerenders dynamic routes
 
 Export `generateStaticParams` to tell Next.js which param values to prerender at build time. Each returned object becomes one statically generated page.
@@ -69,6 +93,28 @@ export function generateStaticParams() {
 ```
 
 With `cacheComponents` enabled, `generateStaticParams` must return at least one param — an empty array is a build error.
+
+### dynamicParams controls the params generateStaticParams did NOT list — but it doesn't exist under cacheComponents
+
+`dynamicParams` (default `true`) decides what happens when a visitor hits a param value that `generateStaticParams` never returned: by default Next.js renders it dynamically on first request and can then cache the result; `dynamicParams = false` makes any unlisted param **404** instead.
+
+```tsx
+// app/blog/[slug]/page.tsx — variant B
+export const dynamicParams = false
+
+export function generateStaticParams() {
+  return [{ slug: 'a' }, { slug: 'b' }]
+}
+```
+
+This route segment config option is part of the pre-`cacheComponents` caching model, and it is explicitly incompatible with it. Turning `cacheComponents: true` on in `next.config.ts` and keeping a `dynamicParams` export is a real build error, not a silent no-op:
+
+```text
+next build (cacheComponents: true, dynamicParams present)
+-> Error: Route segment config "dynamicParams" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+Under `cacheComponents`, the equivalent control is structural rather than a config flag: params you listed in `generateStaticParams` get build-time validation and static HTML; params you didn't list become genuine runtime data that must be wrapped in `<Suspense>` (see the caching module's Cache Components section) — there is no `dynamicParams = false` switch to make an unlisted param 404 outright.
 
 ## Route groups and private folders
 
@@ -85,7 +131,50 @@ app/
     Button.tsx
 ```
 
-<Mermaid title="Folders that do vs do not change the URL" code={diagramDynamicEn} />
+### Route groups don't share a layout with each other, and crossing between root layouts forces a full reload
+
+Each route group can define its **own** root layout — that's the main reason to use them (splitting `(marketing)` and `(shop)` so each gets a completely different `<html>`/`<body>` and providers). Nothing links those two layouts, and a client-side navigation from one group's route to the other's cannot reuse any of the first group's state, because the two trees don't share an ancestor inside the app.
+
+```tsx
+// app/(marketing)/layout.tsx
+export default function MarketingLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body data-group="marketing">{children}</body>
+    </html>
+  )
+}
+```
+
+```tsx
+// app/(shop)/layout.tsx
+export default function ShopLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body data-group="shop">{children}</body>
+    </html>
+  )
+}
+```
+
+Proven in a real browser: load `/about` (the `(marketing)` group), set a marker on `window`, then click a `<Link>` to `/cart` (the `(shop)` group).
+
+```text
+before clicking Link -> { group: "marketing", marker: "still-here", loadCount: 1 }
+after clicking Link to /cart -> { group: "shop", marker: undefined, loadCount: 1 }
+```
+
+`marker` disappearing means the entire JavaScript execution context was thrown away and restarted — a full page reload — even though the navigation happened through `<Link>` and even though the Network tab still shows an `_rsc` fetch attempt first. Next.js tries the soft navigation, detects the response belongs to a different root layout, and falls back to a real document reload instead of trying to reconcile two incompatible trees.
+
+<Mermaid title="Folders that do vs do not change the URL, and where reloads happen" code={diagramDynamicEn} />
 
 export const diagramDynamicEn = `
 graph TD
@@ -93,10 +182,54 @@ graph TD
   B["[...slug] catch-all"] --> U2["changes URL: /docs/a/b"]
   C["(marketing) route group"] --> U3["no URL change"]
   D["_components private"] --> U4["not routable"]
+  C -->|"different root layout than"| E["(shop) route group"]
+  E -->|"Link between them"| F["full page reload, not soft nav"]
 `;
 
+## Mental Model
+
+Treat brackets, parentheses, and underscores as three unrelated file-system tools that all happen to live in the same folder names. Brackets are the only ones that touch the URL — they capture data. Parentheses and underscores only reorganize files on disk; a route group additionally lets you give a whole subtree its own root layout, and the moment it does, that subtree becomes its own separate document as far as the browser is concerned — navigating into or out of it is never a soft navigation.
+
+## Trade-offs
+
+| Convention | Changes the URL? | Can define its own root layout? |
+|---|---|---|
+| `[id]` / `[...slug]` / `[[...slug]]` | Yes — captures the value | No |
+| `(group)` | No | Yes — and doing so removes soft navigation to/from sibling groups with a different root layout |
+| `_private` | No — not routable at all | No |
+| `dynamicParams` (pre-cacheComponents model) | N/A | Controls 404 vs runtime-render for unlisted params; not usable at all once `cacheComponents` is on |
+
+## Common Misconceptions
+
+- **"`params.slug` is `[]` when `[[...slug]]` matches with no extra segments."** Proven above: it's `undefined`, and code that assumes an array crashes on exactly the base route the optional form exists to also match.
+- **"`dynamicParams = false` still works once I turn on `cacheComponents`."** It's a real build error, not a warning — the two models are mutually exclusive by design.
+- **"Since it's a `<Link>` click, it must be a soft navigation."** Not when the destination has a different root layout — proven with a `window` marker that gets wiped, meaning the whole page actually reloaded.
+
+## Reading AI-generated code
+
+When a generated snippet touches dynamic segments or route groups, check for these before trusting it:
+
+- Does an optional catch-all handler call `slug.length` or `slug.map(...)` without a null check? The un-nested base route makes `slug` `undefined`, not `[]`.
+- Is `dynamicParams` exported alongside a `cacheComponents: true` config? That's a build error, not a valid combination.
+- Does the code assume every route group under `app/` shares one root layout? Each group with its own top-level `layout.tsx` gets its own, unrelated `<html>`/`<body>`.
+- Is a "fast client-side navigation" claimed between two route groups that each define `<html>`/`<body>`? That crossing is always a full reload, proven above.
+- Are two different route groups defining a page at the same resulting URL (e.g. `(marketing)/about/page.tsx` and `(shop)/about/page.tsx`)? Next.js treats that as a conflicting path and errors.
+
+<SpotTheBug code={`// app/shop/[[...slug]]/page.tsx
+export default async function Shop({
+  params,
+}: {
+  params: Promise<{ slug?: string[] }>
+}) {
+  const { slug } = await params
+  const crumbs = slug.map((s) => s.toUpperCase())
+  return <p>{crumbs.join(' / ')}</p>
+}`}>
+This assumes `slug` is always an array. Proven above: for the un-nested `/shop` route that the optional catch-all is specifically designed to also match, `params.slug` is `undefined` — calling `.map` on it throws a `TypeError` at request time for exactly the "empty" case the `[[...]]` form exists to handle. The fix is `const crumbs = (slug ?? []).map(...)`.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Brackets capture URL params you `await` from a Promise, parentheses group without touching the URL, and a leading underscore opts a folder out of routing.
+Brackets capture URL params you `await` from a Promise (an empty optional catch-all gives `undefined`, not `[]`), parentheses group without touching the URL but can each carry their own root layout, and crossing between two different root layouts is always a full reload — never a soft navigation.
 </Callout>
 
 export const quizDynamicEn = [
@@ -109,19 +242,21 @@ export const quizDynamicEn = [
       'const id = props.id from getServerSideProps',
     ],
     answer: 1,
+    explain: 'params is a Promise in the App Router, so a Server Component page must await it before reading fields off it.',
   },
   {
-    q: 'What does [[...slug]] provide over [...slug]?',
+    q: '```tsx\nconst { slug } = await params // route is app/shop/[[...slug]]/page.tsx\nreturn <p>{slug.length}</p>\n```\nRequested at exactly /shop (no extra segments), what happens?',
     options: [
-      'It matches a single segment only',
-      'It makes the catch-all optional so the parent also matches',
-      'It disables prerendering for the route',
-      'It turns the folder into a route group',
+      'slug is [] so slug.length is 0',
+      'slug is undefined, so slug.length throws a TypeError',
+      'The route 404s before the component runs',
+      'slug is the string "shop"',
     ],
     answer: 1,
+    explain: 'Proven with a real request: an optional catch-all\'s empty case is params.slug === undefined, not an empty array — unchecked .length access throws.',
   },
   {
-    q: 'What is generateStaticParams used for?',
+    q: 'What does generateStaticParams do?',
     options: [
       'Reading search params at runtime',
       'Declaring which param values to prerender at build time',
@@ -129,6 +264,18 @@ export const quizDynamicEn = [
       'Marking a folder as private',
     ],
     answer: 1,
+    explain: 'Each object it returns becomes one statically generated page for that dynamic segment.',
+  },
+  {
+    q: '```tsx\n// next.config.ts has cacheComponents: true\nexport const dynamicParams = false\nexport function generateStaticParams() { return [{ slug: \'a\' }] }\n```\nWhat happens when this builds?',
+    options: [
+      'It builds fine — dynamicParams still applies',
+      'A real build error: "dynamicParams" is not compatible with cacheComponents',
+      'dynamicParams is silently ignored with no message',
+      'It only fails in development, not production builds',
+    ],
+    answer: 1,
+    explain: 'Proven with a real next build: Cache Components replaces the whole route-segment-config caching model, and dynamicParams is one of the options rejected outright when it is enabled.',
   },
   {
     q: 'What is the effect of a (marketing) route group on the URL?',
@@ -139,6 +286,18 @@ export const quizDynamicEn = [
       'It removes the segment from routing entirely',
     ],
     answer: 1,
+    explain: 'A route group only reorganizes files on disk — its own name is always stripped from the resulting URL.',
+  },
+  {
+    q: 'Two route groups, (marketing) and (shop), each define their own root layout.tsx with <html>/<body>. Clicking a <Link> from a (marketing) page to a (shop) page does what, proven in a real browser?',
+    options: [
+      'A soft, client-side navigation with no reload',
+      'A full page reload — a window marker set before the click is gone after it',
+      'An error, because two root layouts are not allowed',
+      'It silently stays on the (marketing) page',
+    ],
+    answer: 1,
+    explain: 'Proven with a window marker: it survives navigation within the same root layout, but disappears when crossing into a route group with a different root layout — a real full reload, not a soft one.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: Pages, Layouts, and Nested Routing
-description: How page.tsx makes a segment routable, how layout.tsx persists across navigation, and how loading.tsx and error.tsx work.
+description: How page.tsx makes a segment routable, how layout.tsx persists across navigation, and why an error boundary only catches the segments below it — never the layout it shares a folder with.
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -88,38 +89,202 @@ export default function Loading() {
 }
 ```
 
-Add `error.tsx` and Next.js wraps the segment in an error boundary. It must be a Client Component and it receives `error` plus a `reset` function to retry rendering the segment.
+Add `error.tsx` and Next.js wraps the segment in an error boundary. It must be a Client Component. As of Next.js 16.3.6 it receives both a stable `retry()` function (re-fetches and re-renders the segment's children — the officially recommended one since `v16.3.0`) and the older `reset()` (clears the boundary's error state without repeating the failed fetch). AI-generated snippets trained on older examples almost always write `reset` only; both still work, but `retry` is the one Next.js's own docs now lead with.
 
 ```tsx
+// app/dashboard/error.tsx
 'use client' // error boundaries must be Client Components
 
 export default function Error({
   error,
-  reset,
+  retry,
 }: {
   error: Error & { digest?: string }
-  reset: () => void
+  retry: () => void
 }) {
   return (
     <div>
       <h2>Something went wrong</h2>
-      <button onClick={() => reset()}>Try again</button>
+      <button onClick={() => retry()}>Try again</button>
     </div>
   )
 }
 ```
 
-<Mermaid title="Nested layouts compose and persist" code={diagramPagesEn} />
+## The error boundary hierarchy: a layout's own error escapes upward
 
-export const diagramPagesEn = `
+`error.tsx` wraps `loading.tsx`, `not-found.tsx`, `page.tsx`, and any *nested* `layout.tsx` inside the same segment — but it does **not** wrap the `layout.tsx` (or `template.tsx`) that lives in that same folder. If a layout's own render throws, the error boundary sitting right next to it never sees it; the error keeps unwinding until it reaches the **parent** segment's `error.tsx`.
+
+```tsx
+// app/settings/layout.tsx — this layout's own render throws
+export default function SettingsLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  throw new Error('layout boom')
+  return <section>{children}</section>
+}
+```
+
+```tsx
+// app/settings/error.tsx — same segment as the layout above: does NOT catch it
+'use client'
+
+export default function SettingsError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string }
+  retry: () => void
+}) {
+  return (
+    <div>
+      <h2>SETTINGS ERROR (same segment)</h2>
+      <button onClick={() => retry()}>retry</button>
+    </div>
+  )
+}
+```
+
+```tsx
+// app/error.tsx — the PARENT segment's boundary: this is the one that actually catches it
+'use client'
+
+export default function RootError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string }
+  retry: () => void
+}) {
+  return (
+    <div>
+      <h2>ROOT ERROR BOUNDARY</h2>
+      <button onClick={() => retry()}>retry</button>
+    </div>
+  )
+}
+```
+
+Built and started for real (`next build && next start`), then loaded in a browser, the page's rendered text proves which boundary actually fired:
+
+```text
+document.body.innerText ->
+"root-nav
+ROOT ERROR BOUNDARY
+
+Minified React error #441 …
+
+retry"
+```
+
+`SETTINGS ERROR (same segment)` never appears — the layout that threw and the error boundary that would have wrapped it are siblings in the same folder, and `error.tsx` only wraps what's *below* it, not the layout it sits next to.
+
+## global-error.tsx replaces the root layout entirely
+
+The same rule applies one level higher, with a twist: the **root** `layout.tsx` has no parent segment of its own, so nothing wraps it — not even the root's own `app/error.tsx`. If the root layout itself throws, the only thing that can catch it is `global-error.tsx`, and because it replaces the root layout, it must render its own `<html>` and `<body>` tags.
+
+```tsx
+// app/global-error.tsx
+'use client' // error boundaries must be Client Components
+
+export default function GlobalError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string }
+  retry: () => void
+}) {
+  return (
+    <html>
+      <body>
+        <h2>Something went seriously wrong</h2>
+        <button onClick={() => retry()}>Try again</button>
+      </body>
+    </html>
+  )
+}
+```
+
+Proven the same way: with the root layout itself throwing, `app/error.tsx`'s text never renders — only `global-error.tsx`'s does:
+
+```text
+document.body.innerText ->
+"GLOBAL ERROR (root layout itself crashed)
+retry"
+```
+
+<Mermaid title="Which boundary actually catches which error" code={diagramBoundaryEn} />
+
+export const diagramBoundaryEn = `
 graph TD
-  R["app/layout.tsx (root, persists)"] --> D["dashboard/layout.tsx (persists)"]
-  D --> P["dashboard/page.tsx"]
-  D --> S["settings/page.tsx"]
+  RL["app/layout.tsx (root layout)"] -->|"throws"| GE["global-error.tsx (only thing above root)"]
+  SL["app/settings/layout.tsx (throws)"] -->|"NOT caught by"| SE["app/settings/error.tsx (same segment)"]
+  SL -->|"caught by"| RE["app/error.tsx (parent segment)"]
+  RE -->|"wraps"| SP["app/settings/page.tsx"]
 `;
 
+## Mental Model
+
+Read `error.tsx` as "the boundary for everything *inside* this folder" — not "the boundary for this folder's own layout." A layout and its same-folder `error.tsx` are siblings, not parent/child, so the layout's own crash always has to travel up to whichever ancestor segment actually wraps it. The root layout is the extreme case: it has no ancestor at all inside the App Router tree, so only `global-error.tsx` — which stands entirely outside that tree and rebuilds `<html>`/`<body>` itself — can catch it.
+
+## Trade-offs
+
+| File | What it wraps | Persists across navigation? |
+|---|---|---|
+| `layout.tsx` | Its own segment + all descendants | Yes — does not re-render on sibling navigation |
+| `loading.tsx` | Wraps the segment in a Suspense boundary | Fallback shows per-navigation, not persistent |
+| `error.tsx` (same segment) | `loading`/`not-found`/`page`/nested `layout` files | Does not wrap the layout it sits beside |
+| `error.tsx` (parent segment) | Catches a child layout's own render error | The only same-segment boundary at the root layout has no parent — hence `global-error.tsx` |
+
+## Common Misconceptions
+
+- **"`error.tsx` catches any error in its own folder, including the layout."** Proven false above: a `settings/layout.tsx` crash is invisible to `settings/error.tsx` and is only caught by the parent segment's boundary.
+- **"`reset()` is the only prop `error.tsx` gets."** As of `v16.3.0`, `retry()` is the stable, recommended prop — it re-fetches and re-renders, where `reset()` only clears the boundary's local error state.
+- **"The root layout is protected by `app/error.tsx` like everything else."** It isn't — the root layout is the one place in the tree with no parent segment, so its own errors only reach `global-error.tsx`.
+
+## Reading AI-generated code
+
+When a generated snippet adds `loading.tsx`/`error.tsx`/`global-error.tsx`, check for these before trusting it:
+
+- Is `error.tsx` missing `'use client'`? It must be a Client Component — a Server Component version fails at build/runtime, not just lint.
+- Does the snippet assume `error.tsx` will catch a crash coming from the layout in the *same* folder? It won't — that error escapes to the parent segment.
+- Is `global-error.tsx` missing its own `<html>`/`<body>` tags? It replaces the root layout entirely, so without them the page renders no document shell at all.
+- Does the code destructure `reset` only, with no mention of `retry`? Not wrong, but it's using the older API — `retry()` is what Next.js's own current docs lead with.
+- Is `loading.tsx` doing real async work itself (instead of just rendering a fallback)? The automatic Suspense boundary is what streams in the segment below it — `loading.tsx` itself should stay a synchronous, instant fallback.
+
+<SpotTheBug code={`// app/dashboard/layout.tsx
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const stats = fetchDashboardStats() // throws if the API is down
+  return (
+    <section>
+      <Header stats={stats} />
+      {children}
+    </section>
+  )
+}
+
+// app/dashboard/error.tsx
+'use client'
+export default function DashboardError({
+  error,
+  reset,
+}: {
+  error: Error
+  reset: () => void
+}) {
+  return <button onClick={() => reset()}>Retry loading the dashboard</button>
+}`}>
+The author put the error-prone data fetch directly in `layout.tsx` and assumed the `error.tsx` sitting in the same `dashboard/` folder would catch a failure from it. It won't: `error.tsx` wraps `page.tsx`, `loading.tsx`, `not-found.tsx`, and any *nested* layout underneath it, but not the layout it shares a folder with. Proven above with a real `next build && next start`: the crash surfaces at the **parent** segment's boundary instead — in an app where `dashboard/` sits directly under the root, that means `app/error.tsx` (or, for the root layout itself, `global-error.tsx`). The fix is either to move the data fetch into `page.tsx` (so a real child boundary wraps it), or to explicitly design for the parent boundary catching it.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-A folder is a segment, `page.tsx` makes it routable, and `layout.tsx` wraps its subtree and survives navigation without re-rendering.
+A folder is a segment, `page.tsx` makes it routable, `layout.tsx` wraps its subtree and survives navigation without re-rendering — and its own errors are only caught by the *parent* segment's `error.tsx`, or by `global-error.tsx` for the root layout.
 </Callout>
 
 export const quizPagesEn = [
@@ -132,6 +297,7 @@ export const quizPagesEn = [
       'Naming the folder with brackets',
     ],
     answer: 1,
+    explain: 'A folder under app/ is always a segment, but it only becomes a reachable URL once it contains a page.tsx.',
   },
   {
     q: 'What is special about a layout across navigation?',
@@ -142,26 +308,51 @@ export const quizPagesEn = [
       'It must be a Client Component',
     ],
     answer: 1,
+    explain: 'A shared layout stays mounted when navigating between sibling routes, so its local state and scroll position survive.',
   },
   {
-    q: 'Which layout renders the html and body tags?',
+    q: '```tsx\n// app/settings/layout.tsx\nexport default function SettingsLayout({ children }: { children: React.ReactNode }) {\n  throw new Error(\'boom\')\n  return <section>{children}</section>\n}\n```\nA real `app/settings/error.tsx` also exists in the same folder. Built and requested for real, which boundary\'s text renders?',
     options: [
-      'Every layout in the tree',
-      'The nearest layout to the page',
-      'The required root layout',
-      'The loading.tsx file',
+      'app/settings/error.tsx, because it is in the same folder',
+      'The parent segment\'s error.tsx (or global-error.tsx if settings is directly under the root)',
+      'No boundary catches it — the request crashes with no HTML at all',
+      'Both boundaries render at once',
     ],
-    answer: 2,
+    answer: 1,
+    explain: 'Proven with next build && next start + a real browser check: error.tsx does not wrap the layout in its own folder, only what is nested below it — the crash is only caught by the parent segment\'s boundary.',
   },
   {
-    q: 'What must error.tsx be, and what does it receive?',
+    q: 'What must error.tsx be, and what does it receive as of Next.js 16.3.6?',
     options: [
       'A Server Component receiving params',
-      'A Client Component receiving error and reset',
+      'A Client Component receiving error, and both retry (stable since v16.3.0) and reset',
       'A Server Component receiving error and retry',
       'A Client Component receiving children only',
     ],
     answer: 1,
+    explain: 'error.tsx must be a Client Component. Its retry prop became stable in v16.3.0 and re-fetches plus re-renders; the older reset only clears the boundary state.',
+  },
+  {
+    q: 'Why must global-error.tsx render its own <html> and <body> tags?',
+    options: [
+      'It is only a style convention, not required',
+      'Because it entirely replaces the root layout when the root layout itself throws',
+      'Because global-error.tsx runs before the root layout',
+      'It never actually needs html/body — Next.js adds them automatically',
+    ],
+    answer: 1,
+    explain: 'The root layout has no parent segment, so nothing else wraps it — global-error.tsx stands in for it completely when it crashes, so it has to supply the document shell itself.',
+  },
+  {
+    q: '```tsx\n// app/layout.tsx (root)\nexport default function RootLayout({ children }) {\n  throw new Error(\'root boom\')\n  return <html><body>{children}</body></html>\n}\n```\nWith app/error.tsx AND app/global-error.tsx both present, which one\'s text actually renders?',
+    options: [
+      'app/error.tsx, since it is the closest boundary',
+      'app/global-error.tsx — proven: app/error.tsx\'s text never appears for a root layout crash',
+      'Neither — Next.js silently retries',
+      'Both, one after another',
+    ],
+    answer: 1,
+    explain: 'Proven with a real build/start + browser check: only GLOBAL ERROR text rendered, because the root layout has no parent segment for app/error.tsx to represent.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: Parallel และ Intercepting Routes
-description: render หลายหน้าพร้อมกันด้วย named slots และ default.tsx และ render route ภายใน layout ปัจจุบันด้วย intercepting route conventions
+description: render หลายหน้าพร้อมกันด้วย named slots, loading กับ error แยกต่อ slot, default.tsx เป็น fallback ตอน hard navigation และทำไม (.) กับ (..) ถึงต่างกันระหว่าง modal ที่ทำงานจริงกับ navigation แบบเต็มหน้าที่เงียบ ๆ ไม่ทำงาน
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -16,7 +17,7 @@ parallel routes ให้ layout เดียว render หลาย slot อิ
 
 ## parallel route ด้วย named slot
 
-folder ที่ขึ้นต้นด้วย `@` อย่าง `@team` หรือ `@analytics` คือ named slot layout ใน folder เดียวกันรับแต่ละ slot มาเป็น prop และ render พร้อมกันได้ โดยแต่ละตัวมี loading และ error state อิสระของตัวเอง
+folder ที่ขึ้นต้นด้วย `@` อย่าง `@team` หรือ `@analytics` คือ named slot layout ใน folder เดียวกันรับแต่ละ slot มาเป็น prop และ render พร้อมกันได้ slot **ไม่ใช่** URL segment — `app/@analytics/views` ก็ยัง resolve เป็น URL `/views` ไม่ใช่ `/@analytics/views` — มันแค่รวมกับ `page.tsx` จริงเพื่อประกอบเป็นหน้าของ route หนึ่ง ๆ
 
 ```txt
 app/
@@ -52,31 +53,108 @@ export default function Layout({
 }
 ```
 
-## fallback ด้วย default.tsx
+### แต่ละ slot stream อิสระ มี loading.tsx และ error.tsx ของตัวเอง
 
-เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีไฟล์นี้ hard navigation (โหลดหน้าเต็ม) ไปยัง slot ที่ไม่ match จะ render เป็น 404 จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
+เพราะแต่ละ slot เป็น subtree ของตัวเอง มันจึง define `loading.tsx` และ `error.tsx` ของตัวเองได้ fetch ที่ช้าใน `@team` โชว์ fallback ของตัวเองโดยไม่บล็อก `@analytics` และ crash ใน slot หนึ่งก็ถูกจับโดย boundary ของ slot นั้นเองโดยไม่ทำให้ตัวอื่นล่มตามไปด้วย
 
 ```tsx
-// app/dashboard/@team/default.tsx
-export default function Default() {
+// app/dashboard/@team/loading.tsx
+export default function TeamLoading() {
+  return <p>Loading team…</p>
+}
+```
+
+```tsx
+// app/dashboard/@team/error.tsx
+'use client'
+
+export default function TeamError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string }
+  retry: () => void
+}) {
+  return (
+    <div>
+      <h2>Team slot failed to load</h2>
+      <button onClick={() => retry()}>Try again</button>
+    </div>
+  )
+}
+```
+
+## default.tsx คือ fallback ตอน hard navigation — ไม่มี default.tsx อาจเป็น 404 จริง
+
+Next.js ติดตาม subpage ที่ active ของแต่ละ slot ระหว่าง client-side navigation (soft) แม้แต่ slot ที่ URL ไม่ match กับ route ปัจจุบัน แต่ตอน hard navigation (request ใหม่, reload, หรือเข้าลิงก์ตรง ๆ) ไม่มี client state ให้กู้คืน Next.js จึง fallback ไปที่ `default.tsx` ของแต่ละ slot ถ้าไม่มี slot นั้นจะ render `notFound()`
+
+```tsx
+// app/dashboard/@team/settings/page.tsx
+export const dynamic = 'force-dynamic'
+
+export default function TeamSettingsPage() {
+  return <p>team slot: settings</p>
+}
+```
+
+`@team` มี subpage `/settings` จริง แต่ `@analytics` กับ slot `children` ที่แฝงอยู่ไม่มี page ที่ match **และไม่มี `default.tsx`** เลย route ที่เป็น dynamic จริง ๆ (request ตรง ๆ ไม่มี client-side state มาก่อน) พิสูจน์ 404 ได้จริง
+
+```text
+GET /dashboard/settings (no default.tsx anywhere, route forced dynamic) -> HTTP 404
+```
+
+เพิ่ม `default.tsx` ที่ return `null` ให้ทุก slot ที่ไม่ match แก้ได้
+
+```tsx
+// app/dashboard/@analytics/default.tsx
+export default function AnalyticsDefault() {
   return null
 }
 ```
 
-## intercepting route
+```tsx
+// app/dashboard/default.tsx
+export default function DashboardChildrenDefault() {
+  return null
+}
+```
 
-intercepting route convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update prefix จับตาม segment level `(.)` สำหรับ level เดียวกัน `(..)` สำหรับขึ้นไปหนึ่ง level และ `(...)` จาก app root use case คลาสสิกคือ photo modal คลิกรูปใน feed แล้วรูปเปิดเป็น modal ทับ feed แต่การเข้า URL นั้นตรง ๆ จะ render หน้าเต็ม
+```text
+GET /dashboard/settings (default.tsx added for @analytics and children) -> HTTP 200
+```
+
+มีข้อควรระวังหนึ่งที่พิสูจน์แล้วแบบยาก ๆ: ถ้าไม่มีอะไรใน route tree นั้นใช้ dynamic API เลย Next.js สามารถ **prerender** unmatched-slot combination เป็น static page ตอน build ได้เต็ม ๆ กรณีนั้น path ที่ไม่มี `default.tsx` ก็ยัง response `200` จาก static cache ได้ (`x-nextjs-prerender: 1`) เพราะมันคือ page ที่ cache ไว้จริง ไม่ใช่ live 404 กฎ "ไม่มี `default.tsx` → 404" พูดถึงพฤติกรรมของ request ที่เป็น dynamic จริง ๆ ไม่ได้ cache ไว้ — เช็คด้วย `export const dynamic = 'force-dynamic'` (หรือ dynamic API จริง ๆ) ใน route ที่กำลังทดสอบก่อนเชื่อผล 200/404 เสมอ
+
+## intercepting route: (.) level เดียวกัน, (..) ขึ้นไปหนึ่ง level — folder @slot ไม่นับ
+
+intercepting convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update ตัว matcher นับจาก **segment level ไม่ใช่ folder บน file-system** — folder `@slot` มองไม่เห็นเลยตอนนับ `(.)` match level เดียวกัน `(..)` ขึ้นไปหนึ่ง level `(..)(..)` ขึ้นไปสอง level และ `(...)` จาก app root
+
+ตัวอย่างคลาสสิก: photo modal คลิกรูปใน feed แล้วเปิดเป็น modal ทับ feed แต่เข้า URL เดียวกันตรง ๆ จะ render หน้าเต็มแบบ standalone
 
 ```txt
 app/
   feed/
     page.tsx
+    layout.tsx
     @modal/
+      default.tsx
       (..)photo/
         [id]/page.tsx   // intercepts /photo/[id] as a modal
   photo/
     [id]/page.tsx       // the full standalone page
 ```
+
+`@modal` ไม่นับเป็น level เลยตำแหน่งจริงของ folder intercepting นี้อยู่หนึ่ง level ใต้ `feed` — และ `photo` เป็น *sibling* ของ `feed` ซึ่งอยู่สูงกว่าตำแหน่งนั้นหนึ่ง level พอดี ตรงกับที่ `(..)` เข้าถึงได้ นี่คือสิ่งที่พิสูจน์แล้ว ไม่ใช่เดา: เขียน `(.)photo` แทน (ความผิดพลาดที่ดูสมเหตุสมผล — "อยู่ใต้ feed ลงมาสอง folder ก็น่าจะ... level เดียวกันสิ") build ผ่านไม่มี error เลย แต่ไม่เคย intercept เงียบ ๆ
+
+```text
+next build with app/feed/@modal/(.)photo/[id]/page.tsx
+-> Route (app) lists "ƒ /feed/(.)photo/[id]" — compiles fine
+
+clicking <Link href="/photo/1"> from /feed
+-> renders "FULL PAGE photo 1" — the modal never appeared, no error either
+```
+
+เปลี่ยนแค่ชื่อ folder จาก `(.)photo` เป็น `(..)photo` (เนื้อไฟล์เดิมทุกอย่าง) คือสิ่งเดียวที่ต้องแก้
 
 ```tsx
 // app/feed/@modal/(..)photo/[id]/page.tsx
@@ -86,23 +164,104 @@ export default async function PhotoModal({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  return <dialog open>Photo {id} in a modal over the feed</dialog>
+  return <dialog open>MODAL photo {id}</dialog>
 }
 ```
 
-<Mermaid title="parallel slots และ modal ที่ถูก intercept" code={diagramParallelTh} />
+```tsx
+// app/photo/[id]/page.tsx
+export default async function PhotoFullPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <article>FULL PAGE photo {id}</article>
+}
+```
+
+พิสูจน์ในเบราว์เซอร์จริง คลิกเดิมตอนนี้โชว์ modal แล้ว URL ก็ยัง update เป็น `/photo/1`
+
+```text
+document.body.innerText after clicking <Link href="/photo/1"> from /feed ->
+"root-nav
+feed
+open photo 1
+MODAL photo 1"
+```
+
+แต่ hard navigation ไป URL เดียวกัน — เข้าตรง ๆ หรือ reload — ไม่ผ่าน interception เลย เพราะไม่มี client router state ก่อนหน้าให้ intercept จาก
+
+```text
+curl http://localhost:3000/photo/1 (direct request, no client router) ->
+"FULL PAGE photo 1"
+
+reloading /photo/1 in the browser (page.goto, not a Link click) ->
+document.body.innerText -> "root-nav\nFULL PAGE photo 1"
+```
+
+<Mermaid title="parallel slot, fallback ต่อ slot, และ (.) กับ (..)" code={diagramParallelTh} />
 
 export const diagramParallelTh = `
 graph TD
   L["dashboard/layout.tsx"] --> C["children (page.tsx)"]
-  L --> T["@team slot"]
-  L --> A["@analytics slot"]
-  F["click photo in feed"] --> M["(..)photo intercepts as modal"]
-  DIRECT["visit /photo/42 directly"] --> FULL["full photo page"]
+  L --> T["@team slot (own loading/error)"]
+  L --> A["@analytics slot (own loading/error)"]
+  T -->|"hard nav, no default.tsx"| NF["notFound() -> 404"]
+  F["click Link in feed"] -->|"(..)photo intercepts"| M["modal, URL updates"]
+  F -->|"(.)photo — wrong level"| WRONG["compiles, never intercepts"]
+  DIRECT["visit /photo/1 directly or reload"] --> FULL["full standalone page"]
 `;
 
+## Mental Model
+
+มีกลไกอิสระสองอย่างทำงานอยู่ และง่ายมากที่จะปนกัน parallel route (`@slot`) พูดถึง **อะไร render ด้วยกัน** ใน layout เดียว ส่วน slot จะโชว์เนื้อหาที่ match, fallback, หรือ 404 ขึ้นกับว่า navigation ปัจจุบันเป็น soft (มี client router state) หรือ hard (ไม่มีอะไรให้กู้คืน `default.tsx` หรือ 404 เป็นคนตัดสิน) ส่วน intercepting route (`(.)`/`(..)`/`(...)`) พูดถึง **ไฟล์ไหนตอบ URL ไหน** ตอน soft navigation โดยเฉพาะ — นับ level ผิดแล้ว Next.js ก็ยังสร้าง route ที่ valid แต่เข้าถึงไม่ได้เงียบ ๆ
+
+## ข้อแลกเปลี่ยน
+
+| convention | จุดประสงค์ | รูปแบบ failure เมื่อใช้ผิด |
+|---|---|---|
+| `@slot` | render เนื้อหาอิสระคู่กับ `children` ใน layout เดียว | ลืม `default.tsx` ของ slot เสี่ยง 404 ตอน hard navigation |
+| `loading.tsx`/`error.tsx` ต่อ slot | stream และแยก error อิสระต่อ slot | ถ้าไม่มี fetch ช้าหรือ crash ของ slot หนึ่งกระทบเรื่อง fallback ของทั้ง layout ได้ |
+| `(.)` / `(..)` / `(...)` | render route ภายใน layout ปัจจุบันตอน soft navigation | นับ level ผิด build ผ่านปกติแต่ไม่เคย intercept — เป็น bug เงียบ ไม่ใช่ build error |
+| hard navigation ตรง ๆ ไปยัง URL ที่ intercept ไว้ | render หน้า standalone จริงเสมอ | ไม่มี — นี่คือพฤติกรรมที่ตั้งใจและพิสูจน์แล้ว |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ไม่มี default.tsx เท่ากับ 404 เสมอไม่ว่า request แบบไหน"** พิสูจน์แล้วว่ามีข้อยกเว้น: มัน 404 สำหรับ request ที่เป็น dynamic จริง ๆ ไม่ได้ cache ไว้ — แต่ถ้าไม่มีอะไรใน tree เป็น dynamic เลย Next.js อาจ prerender combination ที่ไม่ match นั้นเป็น static 200 ตอน build ได้
+- **"(.) กับ (..) ใช้แทนกันได้เกือบหมด — เลือกอันที่ 'รู้สึก' ตรงกับความลึกของ folder"** พิสูจน์แล้วว่าผิด: `(.)photo` ใต้ `@modal` compile ผ่านไม่มี error แต่ไม่เคย intercept เพราะ folder `@slot` ไม่นับเป็น level เลย มีแค่ `(..)` เท่านั้นที่เข้าถึง sibling จริงของ `feed`
+- **"ถ้า intercepting route ผิด build จะบอกเราเอง"** ไม่จริง — intercept ที่ level ผิดเป็น routing bug แบบเงียบ เห็นได้ก็ต่อเมื่อคลิกผ่านจริงในเบราว์เซอร์เท่านั้น
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างใช้ parallel หรือ intercepting route ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- ทุก slot ที่อาจไม่ match มี `default.tsx` ไหม ถ้าไม่มี hard navigation ไปสถานะนั้นอาจเป็น 404 จริง
+- การนับ intercepting level นับจากความลึกของ file-system แทนที่จะเป็น segment depth ไหม folder `@slot` ใด ๆ ใน path ต้องถูกข้ามตอนนับ `(.)`/`(..)`/`(...)`
+- โค้ดสมมติว่า build ผ่านแปลว่า interception ทำงานไหม มันไม่จับ level ที่ผิด — เห็นได้ก็ต่อเมื่อคลิกลิงก์จริงเท่านั้น
+- data fetch ที่ช้าถูกวางไว้ใน `children` page ที่ใช้ร่วมกันแทนที่จะเป็น slot ของตัวเองไหม แบบนั้นบล็อก initial paint ของทั้ง layout แทนที่จะให้ slot อิสระ stream ของตัวเอง
+- test หรือ demo เช็คแค่ URL แบบ direct/hard navigation ของ intercepted route ไหม แบบนั้น design มาให้โชว์หน้าเต็มเสมอ — interception เกิดผ่าน soft client-side navigation เท่านั้น
+
+<SpotTheBug code={`// app/gallery/@modal/(.)photo/[id]/page.tsx
+export default async function PhotoModal({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <dialog open>Photo {id}</dialog>
+}
+
+// app/gallery/page.tsx
+import Link from 'next/link'
+export default function Gallery() {
+  return <Link href="/photo/1">Open photo 1</Link>
+}`}>
+`@modal` เป็น slot ไม่ใช่ segment เลยไม่นับเข้า intercepting level ตำแหน่งจริงของ folder intercepting อยู่หนึ่ง level ใต้ `gallery` — และ `photo` อยู่เป็น sibling ของ `gallery` ซึ่งสูงกว่าตำแหน่งนั้นหนึ่ง level `(.)` (level เดียวกัน) ตื้นเกินไปหนึ่ง level มีแค่ `(..)` เท่านั้นที่เข้าถึงมันได้ พิสูจน์ตรง ๆ แล้ว: โครงสร้างเดียวกันเป๊ะนี้ด้วย `(.)` compile ผ่านไม่มี error และ list route จริงใน build output แต่คลิก `<Link>` แล้ว render หน้า standalone `/photo/[id]` เต็ม ๆ แทน modal — พลาดเงียบ ๆ ไม่ใช่ crash วิธีแก้คือเปลี่ยนชื่อ folder จาก `(.)photo` เป็น `(..)photo` โดยไม่ต้องแก้อะไรอื่นเลย
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-named `@slots` render หลายหน้าใน layout เดียวพร้อมกัน ส่วน `(.)` `(..)` `(...)` intercept render route ภายใน layout ปัจจุบันโดยที่ URL ยังเปลี่ยน
+named `@slots` render หลายหน้าใน layout เดียวพร้อมกัน — ให้แต่ละอันมี `loading`/`error`/`default` ของตัวเอง — ส่วน `(.)`/`(..)`/`(...)` intercept route เข้า layout ปัจจุบันตอน soft navigation เท่านั้น นับ segment level โดย folder `@slot` มองไม่เห็น นับ level ผิดแล้ว build ยังเขียวอยู่แต่ modal จะไม่โผล่มาเลยเงียบ ๆ
 </Callout>
 
 export const quizParallelTh = [
@@ -115,36 +274,62 @@ export const quizParallelTh = [
       'dynamic catch-all segment',
     ],
     answer: 1,
+    explain: '@slot ถูกส่งเป็น prop ให้ layout ใน folder เดียวกัน และตัวมันเองไม่ใช่ URL segment',
   },
   {
     q: 'ทำไมต้องใส่ default.tsx ให้ parallel route slot',
     options: [
       'เพื่อตั้ง default export ของ page',
-      'เพื่อ render fallback ตอน slot ไม่มี match แทนที่จะเป็น 404',
+      'เพื่อ render fallback ตอน slot ไม่มี match บน hard navigation แทนที่จะเป็น 404',
       'เพื่อทำให้ slot เป็น Client Component',
       'เพื่อ prefetch slot อัตโนมัติ',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย dynamic route จริง: ไม่มี default.tsx แล้ว slot ที่ไม่ match บน hard navigation ที่เป็น dynamic จริง ๆ จะ render notFound() ทำให้ผลรวมเป็น 404',
+  },
+  {
+    q: 'parallel slot แต่ละตัว (เช่น @team กับ @analytics) define loading.tsx และ error.tsx ของตัวเองได้ไหม',
+    options: [
+      'ไม่ได้ มีแค่ shared layout เท่านั้นที่มี loading/error ได้',
+      'ได้ — แต่ละ slot stream และ handle error อิสระจาก sibling ของมัน',
+      'ได้เฉพาะ slot ที่ชื่อ @team เท่านั้น',
+      'ได้เฉพาะใน Pages Router ไม่ใช่ App Router',
+    ],
+    answer: 1,
+    explain: 'แต่ละ slot เป็น subtree ของตัวเอง fetch ที่ช้าหรือ crash ใน slot หนึ่งจึงไม่บล็อกหรือทำให้ตัวอื่นล่มตามไปด้วย',
+  },
+  {
+    q: '```txt\napp/feed/@modal/(.)photo/[id]/page.tsx\n```\nbuild จริงแล้วคลิกผ่านในเบราว์เซอร์ด้วย <Link> จะเกิดอะไรขึ้น',
+    options: [
+      'build fail — (.) เป็น syntax ที่ผิดตรงนี้',
+      'build ผ่านและ list route ปกติ แต่คลิก Link แล้ว render หน้า standalone เต็ม ๆ — modal ไม่โผล่มาเลย',
+      'ทำงานเหมือน (..)photo เป๊ะ',
+      'throw runtime error ตอนคลิก',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ แล้ว: @modal ไม่นับเป็น segment level เลย (.) จึงตื้นเกินไปหนึ่ง level ที่จะเข้าถึง photo (sibling ของ feed) — build ยังเขียวอยู่แต่ interception ไม่เคยทำงานเงียบ ๆ',
   },
   {
     q: 'intercepting convention (..) เจาะไปที่ไหน',
     options: [
       'segment level เดียวกัน',
-      'ขึ้นไปหนึ่ง segment level',
+      'ขึ้นไปหนึ่ง segment level โดยไม่นับ folder @slot ใด ๆ ใน path',
       'app root',
       'private folder',
     ],
     answer: 1,
+    explain: 'folder @slot มองไม่เห็นตอนนับ level เลย (..) จากข้างใน @modal จึงเข้าถึง sibling จริงของ segment ที่ slot นั้นสังกัดอยู่',
   },
   {
-    q: 'use case คลาสสิกของ intercepting routes คืออะไร',
+    q: 'hard reload ของ URL ที่ intercept ไว้ (เช่น /photo/1 ไม่ได้คลิกผ่าน Link) โชว์อะไร พิสูจน์แล้วในเบราว์เซอร์จริง',
     options: [
-      'prerender list ของหน้า static',
-      'photo modal ทับ feed โดยที่ URL update',
-      'อ่าน search params บน server',
-      'group หน้า marketing ไว้ใต้ layout เดียว',
+      'modal เหมือน soft navigation',
+      'หน้า standalone /photo/[id] เต็ม ๆ — hard navigation ไม่มี client router state ให้ intercept จาก',
+      '404 เพราะ route นี้ตั้งใจไว้สำหรับ intercept เท่านั้น',
+      'redirect กลับไป /feed',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วทั้งด้วย curl และ reload ในเบราว์เซอร์: direct/hard navigation render หน้า standalone จริงเสมอ ตรงตาม pattern photo-modal คลาสสิกที่ตั้งใจไว้',
   },
 ];
 

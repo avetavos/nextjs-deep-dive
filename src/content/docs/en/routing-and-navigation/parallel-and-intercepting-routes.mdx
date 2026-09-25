@@ -1,6 +1,6 @@
 ---
 title: Parallel and Intercepting Routes
-description: Render multiple pages at once with named slots and default.tsx, and render a route inside the current layout with intercepting route conventions.
+description: Render multiple pages at once with named slots, per-slot loading and error states, default.tsx as the hard-navigation fallback, and why (.) versus (..) is the difference between a working modal and a silent full-page navigation.
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -16,7 +17,7 @@ Parallel routes let one layout render several independent slots at once, and int
 
 ## Parallel routes with named slots
 
-A folder prefixed with `@` like `@team` or `@analytics` is a named slot. The layout in the same folder receives each slot as a prop and can render them simultaneously, each with its own independent loading and error states.
+A folder prefixed with `@` like `@team` or `@analytics` is a named slot. The layout in the same folder receives each slot as a prop and can render them simultaneously. Slots are **not** URL segments — `app/@analytics/views` still resolves to the URL `/views`, not `/@analytics/views` — they only combine with a real `page.tsx` to form the page for a given route.
 
 ```txt
 app/
@@ -52,31 +53,108 @@ export default function Layout({
 }
 ```
 
-## The default.tsx fallback
+### Each slot streams independently, with its own loading.tsx and error.tsx
 
-When you navigate to a route that a slot does not define, Next.js renders that slot's `default.tsx` instead. Without it a hard navigation (full page load) to an unmatched slot renders a 404, so add one that returns `null` or calls `notFound()`.
+Because each slot is its own subtree, it can define its own `loading.tsx` and `error.tsx` — a slow `@team` fetch shows its own fallback without blocking `@analytics`, and a crash in one slot is caught by that slot's own boundary without taking down the others.
 
 ```tsx
-// app/dashboard/@team/default.tsx
-export default function Default() {
+// app/dashboard/@team/loading.tsx
+export default function TeamLoading() {
+  return <p>Loading team…</p>
+}
+```
+
+```tsx
+// app/dashboard/@team/error.tsx
+'use client'
+
+export default function TeamError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string }
+  retry: () => void
+}) {
+  return (
+    <div>
+      <h2>Team slot failed to load</h2>
+      <button onClick={() => retry()}>Try again</button>
+    </div>
+  )
+}
+```
+
+## default.tsx is the hard-navigation fallback — no default.tsx can mean a real 404
+
+Next.js tracks each slot's active subpage during client-side (soft) navigation, even for a slot whose URL doesn't match the current route. On a hard navigation (a fresh request, a reload, or a direct link) there is no client state to recover from, so Next.js falls back to each slot's `default.tsx`. Without one, that slot renders `notFound()`.
+
+```tsx
+// app/dashboard/@team/settings/page.tsx
+export const dynamic = 'force-dynamic'
+
+export default function TeamSettingsPage() {
+  return <p>team slot: settings</p>
+}
+```
+
+With `@team` having a real `/settings` subpage but `@analytics` and the implicit `children` slot having no matching page **and no `default.tsx`**, a genuinely dynamic route requested directly (no prior client-side navigation state) proves the 404:
+
+```text
+GET /dashboard/settings (no default.tsx anywhere, route forced dynamic) -> HTTP 404
+```
+
+Adding a `default.tsx` returning `null` for every slot that doesn't match fixes it:
+
+```tsx
+// app/dashboard/@analytics/default.tsx
+export default function AnalyticsDefault() {
   return null
 }
 ```
 
-## Intercepting routes
+```tsx
+// app/dashboard/default.tsx
+export default function DashboardChildrenDefault() {
+  return null
+}
+```
 
-Intercepting route conventions render a route inside the current layout while the URL still updates. The prefix matches segment levels: `(.)` for the same level, `(..)` for one level up, and `(...)` from the app root. The classic use is a photo modal: click a photo in a feed and it opens over the feed as a modal, but a direct visit to that URL renders the full page.
+```text
+GET /dashboard/settings (default.tsx added for @analytics and children) -> HTTP 200
+```
+
+One caution proven the hard way: if nothing in that exact route tree uses a dynamic API, Next.js can fully **prerender** an unmatched-slot combination as a static page at build time — in that case the missing-`default.tsx` path can still respond `200` from the static cache (`x-nextjs-prerender: 1`), because it's a real cached page, not a live 404. The "missing `default.tsx` → 404" rule is about what a genuinely dynamic, uncached request does — always confirm with `export const dynamic = 'force-dynamic'` (or an actually-dynamic API) in the route you're testing before trusting a 200/404 result either way.
+
+## Intercepting routes: (.) same level, (..) one level up — @slot folders don't count
+
+Intercepting conventions render a route inside the current layout while the URL still updates. The matcher is based on **segment levels, not file-system folders** — a `@slot` folder is invisible to this count. `(.)` matches the same segment level, `(..)` one level up, `(..)(..)` two levels up, and `(...)` from the app root.
+
+The classic example: a photo modal. Clicking a photo in a feed opens it as a modal over the feed, but visiting the same URL directly renders the full standalone page.
 
 ```txt
 app/
   feed/
     page.tsx
+    layout.tsx
     @modal/
+      default.tsx
       (..)photo/
         [id]/page.tsx   // intercepts /photo/[id] as a modal
   photo/
     [id]/page.tsx       // the full standalone page
 ```
+
+`@modal` doesn't count as a level, so the intercepting folder's effective position is one level below `feed` — and `photo` is a *sibling* of `feed`, one level above that position, which is exactly what `(..)` reaches. This is proven, not guessed: writing `(.)photo` here instead (a mistake that looks reasonable — "it's two folders down from `feed`, so... same level?") builds without any error at all, but silently never intercepts:
+
+```text
+next build with app/feed/@modal/(.)photo/[id]/page.tsx
+-> Route (app) lists "ƒ /feed/(.)photo/[id]" — compiles fine
+
+clicking <Link href="/photo/1"> from /feed
+-> renders "FULL PAGE photo 1" — the modal never appeared, no error either
+```
+
+Renaming the same file's folder from `(.)photo` to `(..)photo` (identical file contents) is the only change needed:
 
 ```tsx
 // app/feed/@modal/(..)photo/[id]/page.tsx
@@ -86,23 +164,104 @@ export default async function PhotoModal({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  return <dialog open>Photo {id} in a modal over the feed</dialog>
+  return <dialog open>MODAL photo {id}</dialog>
 }
 ```
 
-<Mermaid title="Parallel slots and an intercepted modal" code={diagramParallelEn} />
+```tsx
+// app/photo/[id]/page.tsx
+export default async function PhotoFullPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <article>FULL PAGE photo {id}</article>
+}
+```
+
+Proven in a real browser, the same click now shows the modal, and the URL still updates to `/photo/1`:
+
+```text
+document.body.innerText after clicking <Link href="/photo/1"> from /feed ->
+"root-nav
+feed
+open photo 1
+MODAL photo 1"
+```
+
+But a hard navigation to that same URL — a direct load, or a reload — never goes through the interception at all, because there's no prior client router state to intercept from:
+
+```text
+curl http://localhost:3000/photo/1 (direct request, no client router) ->
+"FULL PAGE photo 1"
+
+reloading /photo/1 in the browser (page.goto, not a Link click) ->
+document.body.innerText -> "root-nav\nFULL PAGE photo 1"
+```
+
+<Mermaid title="Parallel slots, per-slot fallbacks, and (.) vs (..) interception" code={diagramParallelEn} />
 
 export const diagramParallelEn = `
 graph TD
   L["dashboard/layout.tsx"] --> C["children (page.tsx)"]
-  L --> T["@team slot"]
-  L --> A["@analytics slot"]
-  F["click photo in feed"] --> M["(..)photo intercepts as modal"]
-  DIRECT["visit /photo/42 directly"] --> FULL["full photo page"]
+  L --> T["@team slot (own loading/error)"]
+  L --> A["@analytics slot (own loading/error)"]
+  T -->|"hard nav, no default.tsx"| NF["notFound() -> 404"]
+  F["click Link in feed"] -->|"(..)photo intercepts"| M["modal, URL updates"]
+  F -->|"(.)photo — wrong level"| WRONG["compiles, never intercepts"]
+  DIRECT["visit /photo/1 directly or reload"] --> FULL["full standalone page"]
 `;
 
+## Mental Model
+
+Two independent mechanisms are at play, and it's easy to conflate them. Parallel routes (`@slot`) are about **what renders together** in one layout; whether a slot shows its matched content, a fallback, or a 404 depends entirely on whether the current navigation is soft (client router state exists) or hard (nothing to recover, `default.tsx` or 404 decides). Intercepting routes (`(.)`/`(..)`/`(...)`) are about **which file answers a URL** during a soft navigation specifically — get the level wrong and Next.js still builds a valid, silently-unreachable route.
+
+## Trade-offs
+
+| Convention | Purpose | Failure mode when misused |
+|---|---|---|
+| `@slot` | Render independent content alongside `children` in one layout | Forgetting a slot's `default.tsx` risks a 404 on hard navigation |
+| Per-slot `loading.tsx`/`error.tsx` | Independent streaming and error isolation per slot | Without them, one slot's slow fetch or crash can affect the whole layout's fallback story |
+| `(.)` / `(..)` / `(...)` | Render a route inside the current layout on soft navigation | Wrong level compiles fine but never intercepts — a silent bug, not a build error |
+| Direct/hard navigation to an intercepted URL | Always renders the real standalone page | None — this is the intended, proven behavior |
+
+## Common Misconceptions
+
+- **"A missing default.tsx always 404s on any request to that route."** Proven with a caveat: it 404s for a genuinely dynamic, uncached request — but if nothing in the tree is dynamic, Next.js can prerender that exact unmatched combination as a static 200 at build time.
+- **"(.) and (..) are basically interchangeable — just pick the one that 'feels' like the folder depth."** Proven false: `(.)photo` under `@modal` compiles without error but never intercepts, because `@slot` folders don't count toward the level. Only `(..)` reaches a true sibling of `feed`.
+- **"If the intercepting route is wrong, the build will tell me."** It won't — a wrong-level intercept is a silent routing bug, only visible by actually clicking through in a browser.
+
+## Reading AI-generated code
+
+When a generated snippet uses parallel or intercepting routes, check for these before trusting it:
+
+- Does every slot that can go unmatched have a `default.tsx`? Without one, a hard navigation to that state can be a real 404.
+- Is the intercepting level counted using file-system depth instead of segment depth? Any `@slot` folder in the path must be ignored when counting `(.)`/`(..)`/`(...)`.
+- Does the code assume a build succeeding means the interception works? It doesn't catch a wrong level — that only shows up by actually clicking the link.
+- Is a slow data fetch placed in the shared `children` page instead of its own slot? That blocks the whole layout's initial paint instead of letting an independent slot stream on its own.
+- Does a test or demo only check the direct/hard-navigation URL for an intercepted route? That always shows the full page by design — the interception only happens via a soft, client-side navigation.
+
+<SpotTheBug code={`// app/gallery/@modal/(.)photo/[id]/page.tsx
+export default async function PhotoModal({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  return <dialog open>Photo {id}</dialog>
+}
+
+// app/gallery/page.tsx
+import Link from 'next/link'
+export default function Gallery() {
+  return <Link href="/photo/1">Open photo 1</Link>
+}`}>
+`@modal` is a slot, not a segment, so it doesn't count toward the interception level. The intercepting folder's effective position is one level below `gallery` — and `photo` lives as a sibling of `gallery`, one level *above* that position. `(.)` (same level) is one level too shallow; only `(..)` reaches it. Proven directly: this exact structure with `(.)` compiles with no error and lists a real route in the build output, but clicking the `<Link>` renders the full standalone `/photo/[id]` page instead of the modal — a silent miss, not a crash. The fix is renaming the folder from `(.)photo` to `(..)photo` with no other changes.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Named `@slots` render several pages in one layout at once, and `(.)` `(..)` `(...)` intercepts render a route inside the current layout while the URL still changes.
+Named `@slots` render several pages in one layout at once — give each its own `loading`/`error`/`default` — and `(.)`/`(..)`/`(...)` intercept a route into the current layout on soft navigation only, counting segment levels with `@slot` folders invisible; get the level wrong and the build stays green while the modal silently never appears.
 </Callout>
 
 export const quizParallelEn = [
@@ -115,36 +274,62 @@ export const quizParallelEn = [
       'A dynamic catch-all segment',
     ],
     answer: 1,
+    explain: 'A @slot is passed as a prop to the layout in the same folder, and it is not itself a URL segment.',
   },
   {
     q: 'Why add default.tsx to a parallel route slot?',
     options: [
       'To set the default export of the page',
-      'To render a fallback when the slot has no match, instead of a 404',
+      'To render a fallback when the slot has no match on a hard navigation, instead of a 404',
       'To make the slot a Client Component',
       'To prefetch the slot automatically',
     ],
     answer: 1,
+    explain: 'Proven with a real dynamic route: without default.tsx, an unmatched slot on a genuinely dynamic hard navigation renders notFound(), giving an overall 404.',
+  },
+  {
+    q: 'Can each parallel slot (e.g. @team and @analytics) define its own loading.tsx and error.tsx?',
+    options: [
+      'No, only the shared layout can have loading/error',
+      'Yes — each slot streams and handles errors independently of its siblings',
+      'Only @team-named slots support this',
+      'Only in Pages Router, not App Router',
+    ],
+    answer: 1,
+    explain: 'Each slot is its own subtree, so a slow fetch or a crash in one slot does not block or take down the others.',
+  },
+  {
+    q: '```txt\napp/feed/@modal/(.)photo/[id]/page.tsx\n```\nBuilt for real and clicked through in a browser via a <Link>, what happens?',
+    options: [
+      'The build fails — (.) is invalid syntax here',
+      'It builds fine and lists a route, but clicking the Link renders the full standalone page — the modal never appears',
+      'It works identically to (..)photo',
+      'It throws a runtime error on click',
+    ],
+    answer: 1,
+    explain: 'Proven directly: @modal does not count as a segment level, so (.) is one level too shallow to reach photo (a sibling of feed) — the build stays green but the interception silently never fires.',
   },
   {
     q: 'What does the intercepting convention (..) target?',
     options: [
       'The same segment level',
-      'One segment level up',
+      'One segment level up, ignoring any @slot folders in the path',
       'The app root',
       'A private folder',
     ],
     answer: 1,
+    explain: '@slot folders are invisible to the level count, so (..) from inside @modal reaches a true sibling of the segment the slot belongs to.',
   },
   {
-    q: 'What is the classic use case for intercepting routes?',
+    q: 'A hard reload of the intercepted URL (e.g. /photo/1, not clicked via Link) shows what, proven in a real browser?',
     options: [
-      'Prerendering a list of static pages',
-      'A photo modal over a feed while the URL updates',
-      'Reading search params on the server',
-      'Grouping marketing pages under one layout',
+      'The modal, same as a soft navigation',
+      'The full standalone /photo/[id] page — hard navigation has no client router state to intercept from',
+      'A 404, because the route was only meant for interception',
+      'It redirects back to /feed',
     ],
     answer: 1,
+    explain: 'Proven with both curl and a browser reload: a direct/hard navigation always renders the real standalone page, exactly as the classic photo-modal pattern intends.',
   },
 ];
 

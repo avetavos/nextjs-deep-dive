@@ -1,6 +1,6 @@
 ---
 title: Dynamic Segments และ Route Groups
-description: Dynamic segments, catch-all routes, generateStaticParams สำหรับ prerender พร้อม route groups และ private folders ที่ opt out จาก routing
+description: Dynamic segments, catch-all routes, generateStaticParams กับ dynamicParams สำหรับ prerender พร้อม route groups, private folders และทำไมข้าม route group ที่มี root layout ต่างกันถึงบังคับ full page reload
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -57,6 +58,29 @@ export default async function Docs({
 }
 ```
 
+### กรณีว่างของ optional catch-all คือ `undefined` ไม่ใช่ array ว่าง
+
+เมื่อ `[[...slug]]` match กับ path แม่โดยไม่มี segment ต่อท้ายเลย `params.slug` จะเป็น `undefined` — ไม่ใช่ `[]` build และ request จริงยืนยันแบบนี้
+
+```tsx
+// app/shop/[[...slug]]/page.tsx
+export default async function Shop({
+  params,
+}: {
+  params: Promise<{ slug?: string[] }>
+}) {
+  const { slug } = await params
+  return <p>slug: {String(slug)}</p>
+}
+```
+
+```text
+curl http://localhost:3000/shop
+-> slug: undefined
+```
+
+โค้ดที่ทำ `slug.length` หรือ `slug.map(...)` โดยไม่เช็ค `slug?.length` ก่อน จะ throw ตอน runtime พอดีกับ route ที่ optional catch-all ตั้งใจให้ match ด้วย นั่นคือ base path ที่ไม่มี segment ต่อท้าย
+
 ## generateStaticParams prerender dynamic route
 
 ใช้ `export generateStaticParams` เพื่อบอก Next.js ว่าจะ prerender param ค่าไหนบ้างตอน build แต่ละ object ที่ return จะกลายเป็นหนึ่ง page ที่ generate แบบ static
@@ -69,6 +93,28 @@ export function generateStaticParams() {
 ```
 
 ถ้าเปิด `cacheComponents` ไว้ `generateStaticParams` ต้อง return param อย่างน้อยหนึ่งตัว — การ return array ว่างจะเป็น build error
+
+### dynamicParams ควบคุม param ที่ generateStaticParams ไม่ได้ list ไว้ — แต่มันใช้ไม่ได้เลยถ้าเปิด cacheComponents
+
+`dynamicParams` (default `true`) กำหนดว่าจะเกิดอะไรขึ้นเมื่อผู้เข้าชม hit param ค่าที่ `generateStaticParams` ไม่เคย return: default คือ Next.js จะ render แบบ dynamic ตอน request แรกแล้ว cache ผลไว้ได้ ส่วน `dynamicParams = false` ทำให้ param ที่ไม่ได้ list ไว้กลาย **404** แทน
+
+```tsx
+// app/blog/[slug]/page.tsx — variant B
+export const dynamicParams = false
+
+export function generateStaticParams() {
+  return [{ slug: 'a' }, { slug: 'b' }]
+}
+```
+
+route segment config option นี้เป็นส่วนหนึ่งของ caching model แบบก่อน `cacheComponents` และมันเข้ากันไม่ได้กับ cacheComponents โดยตรง เปิด `cacheComponents: true` ใน `next.config.ts` แล้วยังมี `dynamicParams` export ค้างอยู่ เป็น build error จริง ไม่ใช่แค่เงียบ ๆ ไม่ทำอะไร
+
+```text
+next build (cacheComponents: true, dynamicParams present)
+-> Error: Route segment config "dynamicParams" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+ภายใต้ `cacheComponents` การควบคุมแบบเดียวกันนี้เป็นเรื่องโครงสร้างแทนที่จะเป็น config flag: param ที่ list ไว้ใน `generateStaticParams` ได้ validate ตอน build time และได้ static HTML ส่วน param ที่ไม่ได้ list ไว้กลายเป็น runtime data จริง ๆ ที่ต้องห่อด้วย `<Suspense>` (ดู section Cache Components ในโมดูล caching) — ไม่มีสวิตช์ `dynamicParams = false` ให้ param ที่ไม่ได้ list 404 ตรง ๆ อีกแล้ว
 
 ## route group และ private folder
 
@@ -85,7 +131,50 @@ app/
     Button.tsx
 ```
 
-<Mermaid title="folder ที่เปลี่ยนกับไม่เปลี่ยน URL" code={diagramDynamicTh} />
+### route group ไม่แชร์ layout กันเอง และข้ามระหว่าง root layout บังคับ full reload
+
+แต่ละ route group define root layout **ของตัวเอง**ได้ — นี่คือเหตุผลหลักที่ใช้มัน (แยก `(marketing)` กับ `(shop)` ให้แต่ละอันมี `<html>`/`<body>` และ provider คนละชุดไปเลย) ไม่มีอะไรเชื่อม layout ทั้งสองเข้าด้วยกัน และการ navigate ฝั่ง client จาก route ของ group หนึ่งไปอีก group หนึ่งใช้ state ของ group แรกซ้ำไม่ได้เลย เพราะ tree ทั้งสองไม่มี ancestor ร่วมกันใน app
+
+```tsx
+// app/(marketing)/layout.tsx
+export default function MarketingLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body data-group="marketing">{children}</body>
+    </html>
+  )
+}
+```
+
+```tsx
+// app/(shop)/layout.tsx
+export default function ShopLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body data-group="shop">{children}</body>
+    </html>
+  )
+}
+```
+
+พิสูจน์ในเบราว์เซอร์จริง: โหลด `/about` (group `(marketing)`) ตั้ง marker บน `window` แล้วคลิก `<Link>` ไป `/cart` (group `(shop)`)
+
+```text
+before clicking Link -> { group: "marketing", marker: "still-here", loadCount: 1 }
+after clicking Link to /cart -> { group: "shop", marker: undefined, loadCount: 1 }
+```
+
+`marker` หายไปแปลว่า JavaScript execution context ทั้งก้อนถูกทิ้งแล้วเริ่มใหม่ — full page reload — แม้ว่า navigation จะเกิดผ่าน `<Link>` และ Network tab ยังโชว์การพยายามยิง `_rsc` fetch ก่อนก็ตาม Next.js พยายาม soft navigation ก่อน พอเจอว่า response เป็นของ root layout คนละตัว มันจะ fallback ไปทำ document reload จริงแทนที่จะพยายาม reconcile สอง tree ที่เข้ากันไม่ได้
+
+<Mermaid title="folder ไหนเปลี่ยน/ไม่เปลี่ยน URL และตรงไหนที่ reload เกิดขึ้น" code={diagramDynamicTh} />
 
 export const diagramDynamicTh = `
 graph TD
@@ -93,10 +182,54 @@ graph TD
   B["[...slug] catch-all"] --> U2["changes URL: /docs/a/b"]
   C["(marketing) route group"] --> U3["no URL change"]
   D["_components private"] --> U4["not routable"]
+  C -->|"different root layout than"| E["(shop) route group"]
+  E -->|"Link between them"| F["full page reload, not soft nav"]
 `;
 
+## Mental Model
+
+มอง bracket, วงเล็บ, และ underscore เป็นเครื่องมือ file-system สามชนิดที่ไม่เกี่ยวกันเลย แค่บังเอิญอยู่ใน folder name เดียวกัน bracket เท่านั้นที่แตะ URL — มันจับข้อมูล วงเล็บกับ underscore แค่จัดระเบียบไฟล์บน disk เท่านั้น route group เพิ่มเติมคือให้ subtree ทั้งก้อน define root layout ของตัวเองได้ และพอมันทำแบบนั้น subtree นั้นก็กลายเป็น document แยกต่างหากในสายตาของ browser ทันที — navigate เข้าหรือออกจากมันไม่มีวันเป็น soft navigation
+
+## ข้อแลกเปลี่ยน
+
+| convention | เปลี่ยน URL ไหม | define root layout ของตัวเองได้ไหม |
+|---|---|---|
+| `[id]` / `[...slug]` / `[[...slug]]` | ใช่ — จับค่าไว้ | ไม่ได้ |
+| `(group)` | ไม่ | ได้ — และพอทำแบบนั้น การ navigate แบบ soft ไป/กลับ sibling group ที่มี root layout ต่างกันจะหายไป |
+| `_private` | ไม่ — ไม่ routable เลย | ไม่ได้ |
+| `dynamicParams` (model ก่อน cacheComponents) | ไม่เกี่ยว | ควบคุม 404 กับ runtime-render ของ param ที่ไม่ได้ list ไว้ ใช้ไม่ได้เลยถ้าเปิด cacheComponents |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`params.slug` เป็น `[]` เมื่อ `[[...slug]]` match โดยไม่มี segment ต่อท้าย"** พิสูจน์แล้วด้านบนว่ามันคือ `undefined` โค้ดที่สมมติว่าเป็น array จะ crash พอดีกับ base route ที่ optional form ตั้งใจให้ match ด้วย
+- **"`dynamicParams = false` ยังใช้ได้อยู่ถ้าเปิด `cacheComponents`"** มันเป็น build error จริง ไม่ใช่แค่ warning — สอง model นี้ตั้งใจออกแบบให้ใช้ร่วมกันไม่ได้
+- **"เป็นการคลิก `<Link>` ก็ต้อง soft navigation สิ"** ไม่จริงถ้าปลายทางมี root layout ต่างกัน — พิสูจน์แล้วด้วย marker บน `window` ที่หายไป แปลว่าหน้าทั้งหน้า reload จริง
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะ dynamic segment หรือ route group ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- optional catch-all handler เรียก `slug.length` หรือ `slug.map(...)` โดยไม่เช็ค null ก่อนไหม base route ที่ไม่มี segment ต่อท้ายทำให้ `slug` เป็น `undefined` ไม่ใช่ `[]`
+- `dynamicParams` ถูก export คู่กับ config `cacheComponents: true` ไหม นั่นคือ build error ไม่ใช่ combination ที่ใช้ได้
+- โค้ดสมมติว่าทุก route group ใต้ `app/` แชร์ root layout เดียวกันไหม แต่ละ group ที่มี `layout.tsx` ระดับบนสุดของตัวเอง จะได้ `<html>`/`<body>` คนละชุดที่ไม่เกี่ยวกันเลย
+- มีการอ้างว่า "client-side navigation เร็ว" ระหว่างสอง route group ที่ต่าง define `<html>`/`<body>` ไหม การข้ามแบบนั้นเป็น full reload เสมอ พิสูจน์แล้วด้านบน
+- สอง route group ต่าง define page ที่ URL สุดท้ายซ้ำกันไหม (เช่น `(marketing)/about/page.tsx` กับ `(shop)/about/page.tsx`) Next.js ถือว่าเป็น path ที่ชนกันและ error
+
+<SpotTheBug code={`// app/shop/[[...slug]]/page.tsx
+export default async function Shop({
+  params,
+}: {
+  params: Promise<{ slug?: string[] }>
+}) {
+  const { slug } = await params
+  const crumbs = slug.map((s) => s.toUpperCase())
+  return <p>{crumbs.join(' / ')}</p>
+}`}>
+โค้ดนี้สมมติว่า `slug` เป็น array เสมอ พิสูจน์แล้วด้านบนว่าสำหรับ route `/shop` ที่ไม่มี segment ต่อท้าย ซึ่ง optional catch-all ตั้งใจออกแบบให้ match ด้วยโดยเฉพาะ `params.slug` จะเป็น `undefined` — เรียก `.map` บนมันจะ throw `TypeError` ตอน request time พอดีกับกรณี "ว่าง" ที่ฟอร์ม `[[...]]` มีไว้จัดการ วิธีแก้คือ `const crumbs = (slug ?? []).map(...)`
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-bracket จับ URL param ที่เรา `await` จาก Promise, วงเล็บ group โดยไม่แตะ URL, ส่วน underscore นำหน้าทำให้ folder opt out จาก routing
+bracket จับ URL param ที่เรา `await` จาก Promise (optional catch-all แบบว่างให้ `undefined` ไม่ใช่ `[]`), วงเล็บ group โดยไม่แตะ URL แต่ถือ root layout ของตัวเองได้ และการข้ามระหว่างสอง root layout ต่างกันเป็น full reload เสมอ — ไม่มีวันเป็น soft navigation
 </Callout>
 
 export const quizDynamicTh = [
@@ -109,16 +242,18 @@ export const quizDynamicTh = [
       'const id = props.id จาก getServerSideProps',
     ],
     answer: 1,
+    explain: 'params เป็น Promise ใน App Router Server Component page ต้อง await ก่อนจะอ่านค่าจากมันได้',
   },
   {
-    q: '[[...slug]] ให้อะไรเพิ่มจาก [...slug]',
+    q: '```tsx\nconst { slug } = await params // route is app/shop/[[...slug]]/page.tsx\nreturn <p>{slug.length}</p>\n```\nrequest ที่ /shop พอดี (ไม่มี segment ต่อท้าย) จะเกิดอะไรขึ้น',
     options: [
-      'match แค่ segment เดียวเท่านั้น',
-      'ทำให้ catch-all optional เพื่อให้ route แม่ match ได้ด้วย',
-      'ปิด prerendering ของ route',
-      'เปลี่ยน folder เป็น route group',
+      'slug เป็น [] เลย slug.length เป็น 0',
+      'slug เป็น undefined ทำให้ slug.length throw TypeError',
+      'route 404 ก่อน component จะรันด้วยซ้ำ',
+      'slug เป็น string "shop"',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย request จริง: กรณีว่างของ optional catch-all คือ params.slug === undefined ไม่ใช่ array ว่าง — เข้าถึง .length โดยไม่เช็คก่อนจะ throw',
   },
   {
     q: 'generateStaticParams ใช้ทำอะไร',
@@ -129,6 +264,18 @@ export const quizDynamicTh = [
       'mark folder ให้เป็น private',
     ],
     answer: 1,
+    explain: 'แต่ละ object ที่มัน return จะกลายเป็นหนึ่ง page ที่ generate แบบ static สำหรับ dynamic segment นั้น',
+  },
+  {
+    q: '```tsx\n// next.config.ts has cacheComponents: true\nexport const dynamicParams = false\nexport function generateStaticParams() { return [{ slug: \'a\' }] }\n```\nถ้า build จะเกิดอะไรขึ้น',
+    options: [
+      'build ผ่านปกติ — dynamicParams ยังใช้ได้',
+      'build error จริง: "dynamicParams" is not compatible with cacheComponents',
+      'dynamicParams ถูก ignore เงียบ ๆ ไม่มีข้อความอะไร',
+      'มันพังแค่ตอน dev เท่านั้น ไม่ใช่ production build',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้วย next build จริง: Cache Components แทนที่ caching model แบบ route-segment-config ทั้งหมด และ dynamicParams คือหนึ่งใน option ที่ถูก reject ตรง ๆ ตอนเปิดใช้งาน',
   },
   {
     q: 'route group (marketing) ส่งผลต่อ URL อย่างไร',
@@ -139,6 +286,18 @@ export const quizDynamicTh = [
       'เอา segment ออกจาก routing ทั้งหมด',
     ],
     answer: 1,
+    explain: 'route group แค่จัดระเบียบไฟล์บน disk เท่านั้น — ชื่อของมันเองจะถูกตัดออกจาก URL สุดท้ายเสมอ',
+  },
+  {
+    q: 'สอง route group (marketing) กับ (shop) ต่าง define root layout.tsx ของตัวเองพร้อม <html>/<body> คลิก <Link> จากหน้า (marketing) ไปหน้า (shop) เกิดอะไรขึ้น พิสูจน์แล้วในเบราว์เซอร์จริง',
+    options: [
+      'soft navigation ฝั่ง client โดยไม่ reload',
+      'full page reload — marker บน window ที่ตั้งไว้ก่อนคลิกหายไปหลังคลิก',
+      'error เพราะมี root layout สองอันไม่ได้',
+      'ค้างอยู่หน้า (marketing) เงียบ ๆ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้วย marker บน window: มันรอดตอน navigate ภายใน root layout เดียวกัน แต่หายไปตอนข้ามไป route group ที่มี root layout ต่างกัน — คือ full reload จริง ไม่ใช่ soft',
   },
 ];
 
