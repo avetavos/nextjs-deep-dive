@@ -1,6 +1,6 @@
 ---
 title: Server Actions คืออะไร
-description: directive "use server", inline action เทียบกับ actions module ที่แชร์กัน, การรันบน server เท่านั้น และความต่างจาก Route Handler
+description: Server Action คือ public POST endpoint โดยพื้นฐาน — บวกกับ directive "use server", inline action เทียบกับ actions module ที่แชร์กัน และความต่างจาก Route Handler
 sidebar:
   order: 1
 ---
@@ -9,17 +9,65 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
 Server Action คือ async function ที่ mark ด้วย directive `"use server"` และรันบน server เท่านั้น เราเรียก action ตรง ๆ จาก `<form>` หรือจาก Client Component ได้เลยโดยไม่ต้องเขียน API route
 
+## ทุก action คือ public POST endpoint
+
+ก่อนจะพูดถึง syntax ต้องเข้าใจก่อนว่า Server Action ไม่ใช่ช่องทาง RPC ส่วนตัวระหว่าง UI กับ server ของเราเอง ตอน build directive `"use server"` บอกให้ compiler แทนที่ implementation ของ function ใน client bundle ด้วย reference — action ID ที่ถูก encrypt บวก dispatcher — ที่ post กลับไปที่ server implementation ยังอยู่บน server เหมือนเดิม แต่ route ที่มันสร้างขึ้นมานั้น เรียกได้จากใครก็ตามที่ส่ง POST request แบบเดียวกันมา ไม่ว่าเขาจะเคยโหลด form ของเราหรือไม่ก็ตาม
+
+นี่ไม่ใช่ edge case ที่ค่อยมาป้องกันทีหลัง แต่เป็นสมมติฐานตั้งต้นของทุก action ที่เราจะเขียน เริ่มตั้งแต่ตัวอย่างแรกในบทนี้เลย ดังนั้นตัวอย่างที่รันได้จริงทุกอันตั้งแต่นี้ไปจะยึดกฎเดียวกัน: **authorize ผู้เรียกก่อน แล้วค่อย validate input ก่อนแตะ database** authorize หมายถึงเรียกเช็ค session — คอร์สนี้ใช้ pattern `verifySession()` ของ Data Access Layer จากบท [authentication patterns](/th/production-and-ecosystem/authentication-patterns/) — ส่วน validate หมายถึงการ parse `FormData` ที่ไม่น่าเชื่อถือด้วย schema library อย่าง `zod`
+
+```ts
+// app/lib/dal.ts
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session?.userId) {
+    redirect('/login')
+  }
+  return { isAuth: true, userId: session.userId }
+})
+```
+
+`verifySession()` เรียก `redirect()` เมื่อไม่มี session — และ `redirect()` throw ซึ่งแปลว่าห้ามเรียก `verifySession()` ภายใน `try/catch` ที่ไม่ปล่อยให้ control-flow error ของ Next.js หลุดออกไปโดยตั้งใจ บท [mutations and revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/) จะอธิบายว่าทำไมถึงสำคัญขนาดนี้ ตอนนี้ให้จำไว้ก่อนว่า `verifySession()` คือสิ่งที่เรียกไว้บนสุดของ action แบบไม่มี try/catch คลุม
+
+<Mermaid title="action ถูกเรียกถึงได้ไม่ว่า request จะมาจากไหน" code={diagramSaPublicTh} />
+
+export const diagramSaPublicTh = `
+graph LR
+  A["form ของเราเอง"] -->|"POST พร้อม action ID"| C["endpoint ของ action"]
+  B["ใครก็ได้ที่ใช้ curl หรือ script"] -->|"POST ด้วย action ID เดียวกัน"| C
+  C --> D{"verifySession() + schema.safeParse() ข้างในตัว action"}
+  D -->|"ไม่ผ่าน"| E["ถูกปฏิเสธ — ไม่แตะข้อมูลใด ๆ"]
+  D -->|"ผ่าน"| F["เขียนลง database"]
+`;
+
 ## Directive `"use server"` คืออะไร
 
-เรา mark function ให้เป็น Server Action ได้สองแบบ แบบแรกใส่ `"use server"` ไว้บนสุดของ inline async function ภายใน Server Component แบบที่สองใส่ `'use server'` ไว้บนสุดของทั้ง module file แล้วทุก export ในไฟล์นั้นจะกลายเป็น action
+เรา mark function ให้เป็น Server Action ได้สองแบบ แบบแรกใส่ `"use server"` ไว้บนสุดของ inline async function ภายใน Server Component แบบที่สองใส่ `'use server'` ไว้บนสุดของทั้ง module file แล้วทุก export ในไฟล์นั้นจะกลายเป็น action ตัวอย่างนี้ตั้งใจทำ body ให้สั้นที่สุดเพื่อโชว์กลไกเฉยๆ — actions module ที่แชร์กันด้านล่างจะโชว์ action ตัวเดียวกันแต่ใส่กฎ authorize/validate ลงไปแล้ว
+
+```ts
+// lib/db.ts
+export const db = {
+  todo: {
+    create: async (_args: { data: { title: string; userId?: string } }) => {},
+    delete: async (_args: { where: { id: string; userId?: string } }) => {},
+  },
+}
+```
 
 ```tsx
-// app/page.tsx — an inline Server Action inside a Server Component
+// app/page.tsx
+import { db } from '@/lib/db'
+
 export default function Page() {
   async function createTodo(formData: FormData) {
     'use server'
@@ -36,30 +84,44 @@ export default function Page() {
 }
 ```
 
+inline `"use server"` function ประกาศได้เฉพาะภายใน **Server Component** เท่านั้น ถ้าลองทำแบบเดียวกันใน Client Component จะเป็น build error ไม่ใช่ runtime surprise — ดู [อ่านโค้ดที่ AI เขียน](#อ่านโค้ดที่-ai-เขียน) ด้านล่างสำหรับข้อความ error จริง
+
 ## Actions module ที่แชร์กัน
 
-เมื่อหลาย component ต้องใช้ action เดียวกัน ให้ย้าย action ไปไว้ในไฟล์เฉพาะ ใส่ `'use server'` หนึ่งครั้งบนสุด แล้วทุก export จะกลายเป็น action ที่เรียกได้ วิธีนี้รวม logic ของ mutation ไว้ที่เดียว และให้ Client Component import ไปใช้ได้
+เมื่อหลาย component ต้องใช้ action เดียวกัน ให้ย้าย action ไปไว้ในไฟล์เฉพาะ ใส่ `'use server'` หนึ่งครั้งบนสุด แล้วทุก export จะกลายเป็น action ที่เรียกได้ วิธีนี้รวม logic ของ mutation ไว้ที่เดียว ให้ Client Component import ไปใช้ได้ — และเป็นที่ที่กฎ authorize-แล้วค่อย-validate จากหัวข้อบนลงมาใช้งานจริง
 
 ```ts
-// app/actions.ts — every export here is a Server Action
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
+import { z } from 'zod'
+
+const createTodoSchema = z.object({ title: z.string().min(1) })
+
 export async function createTodo(formData: FormData) {
-  const title = String(formData.get('title'))
-  await db.todo.create({ data: { title } })
+  const { userId } = await verifySession()
+  const parsed = createTodoSchema.safeParse({ title: formData.get('title') })
+  if (!parsed.success) return
+
+  await db.todo.create({ data: { title: parsed.data.title, userId } })
 }
 
 export async function deleteTodo(id: string) {
-  await db.todo.delete({ where: { id } })
+  const { userId } = await verifySession()
+  await db.todo.delete({ where: { id, userId } })
 }
 ```
+
+สังเกตว่า `deleteTodo` scope การลบด้วย `userId` ควบคู่กับ `id` — authorization ไม่ใช่แค่ "login อยู่ไหม" แต่คือ "user คนนี้เป็นเจ้าของ row นี้จริงไหม" มี session ที่ valid อย่างเดียวไม่ได้พิสูจน์ ownership
 
 ## เรียกจาก form และจาก Client Component
 
 เราต่อ Server Action เข้ากับ form ตรง ๆ ด้วย `<form action={createTodo}>` แล้ว Next.js จะ post ข้อมูล form ไปที่ action บน server หรือจะ import action เข้าไปใน Client Component แล้วเรียกเหมือน function ปกติก็ได้ Next.js จะแปลง call นั้นเป็น network request ให้เอง
 
 ```tsx
-// app/todo-button.tsx — calling an action from a Client Component
+// app/todo-button.tsx
 'use client'
 
 import { deleteTodo } from './actions'
@@ -71,19 +133,69 @@ export function DeleteButton({ id }: { id: string }) {
 
 ## ต่างจาก Route Handler อย่างไร
 
-Route Handler ใน `route.ts` คือ URL สาธารณะที่เราออกแบบ ต่อ และ `fetch` เอง ส่วน Server Action คือ function ที่เราเรียกตรง ๆ Next.js สร้าง endpoint และ network call ให้ และรองรับ progressive enhancement ผ่าน form เลือก Route Handler เมื่อต้องการ public API หรือ webhook จริง ๆ และเลือก Server Action สำหรับ flow ของ form และ mutation ภายใน app ของเราเอง
+Route Handler ใน `route.ts` คือ URL สาธารณะที่เราออกแบบ ต่อ และ `fetch` เอง ส่วน Server Action คือ function ที่เราเรียกตรง ๆ Next.js สร้าง endpoint และ network call ให้ และรองรับ progressive enhancement ผ่าน form ทั้งสองแบบ public เท่ากันเมื่อ deploy จริง — ความต่างอยู่ที่ใครเป็นคนออกแบบ wire format ไม่ใช่ใครเรียกถึงได้
 
-<Mermaid title="การเรียก Server Action ไปถึง server ได้อย่างไร" code={diagramSa1Th} />
+## Mental Model
 
-export const diagramSa1Th = `
-graph LR
-  A["form or Client Component"] -->|"calls action"| B["Next.js generated endpoint"]
-  B -->|"runs on server only"| C["Server Action function"]
-  C -->|"reads or writes"| D["Database"]
-`;
+มองว่า Server Action คือปุ่มที่บังเอิญ compile ออกมาเป็น HTTP endpoint ไม่ใช่ HTTP endpoint ที่บังเอิญมีปุ่ม function signature ที่เราเขียนคือ signature เดียวกับที่คนแปลกหน้าเรียกด้วย `curl` ถ้าเราไม่ยอมรับ input จาก POST body ที่ไม่รู้จัก เราก็ไม่ควรยอมรับ input จาก `formData.get(...)` เช่นกัน — มันคือถุงข้อมูลที่ไม่น่าเชื่อถือเหมือนกันทั้งคู่
+
+## ข้อแลกเปลี่ยน
+
+| | Server Action | Route Handler |
+|---|---|---|
+| **เราเขียน** | function ที่เรียกตรง ๆ จาก form หรือ client call | URL ที่ต่อและ `fetch` เอง |
+| **Endpoint** | Next.js สร้างให้จาก action ID | path ที่เราวางไฟล์ `route.ts` ไว้ |
+| **Progressive enhancement** | มีในตัว — ทำงานผ่าน `<form>` จริงก่อน hydration | ไม่มี — ต้องมี JavaScript เพื่อ `fetch` |
+| **เหมาะกับ** | mutation และ flow ของ form ภายใน app ตัวเอง | public API จริง, webhook, หรือ client ที่ไม่ใช่ form |
+| **เรียกถึงจากภายนอกได้ไหม** | ได้ ผ่าน action ID | ได้ ผ่าน path |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"มีแต่ form ของฉันที่เรียก action นี้ ปลอดภัยแน่นอน"** action ID เรียกถึงได้ด้วย POST ตรง ๆ จากที่ไหนก็ได้ form เป็นแค่ผู้เรียกหนึ่งในบรรดาผู้เรียกที่เป็นไปได้ทั้งหมด
+- **"render form ให้เฉพาะคน login แล้วก็พอ"** การ gate ตอน render ควบคุมแค่ UI ที่แสดง ไม่ได้ควบคุมว่า server จะรับ request แบบไหน action เองยังต้องมี check ของตัวเอง
+- **"action ที่ไม่ได้ export ออกจาก app จะเรียกไม่ถึง"** ทุก action ที่ **export** จากไฟล์ `'use server'` จะกลายเป็น endpoint ที่เรียกได้ทันทีที่มันถูกใช้ที่ไหนสักแห่งใน app มีแต่ action ที่ไม่ถูกใช้จริง ๆ เท่านั้นที่จะถูกลบด้วย dead-code elimination (ดูบท [security and patterns](/th/server-actions-and-mutations/security-and-patterns/) ว่า build step นี้พิสูจน์อะไรได้จริง ๆ)
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างมี Server Action ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- action เรียก `verifySession()` (หรือ auth check เทียบเท่า) ก่อนอ่านหรือเขียนอะไรไหม หรือสมมติไปเองว่าผู้เรียก authenticated แล้วเพราะ form render เฉพาะหลัง login
+- ทุก field จาก `formData` ถูก parse ผ่าน schema ไหม หรือส่ง string ดิบตรงเข้า database เลย
+- ถ้า action ลบหรืออัปเดต row มัน filter ด้วย user ID ปัจจุบันควบคู่กับ ID ของ row ไหม หรือ user ที่ authenticated คนไหนก็แก้ข้อมูลของคนอื่นได้
+- directive `"use server"` อยู่บน inline function ภายใน Server Component หรือถูกวางผิดที่ไปอยู่ใน Client Component
+- action คืนค่าเฉพาะ field ที่ UI ต้องใช้ไหม หรือส่ง database record ดิบกลับไปทั้งก้อน
+
+<SpotTheBug code={`'use client'
+
+export default function Page() {
+  async function save(formData: FormData) {
+    'use server'
+    console.log(formData)
+  }
+  return (
+    <form action={save}>
+      <button type="submit">Save</button>
+    </form>
+  )
+}`}>
+inline `"use server"` function ประกาศได้เฉพาะภายใน **Server Component** เท่านั้น ไฟล์นี้ขึ้นต้นด้วย `'use client'` แปลว่า `save` ถูกประกาศอยู่ใน Client Component — Next.js 16.3.6 ปฏิเสธการ build ผลลัพธ์จริงจาก compiler (Turbopack) คือ
+
+```text
+Error: Turbopack build failed with 1 error:
+./app/bug-inline-in-client/page.tsx:1:1
+Error: The "use client" directive must be placed before other expressions. Move it to the top of the file to resolve this issue.
+> 1 | 'use client'
+    | ^^^^^^^^^^^^
+  2 |
+  3 | export default function Page() {
+  4 |   async function save(formData: FormData) {
+```
+
+ข้อความชี้ไปที่บรรทัด `'use client'` ทั้งที่บรรทัดนั้นอยู่บนสุดอยู่แล้ว — จริง ๆ แล้ว inline `'use server'` function ที่ซ้อนอยู่ข้างในต่างหากที่ทำให้ directive check ของ compiler สับสน วิธีแก้คือย้าย `save` ไปเป็นไฟล์ `'use server'` แยกต่างหากแล้ว import มาใช้ เหมือน shared actions module ด้านบน
+</SpotTheBug>
 
 <Callout title="สรุปในหนึ่งบรรทัด">
-Server Action คือ async function แบบ `"use server"` ที่รันบน server เท่านั้น และเรียกได้จาก form หรือ Client Component โดยไม่ต้องเขียน API route เอง
+Server Action คือ async function แบบ `"use server"` ที่ compile ออกมาเป็น public POST endpoint — เรียกได้จาก form หรือ Client Component แต่ก็เรียกถึงได้จากที่อื่นเช่นกัน ดังนั้นทุก action ต้อง authorize และ validate ด้วยตัวเอง
 </Callout>
 
 export const quizSa1Th = [
@@ -96,6 +208,7 @@ export const quizSa1Th = [
       'function middleware ที่รันทุก request',
     ],
     answer: 1,
+    explain: '"use server" บอก compiler ให้เก็บ implementation ไว้บน server แล้วเปลี่ยนใน client bundle เป็น reference ที่เรียกได้แทน',
   },
   {
     q: 'จะเกิดอะไรขึ้นเมื่อใส่ \'use server\' ไว้บนสุดของ module file',
@@ -106,6 +219,7 @@ export const quizSa1Th = [
       'ไม่เกิดอะไรขึ้น directive ถูกเมินใน module file',
     ],
     answer: 1,
+    explain: 'directive "use server" ระดับ module ทำให้ทุก function ที่ export จากไฟล์นั้นกลายเป็น Server Action ที่เรียกได้',
   },
   {
     q: 'เรียก Server Action จาก Client Component ได้อย่างไร',
@@ -116,6 +230,29 @@ export const quizSa1Th = [
       'ต้อง register ใน middleware ก่อน',
     ],
     answer: 1,
+    explain: 'แค่ import action เข้ามาใน Client Component แล้วเรียกตรง ๆ ก็พอ Next.js จะแปลงเป็น network request ให้เอง',
+  },
+  {
+    q: 'ทำไมความคิดที่ว่า "มีแต่ form ของฉันเรียก action นี้ เลยไม่ต้อง check อะไร" ถึงผิด',
+    options: [
+      'เพราะ form ช้ากว่า fetch call เสมอ',
+      'เพราะ action ID เรียกถึงได้ด้วย POST ตรง ๆ จากที่ไหนก็ได้ ไม่ใช่แค่จาก form ของเรา',
+      'เพราะ Server Action อ่าน FormData อย่างปลอดภัยไม่ได้',
+      'เพราะ Next.js ปิด action ที่ไม่ได้เรียกจาก form',
+    ],
+    answer: 1,
+    explain: 'action ID ที่ compile ออกมาคือ public POST endpoint ใครก็ตามที่เรียกถึง app เราได้ ก็ส่ง request แบบเดียวกันได้โดยไม่ต้องผ่าน UI ของเราเลย',
+  },
+  {
+    q: '```tsx\n\'use client\'\n\nexport default function Page() {\n  async function save(formData: FormData) {\n    \'use server\'\n  }\n  return <form action={save}><button>Save</button></form>\n}\n```\nโค้ดนี้ build แล้วจะเป็นอย่างไร',
+    options: [
+      'build ผ่านสบาย — inline action ใช้ได้ทุก component',
+      'build ไม่ผ่าน — inline "use server" function ใช้ได้เฉพาะใน Server Component',
+      'build ผ่าน แต่ action ไม่ทำงานเงียบ ๆ',
+      'build ผ่านและรันได้ แต่เฉพาะตอน development เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'Turbopack ปฏิเสธไฟล์นี้ action ถูกซ้อนอยู่ใน Client Component (\'use client\' อยู่บนสุด) และ inline "use server" function ต้องการ Server Component เท่านั้น — วิธีแก้คือย้ายไปไฟล์ \'use server\' แยกต่างหาก',
   },
   {
     q: 'ควรเลือก Route Handler แทน Server Action เมื่อไร',
@@ -126,6 +263,7 @@ export const quizSa1Th = [
       'เพื่อเลี่ยงการรันโค้ดบน server',
     ],
     answer: 1,
+    explain: 'Route Handler เหมาะเมื่อเราออกแบบ URL ไว้ให้ผู้เรียกจากภายนอกหรือ webhook แต่ทั้งสองแบบ public เท่ากันเมื่อ deploy จริง',
   },
 ];
 

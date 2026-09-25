@@ -11,6 +11,8 @@ Bilingual (EN/TH) Astro + Starlight course on the Next.js App Router.
 
 ## Harness
 
+`@/` imports resolve inside the lesson first, then to the first lesson (in module order) that defines that path with a bare `// path` comment — so `app/lib/session.ts` is defined once in the auth lesson and imported everywhere else. Alternative versions of the same file use a decorated comment (`// app/lib/session.ts — database variant`) so they are shown but not collected.
+
 Next.js has no in-browser playground, so lesson code can't be proven correct by
 running it in the reader's tab. Instead, `tools/verify-snippets.mjs` drives a real
 scaffolded Next.js project — the **probe**, at `tools/probe/` (gitignored) — and

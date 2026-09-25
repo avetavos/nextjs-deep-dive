@@ -1,6 +1,6 @@
 ---
 title: Security และ Patterns
-description: Server Action คือ public endpoint — ต้อง validate input และ authorize ผู้ใช้ภายใน action เสมอ — พร้อม built-in protection และ pattern ที่นำกลับมาใช้ซ้ำได้
+description: Server Action คือ public endpoint — การเช็ค Origin/Host แบบ CSRF, ขีดจำกัดขนาด body, encryption key สำหรับ deploy หลาย instance และ pattern authorize-แล้วค่อย-validate ที่ใช้ซ้ำได้
 sidebar:
   order: 4
 ---
@@ -9,27 +9,37 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
-ทุก Server Action คือ public HTTP endpoint เราจึงต้อง validate input และ authorize ผู้เรียกภายใน action เอง อย่าเชื่อว่าถูกเรียกจาก UI ของเราเท่านั้น
+ทุก Server Action คือ public HTTP endpoint ดังนั้นต้อง validate input และ authorize ผู้เรียกอยู่ข้างในตัว action เอง — ห้ามเชื่อว่ามันถูกเรียกมาจาก UI ของเราเท่านั้น
 
-## Validate และ authorize ภายใน action
+## Validate และ authorize ข้างในตัว action
 
-ใครที่รู้ action ID ก็เรียก action ด้วย payload อะไรก็ได้ ดังนั้น action ต้องเช็คซ้ำว่าผู้ใช้คือใคร และ parse input ใหม่ทุกครั้งที่ถูกเรียก authorize ก่อน แล้ว validate แล้วค่อย mutate UI ที่ render form ไม่ใช่ security boundary
+ใครก็ตามที่รู้ action ID เรียกมันด้วย payload อะไรก็ได้ ดังนั้น action ต้องเช็คว่าใครเป็นคนเรียกใหม่ทุกครั้ง และ parse input ใหม่ทุกครั้ง authorize ก่อน validate ต่อ แล้วค่อย mutate — UI ที่ render form ไม่ใช่ security boundary
 
 ```ts
-// app/actions.ts — authorize, then validate, then mutate
+// lib/db.ts
+export const db = {
+  post: {
+    update: async (_args: { where: { id: string; authorId?: string }; data: { title?: string } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
 'use server'
 
-import { auth } from '@/lib/auth'
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { z } from 'zod'
 
 const schema = z.object({ id: z.string().uuid(), title: z.string().min(1) })
 
 export async function updatePost(formData: FormData) {
-  const session = await auth()
-  if (!session?.user) throw new Error('Unauthorized')
+  const { userId } = await verifySession()
 
   const parsed = schema.safeParse({
     id: formData.get('id'),
@@ -38,18 +48,109 @@ export async function updatePost(formData: FormData) {
   if (!parsed.success) return { error: 'Invalid input' }
 
   await db.post.update({
-    where: { id: parsed.data.id, authorId: session.user.id },
+    where: { id: parsed.data.id, authorId: userId },
     data: { title: parsed.data.title },
   })
 }
 ```
 
-## Built-in protection ไม่ใช่ authorization
+## โมเดล CSRF: Origin เทียบกับ Host
 
-Next.js เข้ารหัสตัวแปรที่เรา close over ใน action สร้าง action ID ที่เดาไม่ได้ และ dead-code-eliminate action ที่เราไม่เคยใช้ ทำให้ action พวกนั้นไม่กลายเป็น public endpoint สิ่งเหล่านี้ลด attack surface แต่ไม่มีตัวไหนเช็คว่าผู้ใช้คนนี้ทำ action นี้ได้ไหม authorization และ validation จึงยังเป็นหน้าที่ของเรา
+Server Action รับเฉพาะ `POST` ซึ่งตัด CSRF vector ส่วนใหญ่ไปได้เองอยู่แล้ว — `<form>` จากเว็บอื่นปลอม request ที่มี action ID ที่ถูก encrypt ตรงเป๊ะไม่ได้ อีกชั้นหนึ่ง Next.js เทียบ header `Origin` ของ request กับ `Host` (หรือ `X-Forwarded-Host`) แล้วปฏิเสธ request ทันทีถ้าไม่ตรงกัน action จึงเรียกได้เฉพาะจาก host เดียวกับที่เสิร์ฟหน้านั้น request ที่ไม่มี header `Origin` เลยจะถูกปล่อยผ่านพร้อม warning แทนที่จะถูกปฏิเสธตรง ๆ
+
+หลัง reverse proxy หรือ CDN ที่ public host ต่างจากที่ app server เห็น ให้ config `serverActions.allowedOrigins` ด้วย host ที่ *browser* เห็น ไม่ใช่ host ภายใน
 
 ```ts
-// app/actions.ts — unused actions are stripped at build; used ones get an ID
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const config: NextConfig = {
+  experimental: {
+    serverActions: {
+      allowedOrigins: ['my-proxy.com', '*.my-proxy.com'],
+    },
+  },
+}
+
+export default config
+```
+
+Entry รองรับ wildcard: `*.my-proxy.com` match subdomain label เดียว `**.my-proxy.com` match หนึ่ง label ขึ้นไป สังเกตว่า option นี้ยังอยู่ใต้ `experimental` ใน Next.js 16.3.6 แม้ตัว Server Actions เองจะ stable มาตั้งแต่ Next.js 14 แล้วก็ตาม
+
+## ขีดจำกัดขนาด body
+
+Request ของ action ถูกจำกัดไว้ที่ 1MB โดย default เจาะจงเพื่อจำกัดการใช้ resource จากการ parse payload ที่ใหญ่เกินไป เพิ่มได้ด้วย `serverActions.bodySizeLimit` เมื่อคาดว่าจะมี upload ที่ใหญ่จริง ๆ — ขีดจำกัดนี้นับจาก raw HTTP body รวม boundary และ part header ของ `multipart/form-data` ด้วย ดังนั้นเผื่อ overhead ไว้เหนือขนาดไฟล์จริงที่คาดไว้บ้าง
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const config: NextConfig = {
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '2mb',
+    },
+  },
+}
+
+export default config
+```
+
+## Encryption key สำหรับ deploy หลาย instance
+
+Next.js encrypt ตัวแปรที่ inline action closure ไว้ก่อนส่งไปที่ client ด้วย private key ที่สร้างใหม่ทุกครั้งที่ build ซึ่งไม่มีปัญหาถ้ามี instance เดียว แต่ถ้า self-host หลาย server หลัง load balancer แต่ละ instance จะสร้าง key ของตัวเองโดย default — action ที่ถูกเรียกกับ instance หนึ่ง อาจ decrypt ไม่ได้เมื่อไปตกที่อีก instance ตั้งค่า `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` เป็นค่าคงที่เดียวกันในทุก instance เพื่อให้ closure decrypt ได้เสมอไม่ว่า instance ไหนจะรับ request
+
+```text
+# generate a compatible key: 16, 24, or 32 decoded bytes, base64-encoded
+openssl rand -base64 32
+```
+
+ตั้งค่าผลลัพธ์เป็น `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` ใน environment ของทุก instance นี่คนละเรื่องกับ `allowedOrigins`/CSRF check ด้านบน — มันแก้ปัญหาคนละอย่าง (decrypt closure ให้สอดคล้องกัน) ไม่ใช่เรื่องว่าใครเรียก action ได้
+
+## Closure ถูก encrypt แต่ไม่ใช่ secret
+
+การ encrypt ตัวแปรใน closure ยกระดับการป้องกันการดูเผิน ๆ ขึ้นมา แต่คำแนะนำอย่างเป็นทางการชัดเจนว่า อย่าพึ่งการ encrypt อย่างเดียวเพื่อกันค่าไม่ให้ถึงมือ client มองตัวแปรที่ inline action closure ไว้เหมือนกับค่าที่กำลังจะ serialize ลง prop ที่ client มองเห็นได้ — ถ้ามันต้องไม่ถึงมือ browser เด็ดขาด ก็อย่าเอามันเข้า closure เลย ให้ derive กลับมาจาก session หรือ database ข้างในตัว action แทน
+
+```tsx
+// app/page.tsx
+async function getLatestVersion() {
+  return 1
+}
+
+export default async function Page() {
+  const publishVersion = await getLatestVersion()
+
+  async function publish() {
+    'use server'
+    if (publishVersion !== await getLatestVersion()) {
+      throw new Error('The version has changed since pressing publish')
+    }
+    // ...
+  }
+
+  return (
+    <form>
+      <button formAction={publish}>Publish</button>
+    </form>
+  )
+}
+```
+
+## Action ที่ไม่ได้ใช้ถูก dead-code-eliminate — แต่กฎแคบกว่าที่ฟังดู
+
+Action ที่ไม่เคยถูก import หรือเรียกที่ไหนใน app จริง ๆ จะถูกลบออกจาก client bundle ที่มองเห็นได้ตอน build และไม่ได้ public ID ที่เรียกได้เลย — ส่วนนี้ตรงกับที่เอกสารสัญญาไว้เป๊ะ สิ่งที่มัน **ไม่ได้** แปลว่าคือ action จะ "ถูกใช้" ก็ต่อเมื่ออยู่หลัง authorization check เท่านั้น ทันทีที่ action ที่ export ไว้ถูกเรียกจาก *ที่ไหนก็ตาม* ใน app — แม้แต่หน้าที่ยังไม่มีใคร link ไปหา — มันก็เป็น endpoint ที่เรียกถึงได้สาธารณะแล้ว จบ
+
+ทำ probe ที่มี action หนึ่งตัวที่หน้าจริง ๆ render ใช้ กับอีกตัวที่ไม่เคยถูก import ที่ไหนเลย แล้วตรวจผลลัพธ์ของ build ยืนยันทั้งสองด้านนี้ตรง ๆ
+
+```text
+used action's encrypted ID   -> present in the page's rendered HTML (discoverable by any visitor)
+unused action's encrypted ID -> absent from every client-visible artifact (HTML, RSC payload, static JS)
+```
+
+ตาราง routing ภายในของ server เองยังคง list ID ของ action ที่ไม่ได้ใช้ไว้อยู่ (มันต้องมี record บางอย่างไว้ route request ด้วย ID) แต่เพราะ ID นั้นไม่เคยถูกส่งไปที่ browser ในรูปแบบไหนเลย ไม่มีผู้เรียกจากภายนอกคนไหนสร้าง request สำหรับมันได้โดยไม่รู้ค่าที่ไม่เคยถูกให้มาก่อน มองเรื่องนี้ว่าเป็นการเพิ่มต้นทุนในการค้นพบ ไม่ใช่สิ่งทดแทน authorization check ข้างในตัว action
+
+```ts
+// app/actions.ts
 'use server'
 
 // Used in the app: Next.js creates an encrypted, unguessable ID for it.
@@ -59,13 +160,13 @@ export async function updateUser(formData: FormData) {}
 export async function deleteUser(formData: FormData) {}
 ```
 
-## Action wrapper ที่ใช้ซ้ำได้พร้อม typed result
+## Wrapper ที่ใช้ซ้ำได้พร้อม typed result
 
-เพื่อเลี่ยงการเขียน auth และ validation ซ้ำ ให้ห่อ action ด้วย helper ที่ authorize, parse ด้วย schema และ return ผลลัพธ์แบบ typed ทุก action จะ return รูปแบบ success หรือ error เดียวกัน ซึ่งเข้ากับ `useActionState` ได้อย่างสะอาด
+เพื่อไม่ต้องเขียน boilerplate ของ authorize-แล้วค่อย-validate ซ้ำ ๆ ห่อ action ไว้ใน helper ที่ authorize ด้วย `verifySession()`, parse ด้วย schema แล้ว return typed result ทุก action จะ return shape success-หรือ-error แบบเดียวกัน ซึ่งเข้ากับ `useActionState` ได้ดี
 
 ```ts
-// app/lib/action.ts — one wrapper: authorize, validate, typed result
-import { auth } from '@/lib/auth'
+// app/lib/action.ts
+import { verifySession } from '@/app/lib/dal'
 import { z } from 'zod'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
@@ -75,25 +176,27 @@ export function authedAction<S extends z.ZodType, T>(
   run: (input: z.infer<S>, userId: string) => Promise<T>,
 ) {
   return async (formData: FormData): Promise<Result<T>> => {
-    const session = await auth()
-    if (!session?.user) return { ok: false, error: 'Unauthorized' }
+    const { userId } = await verifySession()
 
     const parsed = schema.safeParse(Object.fromEntries(formData))
     if (!parsed.success) return { ok: false, error: 'Invalid input' }
 
-    const data = await run(parsed.data, session.user.id)
+    const data = await run(parsed.data, userId)
     return { ok: true, data }
   }
 }
 ```
 
+`verifySession()` redirect แทนที่จะ return null เมื่อไม่มี session หน้าที่ของ wrapper นี้เลยแคบลงเหลือแค่ validation กับ typed result shape — authentication ถูกจัดการไปแล้วก่อนโค้ดของ wrapper เองจะรัน
+
 ## เก็บการเข้าถึง DB ไว้ใน data-access layer
 
-อย่ากระจาย query ดิบไปทั่ว action ให้ทุก read และ write ผ่าน data-access layer ที่แต่ละ function บังคับ ownership check ของตัวเอง action เรียก layer นั้น authorization จึงอยู่ติดกับข้อมูลและลืมยาก
+อย่ากระจาย raw database query ไปทั่วทุก action ให้ทุกการอ่านและเขียนผ่าน data-access layer ที่แต่ละ function บังคับ ownership check ของตัวเอง action เรียก layer นั้น authorization จึงอยู่ติดกับข้อมูลและลืมยาก
 
 ```ts
-// app/data/posts.ts — the only place that touches the posts table
+// app/data/posts.ts
 import 'server-only'
+import { db } from '@/lib/db'
 
 export async function updatePostForUser(id: string, userId: string, title: string) {
   return db.post.update({
@@ -103,62 +206,141 @@ export async function updatePostForUser(id: string, userId: string, title: strin
 }
 ```
 
-<Mermaid title="ทุก request เช็ค auth และ input ซ้ำ" code={diagramSa4Th} />
+<Mermaid title="ทุก request ถูกเช็ค auth และ input ใหม่" code={diagramSa4Th} />
 
 export const diagramSa4Th = `
 graph TD
-  A["Public request hits action ID"] --> B{"Authorized user?"}
-  B -->|"No"| C["Reject: Unauthorized"]
-  B -->|"Yes"| D{"Input valid by schema?"}
-  D -->|"No"| E["Reject: Invalid input"]
-  D -->|"Yes"| F["Data-access layer with ownership check"]
-  F --> G["Mutate the database"]
+  A["Public request hits action ID"] --> B{"Origin matches Host?"}
+  B -->|"No"| Z["Rejected — CSRF check fails"]
+  B -->|"Yes"| C{"Authorized user?"}
+  C -->|"No"| D["Reject: Unauthorized"]
+  C -->|"Yes"| E{"Input valid by schema?"}
+  E -->|"No"| F["Reject: Invalid input"]
+  E -->|"Yes"| G["Data-access layer with ownership check"]
+  G --> H["Mutate the database"]
 `;
 
+## Mental Model
+
+ไม่มีการป้องกันในตัวของ framework — Origin/Host check, ขีดจำกัดขนาด body, action ID ที่ encrypt แล้ว, dead-code elimination, closure encryption — ตัวไหนตอบคำถาม "user คนนี้ทำสิ่งนี้ได้จริงไหม" เลยสักตัว มันตอบคำถามที่แคบกว่านั้น: request นี้เป็นไปได้ไหม, มันใหญ่เกินไปไหม, มันถูกค้นพบเผิน ๆ ได้ไหม, มันถูกดูเผิน ๆ ได้ไหม authorization เป็นคำถามที่มีแต่โค้ดของเราเองเท่านั้นที่ตอบได้ ทุกครั้งไป
+
+## ข้อแลกเปลี่ยน
+
+| การป้องกัน | ป้องกันอะไรจริง ๆ | ไม่ได้ทำอะไร |
+|---|---|---|
+| Origin/Host check | request ที่ปลอมข้ามเว็บ (`POST` forged) | ไม่ป้องกันผู้เรียกจาก origin เดียวกันที่ส่ง payload อะไรก็ได้ |
+| `bodySizeLimit` (default 1MB) | resource หมดจาก payload ที่ใหญ่เกินไป | ไม่เช็คว่า *เนื้อหา* ของ payload ถูกต้องไหม |
+| Action ID ที่ encrypt + dead-code elimination | การค้นพบ endpoint ของ action ที่ไม่ได้ใช้แบบเผิน ๆ | authorization ของผู้เรียก action ที่ถูกใช้อยู่ |
+| Closure variable encryption | การดู captured value เผิน ๆ ระหว่างส่ง | กันค่าไม่ให้ถึงมือ client ถ้ามันต้องเป็นความลับจริง ๆ |
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | decrypt ให้สอดคล้องกันข้าม instance ที่ self-host หลายตัว | ไม่เกี่ยวกับใครเรียก action ได้ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"action ID ที่ encrypt แล้ว แปลว่าไม่ต้องเช็คว่าใครเรียก"** มันแค่ทำให้ *หา* ID ยากขึ้น ไม่ได้ทำให้ *ใช้* ยากขึ้นเมื่อหาเจอแล้ว — ใครก็ตามที่เข้าถึง session ที่ authenticated ได้ หรือดู network traffic ได้ ก็เรียกมันได้
+- **"action ปลอดภัยแล้วเมื่อถูก dead-code-eliminate"** dead-code elimination ใช้ได้กับ action ที่ไม่ถูกใช้ที่ไหนใน app จริง ๆ เท่านั้น ทันทีที่ code path ไหนใช้มัน มันก็เป็น public endpoint ที่มีชีวิตแล้ว ไม่ว่า code path นั้นจะมี auth gate หรือไม่
+- **"`allowedOrigins` กับ encryption key แก้ปัญหาเดียวกัน"** ไม่ใช่ — ตัวหนึ่งคือ allowlist สำหรับ CSRF ว่าใครเรียก action ได้บ้าง อีกตัวคือเรื่อง decrypt closure ให้สอดคล้องกันข้าม server instance ไม่มีตัวไหนทดแทน authorization ข้างในตัว action ได้
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะเรื่อง security ของ Server Action ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- action เรียก authorization check (`verifySession()` หรือเทียบเท่า) เป็นบรรทัดแรกไหม หรือสมมติไปเองว่าผู้เรียก authenticated แล้ว
+- ค่าที่เป็นความลับหรือค่าที่ต้องไม่ถึงมือ browser ถูกจับไว้ใน closure ของ inline action โดยพึ่งแต่ encryption เพื่อซ่อนมันไหม
+- โค้ดสมมติว่า action ปลอดภัยเพราะ "ยังไม่ได้ใช้ใน UI" โดยไม่เช็คว่ามันถูก import และเรียกได้จากที่ไหนใน codebase หรือเปล่า
+- ถ้า app อยู่หลัง reverse proxy หรือ CDN `next.config` ตั้ง `serverActions.allowedOrigins` เป็น host *สาธารณะ* ที่ browser เห็น ไม่ใช่ host ภายในที่ app server รายงานหรือเปล่า
+- ทุก mutation ผ่าน data-access layer ที่เช็ค ownership ไหม หรือ action query database ตรง ๆ ด้วยแค่ ID ที่ผู้เรียกส่งมา
+
+<SpotTheBug code={`'use server'
+
+import { z } from 'zod'
+
+const schema = z.object({ id: z.string().uuid(), title: z.string().min(1) })
+
+export async function updatePost(formData: FormData) {
+  const parsed = schema.safeParse({
+    id: formData.get('id'),
+    title: formData.get('title'),
+  })
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  await db.post.update({
+    where: { id: parsed.data.id },
+    data: { title: parsed.data.title },
+  })
+}`}>
+action นี้ validate input ด้วย `zod` — ส่วนนี้ดูโอเค — แต่ไม่เคยเรียก `verifySession()` หรือ authorization check ใด ๆ เลย และ `where` clause filter ด้วย `id` อย่างเดียว ไม่มี `userId` ของผู้เรียก ตามคำแนะนำ data security อย่างเป็นทางการ "a page-level authentication check does not extend to the Server Actions defined within it" — action นี้เรียกถึงได้ตรง ๆ จากใครก็ได้ และตามที่เขียนไว้ ผู้เรียกที่ authenticated คนไหนก็ตาม (หรือแม้แต่ไม่ authenticated ถ้าไม่มี check ที่อื่นเลย) แก้ post ของคนอื่นได้ด้วยการเดาหรือสังเกต `id` วิธีแก้คือเรียก `verifySession()` ก่อน แล้วเติม `authorId: userId` ใน `where` clause เหมือนตัวอย่าง `updatePost` ก่อนหน้าในบทนี้
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-มองทุก Server Action เป็น public endpoint authorize ผู้ใช้และ validate input ภายใน action built-in protection ช่วยเสริมความแข็งแรงแต่ไม่แทน authorization ของเรา
+มองทุก Server Action เป็น public endpoint: authorize ผู้ใช้และ validate input ข้างในตัว action — การป้องกันในตัว (Origin/Host check, ขีดจำกัดขนาด body, ID ที่ encrypt, dead-code elimination) ลดพื้นที่โจมตี แต่ไม่มีตัวไหนเป็น authorization
 </Callout>
 
 export const quizSa4Th = [
   {
-    q: 'ทำไมต้อง authorize และ validate ภายในทุก Server Action',
+    q: 'ทำไมต้อง authorize และ validate ข้างในทุก Server Action',
     options: [
-      'เพราะไม่งั้น action จะช้า',
+      'เพราะ action จะช้าถ้าไม่ทำ',
       'เพราะ action คือ public endpoint ที่ใครก็เรียกตรง ๆ ได้',
-      'เพราะ React ต้องการเพื่อ hydration',
+      'เพราะ React ต้องการแบบนี้สำหรับ hydration',
       'เพราะ form รับประกัน input ที่ปลอดภัยอยู่แล้ว',
     ],
     answer: 1,
+    explain: 'Server Action compile ออกมาเป็น public endpoint ที่เรียกได้ UI ที่ render form ไม่ใช่ security boundary',
   },
   {
-    q: 'built-in protection อย่าง action ID ที่เดาไม่ได้ให้อะไรกับเรา',
+    q: 'การเช็ค Origin/Host ป้องกันอะไร',
     options: [
-      'authorization เต็มรูปแบบ ข้าม auth check ได้เลย',
-      'attack surface ที่ลดลง แต่ไม่ใช่ authorization',
-      'validate input ทุก field ให้อัตโนมัติ',
-      'เข้ารหัส database ตอนเก็บ',
+      'SQL injection ใน action body',
+      'request ข้ามเว็บที่ถูกปลอมจาก origin อื่น',
+      'payload ที่ใหญ่เกินไป',
+      'ผู้โจมตีที่มี session ที่ valid บนเว็บเราอยู่แล้ว',
     ],
     answer: 1,
+    explain: 'Next.js เทียบ Origin header ของ request กับ Host (หรือ X-Forwarded-Host) แล้วปฏิเสธถ้าไม่ตรงกัน เป็นการป้องกันแบบ CSRF — ไม่เกี่ยวกับว่าผู้เรียกจาก origin เดียวกันได้รับอนุญาตหรือไม่',
   },
   {
-    q: 'Server Action ที่ไม่เคยถูกใช้ที่ไหนเลยจะเป็นอย่างไร',
+    q: 'ขีดจำกัดขนาด body ของ Server Action request คือเท่าไรโดย default และเพิ่มยังไง',
     options: [
-      'ถูกเปิดเป็น public endpoint แบบ default',
-      'ถูก dead-code-eliminate และไม่มี public endpoint',
-      'throw error ตอน runtime',
-      'ถูก cache และเรียกอัตโนมัติ',
+      '10MB โดย default เพิ่มด้วย bodySizeLimit',
+      '1MB โดย default เพิ่มด้วย serverActions.bodySizeLimit ใน next.config',
+      'ไม่มีขีดจำกัด default',
+      '1MB และเปลี่ยนไม่ได้',
     ],
     answer: 1,
+    explain: 'request ของ action ถูกจำกัดที่ 1MB โดย default เพื่อจำกัดการใช้ resource serverActions.bodySizeLimit ใช้เพิ่มได้ เช่น \'2mb\'',
   },
   {
-    q: 'data-access layer สำหรับ mutation มีไว้เพื่ออะไร',
+    q: 'action ที่ export ไว้จะหยุดเป็น public endpoint ที่เป็นไปได้เมื่อไร',
     options: [
-      'ให้ query รันบน client',
-      'รวมการเข้าถึง DB ไว้ที่เดียวเพื่อบังคับ ownership check อย่างสม่ำเสมอ',
-      'เพื่อไม่ต้องใช้ database เลย',
-      'เพื่อปิด revalidation',
+      'ทันทีที่ถูกวางไว้หลัง authorization check',
+      'เฉพาะเมื่อไม่ถูกใช้ที่ไหนใน app จริง ๆ เลย dead-code elimination ถึงจะลบมันตอน build',
+      'ทันทีที่เปลี่ยนชื่อให้เดายากขึ้น',
+      'ไม่มีวันหยุด — action ที่ export ไว้เรียกถึงได้เสมอไม่ว่าจะถูกใช้หรือไม่',
     ],
     answer: 1,
+    explain: 'dead-code elimination ลบเฉพาะ action ที่ไม่ถูกเรียกจากที่ไหนใน app เลย action ที่มี auth check ครอบไว้ก็ยังถือว่า "ถูกใช้" และยังมี ID ที่เรียกได้จริง — check แค่ทำให้ ID นั้นปฏิเสธผู้เรียกที่ไม่ได้รับอนุญาต',
+  },
+  {
+    q: 'NEXT_SERVER_ACTIONS_ENCRYPTION_KEY แก้ปัญหาอะไร',
+    options: [
+      'authorize ว่า user ไหนเรียก action ได้',
+      'ทำให้ closure encryption สอดคล้องกันข้าม instance ที่ self-host หลายตัวหลัง load balancer',
+      'เพิ่มขีดจำกัดขนาด body',
+      'แทนที่การเช็ค Origin/Host แบบ CSRF',
+    ],
+    answer: 1,
+    explain: 'แต่ละ instance ที่ self-host จะสร้าง encryption key ของตัวเองตอน build โดย default การตั้งค่านี้เป็นค่าเดียวกันทำให้ closure decrypt ได้เสมอไม่ว่า instance ไหนจะรับ request',
+  },
+  {
+    q: '```ts\nexport async function updatePost(formData: FormData) {\n  const parsed = schema.safeParse({ id: formData.get(\'id\'), title: formData.get(\'title\') })\n  if (!parsed.success) return\n  await db.post.update({ where: { id: parsed.data.id }, data: { title: parsed.data.title } })\n}\n```\naction นี้ขาดอะไรไป',
+    options: [
+      'ไม่ขาดอะไร — validate ด้วย schema ก็พอแล้ว',
+      'authorization check และ ownership filter (authorId) ใน update',
+      'การเรียก revalidatePath',
+      'try/catch block',
+    ],
+    answer: 1,
+    explain: 'การ validate shape ด้วย zod ไม่ได้เช็คว่าใครเป็นผู้เรียก หรือเขาเป็นเจ้าของ row ที่กำลังอัปเดตหรือไม่ ถ้าไม่มี verifySession() และ filter authorId ผู้เรียกคนไหนก็แก้ post ไหนก็ได้ด้วย id',
   },
 ];
 

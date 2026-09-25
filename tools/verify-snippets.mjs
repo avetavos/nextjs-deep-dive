@@ -186,13 +186,20 @@ function collectFences(rawSrc) {
 // against its lesson's private `lessons/<ns>/` root instead of the probe's
 // real `@/*` -> repo-root alias. See file-header note for why this approach
 // (vs. per-namespace tsconfig `paths`) was chosen.
-function rewriteAtSpecifiers(content, relPath) {
+function rewriteAtSpecifiers(content, relPath, namespace, owners) {
   const dir = path.posix.dirname(relPath.replaceAll('\\', '/'));
-  let prefix = path.posix.relative(dir, '.');
-  prefix = prefix === '' ? './' : `${prefix}/`;
+  const here = path.posix.join(namespace, dir);
   return content.replace(
     /\b(from|import|require)(\s*\(?\s*)(['"])@\/([^'"]*)\3/g,
-    (_whole, kw, ws, q, tail) => `${kw}${ws}${q}${prefix}${tail}${q}`,
+    (_whole, kw, ws, q, tail) => {
+      const key = tail.replace(/\.(tsx?|m?js)$/, '');
+      // Own lesson first; otherwise the first lesson (in module order) that defines the file.
+      // A lesson may import `@/app/lib/dal` that an earlier lesson defined, like a real project.
+      const ownerNs = owners.get(key)?.includes(namespace) ? namespace : owners.get(key)?.[0] ?? namespace;
+      let rel = path.posix.relative(here, path.posix.join(ownerNs, tail));
+      if (!rel.startsWith('.')) rel = `./${rel}`;
+      return `${kw}${ws}${q}${rel}${q}`;
+    },
   );
 }
 
@@ -282,6 +289,8 @@ function runTypeCheck(descriptors) {
 
   const fenceMap = new Map(); // namespace -> { mdxRelPath, fences: Map(relPath -> fenceNum) }
   const stats = new Map(); // module -> { collected, skippedNoPath, expectError }
+  const owners = new Map(); // path without extension -> [namespace, ...] in module order
+  const pending = []; // [namespace, fence]
 
   for (const d of descriptors) {
     const counters = stats.get(d.module) ?? { collected: 0, skippedNoPath: 0, expectError: 0 };
@@ -295,9 +304,11 @@ function runTypeCheck(descriptors) {
       if (f.category === 'collected') {
         counters.collected++;
         nsFences.set(f.path, f.fenceNum);
-        const destAbs = path.join(LESSONS_DIR, namespace, f.path);
-        mkdirSync(path.dirname(destAbs), { recursive: true });
-        writeFileSync(destAbs, rewriteAtSpecifiers(f.body, f.path));
+        const key = f.path.replace(/\.(tsx?|m?js)$/, '');
+        const list = owners.get(key) ?? [];
+        if (!list.includes(namespace)) list.push(namespace);
+        owners.set(key, list);
+        pending.push([namespace, f]);
       } else if (f.category === 'skipped-no-path') {
         counters.skippedNoPath++;
       } else if (f.category === 'expect-error') {
@@ -305,6 +316,12 @@ function runTypeCheck(descriptors) {
       }
     }
     fenceMap.set(namespace, { mdxRelPath: d.mdxRelPath, fences: nsFences });
+  }
+
+  for (const [namespace, f] of pending) {
+    const destAbs = path.join(LESSONS_DIR, namespace, f.path);
+    mkdirSync(path.dirname(destAbs), { recursive: true });
+    writeFileSync(destAbs, rewriteAtSpecifiers(f.body, f.path, namespace, owners));
   }
 
   const tscBin = path.join(PROBE_DIR, 'node_modules', '.bin', 'tsc');

@@ -1,6 +1,6 @@
 ---
 title: Forms และ Progressive Enhancement
-description: form action ทำงานได้แม้ไม่มี JS แล้ว upgrade ตอน hydrate พร้อม useActionState, useFormStatus และ useOptimistic สำหรับ UX ของ form จริง
+description: form action ทำงานได้แม้ไม่มี JS แล้ว upgrade ตอน hydrate พร้อม signature จริงของ useActionState, ตำแหน่งของ useFormStatus และพฤติกรรม rollback ของ useOptimistic
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -19,7 +20,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 เพราะ action ผูกกับ `<form>` จริง browser จึง post form ด้วย HTTP request ธรรมดาได้ mutation ทำงานได้แม้ปิด JavaScript หรือยังโหลดไม่เสร็จ เมื่อ React hydrate หน้าเสร็จ form เดิมจะถูก intercept ฝั่ง client จึงไม่มีการ reload ทั้งหน้า เราได้ baseline ฟรี และได้ upgrade อัตโนมัติ
 
 ```tsx
-// app/new-todo.tsx — works before JS, upgrades after hydration
+// app/new-todo.tsx
 import { createTodo } from './actions'
 
 export function NewTodoForm() {
@@ -32,30 +33,90 @@ export function NewTodoForm() {
 }
 ```
 
-## useActionState สำหรับผลลัพธ์, pending และ error
+## useActionState ต้องการ `(prevState, formData)` — ไม่ใช่ `(formData)`
 
-`useActionState(action, initialState)` ห่อ action ไว้ เราจึงได้ state ล่าสุดที่ return กลับมา ได้ form action ไว้ bind และได้ flag `pending` action ของเรารับ state ก่อนหน้าเป็น argument แรก และ return state ใหม่ เหมาะมากกับการโชว์ validation error ข้าง field
+Server Action ธรรมดารับ `formData` เป็น argument เดียว เหมือนหัวข้อด้านบน แต่ `useActionState(action, initialState)` ต้องการรูปแบบที่ต่างออกไป: action ที่มี argument **แรก** เป็น state ก่อนหน้า และ argument **ที่สอง** เป็น `formData` การเอา action ธรรมดามาสลับใส่ `useActionState` ไม่ใช่แค่เรื่อง style ที่ปล่อยผ่านได้ — มันเป็น TypeScript error จริง เพราะสอง shape นี้เข้ากันไม่ได้
 
-```tsx
-// app/actions.ts — return field errors instead of throwing
+```ts
+// app/actions.ts
 'use server'
 
+export async function createTodoPlain(formData: FormData) {
+  const title = String(formData.get('title'))
+  return { ok: true, title }
+}
+```
+
+```tsx
+// @expect-error swapping a plain (formData) action into useActionState is a type error
+'use client'
+
+import { useActionState } from 'react'
+import { createTodoPlain } from './actions'
+
+export function BadForm() {
+  const [state, formAction] = useActionState(createTodoPlain, { ok: false, title: '' })
+  return (
+    <form action={formAction}>
+      <input name="title" />
+      <button type="submit">Add</button>
+    </form>
+  )
+}
+```
+
+Compile กับ Next.js 16.3.6 / React 19.2.8 ได้ผลลัพธ์นี้
+
+```text
+error TS2769: No overload matches this call.
+  Overload 1 of 2, '(action: (state: { ok: boolean; title: string; }) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>, initialState: { ok: boolean; title: string; }, permalink?: string | undefined): [state: ...]', gave the following error.
+    Argument of type '(formData: FormData) => Promise<{ ok: boolean; title: string; }>' is not assignable to parameter of type '(state: { ok: boolean; title: string; }) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>'.
+      Types of parameters 'formData' and 'state' are incompatible.
+        Type '{ ok: boolean; title: string; }' is missing the following properties from type 'FormData': append, delete, get, getAll, and 7 more.
+  Overload 2 of 2, '(action: (state: { ok: boolean; title: string; }, payload: unknown) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>, initialState: { ok: boolean; title: string; }, permalink?: string | undefined): [state: ...]', gave the following error.
+    Argument of type '(formData: FormData) => Promise<{ ok: boolean; title: string; }>' is not assignable to parameter of type '(state: { ok: boolean; title: string; }, payload: unknown) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>'.
+      Types of parameters 'formData' and 'state' are incompatible.
+        Type '{ ok: boolean; title: string; }' is missing the following properties from type 'FormData': append, delete, get, getAll, and 7 more.
+```
+
+TypeScript กำลังบอกอ้อม ๆ ว่า `useActionState` พยายามมองว่า state ที่ action return กลับมา คือ argument `formData` ตัวถัดไป วิธีแก้คือเติม parameter `prevState` ให้ action ส่วน authorize กับ validate ยังอยู่ตำแหน่งเดิม
+
+## useActionState สำหรับผลลัพธ์, pending และ error
+
+`useActionState(action, initialState)` ห่อ action ไว้ เราจึงได้ state ล่าสุดที่ return กลับมา ได้ form action ไว้ bind และได้ flag `pending` action ของเรารับ state ก่อนหน้าเป็น argument แรก และ return state ใหม่ เหมาะมากกับการโชว์ validation error ข้าง field เหมือนทุก action ในบทนี้ ต้อง authorize ด้วย `verifySession()` ก่อน validate input
+
+```ts
+// lib/db.ts
+export const db = {
+  todo: {
+    create: async (_args: { data: { title: string; userId?: string } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
+'use server'
+
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { z } from 'zod'
 
 const schema = z.object({ title: z.string().min(1, 'Title is required') })
 
 export async function createTodo(prevState: unknown, formData: FormData) {
+  const { userId } = await verifySession()
   const parsed = schema.safeParse({ title: formData.get('title') })
   if (!parsed.success) {
     return { errors: parsed.error.flatten().fieldErrors }
   }
-  await db.todo.create({ data: { title: parsed.data.title } })
+  await db.todo.create({ data: { title: parsed.data.title, userId } })
   return { errors: {} }
 }
 ```
 
 ```tsx
-// app/new-todo.tsx — bind the action with useActionState
+// app/new-todo.tsx
 'use client'
 
 import { useActionState } from 'react'
@@ -74,49 +135,105 @@ export function NewTodoForm() {
 }
 ```
 
-## useFormStatus สำหรับปุ่ม submit
+## useFormStatus ต้องเรียกจาก child ของ form
 
-`useFormStatus` อ่าน pending state ของ form ที่ครอบอยู่ วางไว้ใน child component ของ form เพื่อให้ปุ่ม disable ตัวเองระหว่าง action รันได้ โดยไม่ต้องส่ง props ลงไป
+`useFormStatus` อ่าน pending state ของ form ที่ *ครอบอยู่* — ครอบในที่นี้แปลว่าเป็น ancestor จริงใน render tree ไม่ใช่ "component ที่บังเอิญ render tag form" การเรียกมันใน component เดียวกับที่ render `<form>` เป็นความผิดพลาดที่พบบ่อย: มัน compile ผ่าน รันได้ แต่ไม่เคยรายงาน `pending: true` เลยเงียบ ๆ เพราะ component นั้นไม่ใช่ descendant ของ form ตัวเอง
 
 ```tsx
-// app/submit-button.tsx — a child of the form
+// app/submit-button-wrong.tsx
 'use client'
 
 import { useFormStatus } from 'react-dom'
 
-export function SubmitButton() {
+export function FormWrong({ action }: { action: (formData: FormData) => void }) {
   const { pending } = useFormStatus()
   return (
-    <button disabled={pending} type="submit">
-      {pending ? 'Saving…' : 'Add todo'}
-    </button>
+    <form action={action}>
+      <input name="title" />
+      <button disabled={pending} type="submit">
+        {pending ? 'Saving...' : 'Save (wrong)'}
+      </button>
+    </form>
   )
 }
 ```
 
-## useOptimistic สำหรับ feedback ทันที
-
-`useOptimistic` ให้เราโชว์ผลลัพธ์ที่คาดไว้ทันที ก่อน server ตอบกลับ เรา render list แบบ optimistic เพิ่ม item ใหม่ตอน submit แล้ว React จะ reconcile เมื่อข้อมูลจริงมาถึง
-
 ```tsx
-// app/thread.tsx — optimistic update before the action resolves
+// app/submit-button-right.tsx
 'use client'
 
-import { useOptimistic } from 'react'
-import { send } from './actions'
+import { useFormStatus } from 'react-dom'
+
+function SubmitStatus() {
+  const { pending } = useFormStatus()
+  return (
+    <button disabled={pending} type="submit">
+      {pending ? 'Saving...' : 'Save (right)'}
+    </button>
+  )
+}
+
+export function FormRight({ action }: { action: (formData: FormData) => void }) {
+  return (
+    <form action={action}>
+      <input name="title" />
+      <SubmitStatus />
+    </form>
+  )
+}
+```
+
+ทั้งสองแบบ compile ผ่านและรันได้ ความต่างจะโผล่มาเฉพาะตอน action กำลังรันอยู่เท่านั้น ดังนั้นโค้ดที่ AI สร้างจึงดูถูกต้องได้ทั้งที่ผิด รันทั้งสองแบบกับ `slowSave` action ที่หน่วงไว้ 15 วินาทีเดียวกัน ใน browser จริง (Next.js 16.3.6, React 19.2.8) แล้วอ่านสถานะของปุ่มแต่ละอันหลังกด submit 200ms
+
+```text
+FormRight  -> "pending: true"   (SubmitStatus is a child of <form>)
+FormWrong  -> "pending: false"  (useFormStatus is in the same component as <form>, never true)
+```
+
+## useOptimistic สำหรับ feedback ทันที พร้อม rollback เมื่อล้มเหลว
+
+`useOptimistic` ให้เราโชว์ผลลัพธ์ที่คาดไว้ทันที ก่อน server ตอบกลับ เรา render list แบบ optimistic เพิ่ม item ใหม่ตอน submit แล้ว React จะ reconcile เมื่อข้อมูลจริงมาถึง — และถ้า action throw แทนที่จะ resolve React จะทิ้ง optimistic update ที่ค้างอยู่ แล้ว UI จะกลับไปเป็น state ล่าสุดที่ยืนยันแล้ว
+
+```ts
+// app/thread-actions.ts
+'use server'
+
+export async function send(message: string) {
+  await new Promise((r) => setTimeout(r, 300))
+  if (message === 'boom') {
+    throw new Error('send failed')
+  }
+}
+```
+
+```tsx
+// app/thread.tsx
+'use client'
+
+import { useOptimistic, useState } from 'react'
+import { send } from './thread-actions'
 
 type Message = { message: string }
 
-export function Thread({ messages }: { messages: Message[] }) {
+export function Thread() {
+  const [messages, setMessages] = useState<Message[]>([{ message: 'hello' }])
   const [optimistic, addOptimistic] = useOptimistic<Message[], string>(
     messages,
     (state, next) => [...state, { message: next }],
   )
+  const [status, setStatus] = useState('idle')
 
   async function action(formData: FormData) {
     const message = String(formData.get('message'))
     addOptimistic(message)
-    await send(message)
+    setStatus('sending')
+    try {
+      await send(message)
+      setMessages((m) => [...m, { message }])
+      setStatus('idle')
+    } catch (e) {
+      setStatus('error: ' + (e as Error).message)
+    }
   }
 
   return (
@@ -129,6 +246,17 @@ export function Thread({ messages }: { messages: Message[] }) {
 }
 ```
 
+Submit ข้อความ `"boom"` กับ action ที่ reject ค่านี้เจาะจง (Next.js 16.3.6, React 19.2.8, ใน browser จริง) ได้ลำดับเหตุการณ์นี้
+
+```text
+before submit  -> list: "hello"
+100ms later    -> list: "hello, boom"          (optimistic entry showing already)
+600ms later    -> list: "hello"                (action rejected — optimistic entry rolled back)
+                  status: "error: send failed"
+```
+
+ข้อความ optimistic ไม่เคยกลายเป็นส่วนหนึ่งของ `messages` state ที่ยืนยันแล้วเลย เพราะ `setMessages` รันเฉพาะใน branch `try` เท่านั้น — `useOptimistic` เองเป็นคนทิ้ง pending update ทันทีที่ promise ของ action ถูก reject
+
 <Mermaid title="submit แบบ baseline แล้ว upgrade หลัง hydrate" code={diagramSa2Th} />
 
 export const diagramSa2Th = `
@@ -139,8 +267,51 @@ graph TD
   D --> E["useActionState + useFormStatus + useOptimistic"]
 `;
 
+## Mental Model
+
+`useActionState`, `useFormStatus`, `useOptimistic` คือมุมมองอิสระสามมุมของ request เดียวกันที่กำลังทำงานอยู่ ไม่ใช่สามส่วนของ API เดียว `useActionState` อยู่ที่ component ที่เป็นเจ้าของ action และผลลัพธ์ของมัน `useFormStatus` อยู่ที่ descendant ของ `<form>` และรายงานสถานะของ form นั้นเท่านั้น `useOptimistic` อยู่ตรงไหนก็ได้ที่เรา render list ที่อยากให้รู้สึกทันที และมันคลาย pending update ให้เองอัตโนมัติทันทีที่ promise ของ action ถูก reject
+
+## ข้อแลกเปลี่ยน
+
+| Hook | ได้อะไร | ต้นทุน |
+|---|---|---|
+| `useActionState` | return value, form action ที่ bind แล้ว, pending flag ในตัวเดียว | action signature ต้องเป็น `(prevState, formData)` — ไม่งั้น type error จริง |
+| `useFormStatus` | ไม่ต้อง prop drill pending state | ทำงานเฉพาะจาก descendant ของ `<form>` — ไม่ใช่ component ที่ render มัน |
+| `useOptimistic` | feedback ทันทีก่อน server ตอบ | ต้อง handle rejection path เอง ไม่งั้น optimistic entry ค้างอยู่ตลอด |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"async function ไหนก็ใช้กับ `useActionState` ได้"** ใช้ได้เฉพาะตัวที่ argument แรกเป็น state ก่อนหน้าเท่านั้น action แบบ `(formData) => ...` ธรรมดา type-check ไม่ผ่าน
+- **"`useFormStatus` อ่าน form ที่ใกล้ที่สุดในไฟล์"** มันอ่าน form ที่เป็น ancestor ใกล้ที่สุดใน *render tree* component ที่ render `<form>` เองไม่ใช่ descendant ของ form นั้น
+- **"`useOptimistic` ต้องเรียก rollback เอง"** ไม่ต้อง — rollback เกิดอัตโนมัติทันทีที่ promise ของ action ถูก reject สิ่งที่ต้องเขียนเองคือ error state ที่ UI จะโชว์หลังจากนั้น
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างใช้ hook พวกนี้ ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- action ที่ส่งให้ `useActionState` รับ `(prevState, formData)` ไหม หรือยังเป็น action แบบเก่าที่รับแค่ `formData`
+- `useFormStatus` ถูกเรียกใน component ที่เป็น **child** ของ `<form>` ไหม หรืออยู่ใน component เดียวกับที่ render tag `<form>`
+- ถ้าใช้ `useOptimistic` โค้ดรอบ ๆ มี `try/catch` (หรือ `.catch`) ครอบการเรียก action ไหม เพื่อให้ rejection path รันจริง ถ้าไม่มี promise ที่ reject จะ unhandled แม้ optimistic UI จะยัง rollback ก็ตาม
+- confirmed state (`setMessages` ในตัวอย่างนี้) อัปเดตเฉพาะใน success path ไหม เพื่อไม่ให้ action ที่ล้มเหลว "ยืนยัน" ข้อมูลที่ไม่เคยถูกเขียนจริง
+
+<SpotTheBug code={`'use client'
+
+import { useFormStatus } from 'react-dom'
+
+export function SaveButton({ action }: { action: (formData: FormData) => void }) {
+  const { pending } = useFormStatus()
+  return (
+    <form action={action}>
+      <input name="title" />
+      <button disabled={pending}>{pending ? 'Saving...' : 'Save'}</button>
+    </form>
+  )
+}`}>
+`useFormStatus` ถูกเรียกใน `SaveButton` ซึ่งเป็น component เดียวกับที่ render element `<form>` — ไม่ใช่ component ที่ซ้อนอยู่ *ข้างใน* form ตามเอกสารของ React เอง `useFormStatus` "will only return status information for a parent `<form>`" และ component นี้ไม่ใช่ child ของ form ตัวเอง ปุ่มนี้ compile ผ่านและ render ได้ แต่ `pending` จะเป็น `false` ตลอดการ submit — พิสูจน์แล้วใน browser จริงกับ action ที่หน่วง 15 วินาที `useFormStatus` ตรงนี้อ่านได้ `pending: false` ตลอด ในขณะที่ hook แบบเดียวกันที่อยู่ลึกลงไปอีกหนึ่ง component อ่านได้ `pending: true` วิธีแก้คือแยกปุ่มออกมาเป็น component ของตัวเอง แล้ว render เป็น child ของ `<form>`
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-form action mutate ได้แม้ไม่มี JavaScript และ `useActionState`, `useFormStatus`, `useOptimistic` เสริม pending, validation error และ optimistic UI เมื่อ hydrate แล้ว
+form action mutate ได้แม้ไม่มี JavaScript และ `useActionState`, `useFormStatus`, `useOptimistic` เสริม pending, validation error และ rollback-เมื่อ-ล้มเหลวเมื่อ hydrate แล้ว — แต่แต่ละตัวมีข้อกำหนดเรื่องตำแหน่งหรือ signature ที่พิสูจน์ได้จริง ซึ่งโค้ดที่ AI สร้างมักทำผิด
 </Callout>
 
 export const quizSa2Th = [
@@ -153,6 +324,7 @@ export const quizSa2Th = [
       'มัน poll API route อยู่เงียบ ๆ',
     ],
     answer: 1,
+    explain: 'action ผูกกับ <form> จริง browser เลย submit เป็น HTTP POST ธรรมดาได้โดยไม่ต้องใช้ JavaScript เลย',
   },
   {
     q: 'useActionState คืนอะไรกลับมา',
@@ -163,16 +335,40 @@ export const quizSa2Th = [
       'object FormData ดิบ ๆ',
     ],
     answer: 1,
+    explain: 'useActionState คืน tuple สามค่า: state ล่าสุด, form action ไว้ bind, และ flag pending',
   },
   {
-    q: 'ต้องเรียก useFormStatus ที่ไหนถึงจะอ่าน pending state ของ form ได้',
+    q: '```ts\nasync function createTodoPlain(formData: FormData) {\n  return { ok: true }\n}\n\nuseActionState(createTodoPlain, { ok: false })\n```\nโค้ดนี้ compile ผ่านไหม',
     options: [
-      'ใน Server Action เอง',
-      'ใน component เดียวกับที่ render tag form',
-      'ใน child component ของ form',
-      'ใน root layout',
+      'ผ่าน useActionState รับ async function อะไรก็ได้',
+      'ไม่ผ่าน — action ต้องรับ (prevState, formData) ไม่ใช่แค่ (formData)',
+      'ผ่าน แต่ต้อง mark "use server" เท่านั้น',
+      'ไม่ผ่าน — useActionState ต้องการ action แบบ synchronous',
     ],
-    answer: 2,
+    answer: 1,
+    explain: 'TypeScript ปฏิเสธ: overload ของ useActionState คาดว่า argument แรกของ action คือ state ก่อนหน้า ส่วน action แบบ (formData) ธรรมดาไม่ตรงกับ overload ไหนเลย',
+  },
+  {
+    q: '```tsx\nfunction SaveButton({ action }) {\n  const { pending } = useFormStatus()\n  return <form action={action}><button disabled={pending}>Save</button></form>\n}\n```\nโค้ดนี้ผิดตรงไหน',
+    options: [
+      'ไม่ผิด — disable ปุ่มระหว่าง pending ได้ถูกต้อง',
+      'useFormStatus ถูกเรียกใน component เดียวกับ <form> เลย pending ไม่มีวันเป็น true',
+      'ใช้ useFormStatus กับปุ่มที่ disabled ไม่ได้',
+      'form ขาด attribute formAction',
+    ],
+    answer: 1,
+    explain: 'useFormStatus รายงานสถานะของ form ที่เป็น ancestor เท่านั้น component ที่ render <form> เองไม่ใช่ descendant ของมัน pending เลยเป็น false ตลอด — พิสูจน์แล้วกับ action จริงที่หน่วง 15 วินาทีใน browser',
+  },
+  {
+    q: 'ถ้า action ที่ส่งให้ useOptimistic throw จะเกิดอะไรกับ optimistic entry',
+    options: [
+      'ค้างอยู่ใน list ตลอดไป',
+      'React rollback กลับไปที่ state ล่าสุดที่ยืนยันแล้วให้อัตโนมัติ',
+      'component ทั้งตัว unmount',
+      'ถูก retry อัตโนมัติสูงสุดสามครั้ง',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วใน browser จริง: submit ข้อความที่ทำให้ action reject จะโชว์ optimistic entry แว้บหนึ่ง แล้ว list กลับไปเป็น state ล่าสุดที่ยืนยันแล้วทันทีที่ promise reject โดยไม่ต้องเขียน rollback เอง',
   },
   {
     q: 'useOptimistic มีไว้ทำอะไร',
@@ -183,6 +379,7 @@ export const quizSa2Th = [
       'retry action อัตโนมัติเมื่อล้มเหลว',
     ],
     answer: 1,
+    explain: 'useOptimistic render ค่าที่คาดไว้ทันที แล้ว reconcile กับผลลัพธ์จริง — หรือ rollback อัตโนมัติถ้า action ล้มเหลว',
   },
 ];
 

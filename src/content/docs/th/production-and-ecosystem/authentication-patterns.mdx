@@ -28,8 +28,38 @@ request หนึ่งอาจ authenticated แล้ว (มี session vali
 
 auth ส่วนใหญ่วิ่งอยู่บน session ที่เก็บใน cookie แบบ HTTP-only ฝั่ง server เราอ่าน cookie นั้นด้วย `cookies()` จาก `next/headers`
 
+helper ของ session ด้านล่างเซ็นและตรวจค่า cookie ผ่านไฟล์เล็ก ๆ ไฟล์เดียว:
+
 ```ts
-// app/lib/session.ts — read the session cookie on the server
+// app/lib/crypto.ts
+import 'server-only'
+import { SignJWT, jwtVerify } from 'jose'
+
+const encodedKey = new TextEncoder().encode(process.env.SESSION_SECRET)
+
+export type SessionPayload = { userId: string; expiresAt: Date }
+
+export async function encrypt(payload: SessionPayload) {
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(encodedKey)
+}
+
+export async function decrypt(token: string): Promise<SessionPayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, encodedKey, { algorithms: ['HS256'] })
+    return payload as SessionPayload
+  } catch {
+    return null
+  }
+}
+```
+
+```ts
+// app/lib/session.ts
+// read the session cookie on the server
 import { cookies } from 'next/headers'
 import { decrypt } from '@/app/lib/crypto'
 
@@ -143,7 +173,8 @@ export function proxy(request: NextRequest) {
 proxy อย่างเดียวไม่พอ `matcher` ที่ exclude path ไหนก็จะข้าม Server Action call บน path นั้นไปด้วย layout ก็ไม่ได้ re-run ทุกครั้งที่ navigate และ check ที่อยู่แค่หน้า app อาจถูก bypass ได้ทั้งดุ้น [CVE-2025-29927](https://github.com/advisories/GHSA-f82v-jwr5-mffw) เปิดให้ผู้โจมตีข้าม middleware ทั้งหมดด้วย header `x-middleware-subrequest` ที่ปลอมขึ้นมา (แก้แล้วใน Next.js 15.2.3) ทางแก้คือ Data Access Layer (DAL) จุดเดียวที่ verify session ก่อน return data ห่อด้วย React `cache` เพื่อให้รันครั้งเดียวต่อ request
 
 ```ts
-// app/lib/dal.ts — verify the session close to the data
+// app/lib/dal.ts
+// verify the session close to the data
 import 'server-only'
 import { cache } from 'react'
 import { redirect } from 'next/navigation'

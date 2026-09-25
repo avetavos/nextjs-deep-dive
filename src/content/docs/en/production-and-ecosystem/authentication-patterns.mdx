@@ -28,8 +28,38 @@ A request can be authenticated (a valid session exists) and still be unauthorize
 
 Authentication usually rides on a session stored in an HTTP-only cookie. On the server you read that cookie with `cookies()` from `next/headers`.
 
+The session helpers below sign and verify the cookie value through one small file:
+
 ```ts
-// app/lib/session.ts — read the session cookie on the server
+// app/lib/crypto.ts
+import 'server-only'
+import { SignJWT, jwtVerify } from 'jose'
+
+const encodedKey = new TextEncoder().encode(process.env.SESSION_SECRET)
+
+export type SessionPayload = { userId: string; expiresAt: Date }
+
+export async function encrypt(payload: SessionPayload) {
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(encodedKey)
+}
+
+export async function decrypt(token: string): Promise<SessionPayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, encodedKey, { algorithms: ['HS256'] })
+    return payload as SessionPayload
+  } catch {
+    return null
+  }
+}
+```
+
+```ts
+// app/lib/session.ts
+// read the session cookie on the server
 import { cookies } from 'next/headers'
 import { decrypt } from '@/app/lib/crypto'
 
@@ -143,7 +173,8 @@ export function proxy(request: NextRequest) {
 Proxy alone is not sufficient. A `matcher` that excludes a path also skips the Server Action calls on that path, layouts do not re-run on every navigation, and a check that lives only in front of the app can be bypassed outright — [CVE-2025-29927](https://github.com/advisories/GHSA-f82v-jwr5-mffw) let attackers skip middleware entirely with a crafted `x-middleware-subrequest` header (fixed in Next.js 15.2.3). The fix is a Data Access Layer (DAL): a single place that verifies the session right before it returns data. Wrap it in React `cache` so it runs once per request.
 
 ```ts
-// app/lib/dal.ts — verify the session close to the data
+// app/lib/dal.ts
+// verify the session close to the data
 import 'server-only'
 import { cache } from 'react'
 import { redirect } from 'next/navigation'

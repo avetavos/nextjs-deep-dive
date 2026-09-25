@@ -1,6 +1,6 @@
 ---
 title: What Are Server Actions?
-description: The "use server" directive, inline actions vs a shared actions module, how they run only on the server, and how they differ from a Route Handler.
+description: A Server Action is a public POST endpoint at heart — plus the "use server" directive, inline actions vs a shared actions module, and how they differ from a Route Handler.
 sidebar:
   order: 1
 ---
@@ -9,17 +9,65 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
 A Server Action is an async function marked with the `"use server"` directive that runs only on the server, and you can call it straight from a `<form>` or from a Client Component without writing an API route.
 
+## Every action is a public POST endpoint
+
+Before any syntax: a Server Action is not a private RPC channel between your own UI and your own server. At build time, the `"use server"` directive tells the compiler to replace the function's implementation in the client bundle with a reference — an encrypted action ID plus a dispatcher — that POSTs back to the server. The implementation stays on the server, but the route it creates is reachable by anyone who can send that same POST request, whether or not they ever loaded your form.
+
+This is not a corner case to defend against later — it is the starting assumption for every action you write, starting with the very first one in this module. So every runnable example from here on follows one rule: **authorize the caller, then validate the input, before touching the database.** Authorization means calling a session check — this course uses the `verifySession()` Data Access Layer pattern from the [authentication patterns](/en/production-and-ecosystem/authentication-patterns/) lesson — and validation means parsing the untrusted `FormData` with a schema library such as `zod`.
+
+```ts
+// app/lib/dal.ts
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session?.userId) {
+    redirect('/login')
+  }
+  return { isAuth: true, userId: session.userId }
+})
+```
+
+`verifySession()` calls `redirect()` when there is no session — and `redirect()` throws. That means `verifySession()` must never be called inside a `try/catch` block that does not deliberately let Next.js's own control-flow errors escape; the [mutations and revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/) lesson covers exactly why. For now, treat `verifySession()` as a call you make at the top of an action, unguarded.
+
+<Mermaid title="An action is reachable however the request arrives" code={diagramSaPublicEn} />
+
+export const diagramSaPublicEn = `
+graph LR
+  A["Your own form"] -->|"POST with action ID"| C["The action's endpoint"]
+  B["Anyone with curl or a script"] -->|"POST with the same action ID"| C
+  C --> D{"verifySession() + schema.safeParse() inside the action"}
+  D -->|"fails"| E["Rejected — no data touched"]
+  D -->|"passes"| F["Mutate the database"]
+`;
+
 ## The `"use server"` directive
 
-There are two ways to mark a function as a Server Action. You can add `"use server"` at the top of an inline async function inside a Server Component, or you can add `'use server'` at the top of a whole module file so every export in that file becomes an action.
+There are two ways to mark a function as a Server Action. You can add `"use server"` at the top of an inline async function inside a Server Component, or you can add `'use server'` at the top of a whole module file so every export in that file becomes an action. This toy example keeps the body minimal to show the mechanism — the shared actions module below shows the same action with the authorization and validation rule applied.
+
+```ts
+// lib/db.ts
+export const db = {
+  todo: {
+    create: async (_args: { data: { title: string; userId?: string } }) => {},
+    delete: async (_args: { where: { id: string; userId?: string } }) => {},
+  },
+}
+```
 
 ```tsx
-// app/page.tsx — an inline Server Action inside a Server Component
+// app/page.tsx
+import { db } from '@/lib/db'
+
 export default function Page() {
   async function createTodo(formData: FormData) {
     'use server'
@@ -36,30 +84,44 @@ export default function Page() {
 }
 ```
 
+An inline `"use server"` function can only be declared inside a **Server Component**. Trying the same thing inside a Client Component is a build error, not a runtime surprise — see [Reading AI-generated code](#reading-ai-generated-code) below for the exact message.
+
 ## A shared actions module
 
-When several components need the same action, put it in a dedicated file. Add `'use server'` once at the top and every export becomes a callable action. This keeps mutation logic in one place and lets Client Components import it.
+When several components need the same action, put it in a dedicated file. Add `'use server'` once at the top and every export becomes a callable action. This keeps mutation logic in one place and lets Client Components import it — and it is where the authorize-then-validate rule from the section above actually lands.
 
 ```ts
-// app/actions.ts — every export here is a Server Action
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
+import { z } from 'zod'
+
+const createTodoSchema = z.object({ title: z.string().min(1) })
+
 export async function createTodo(formData: FormData) {
-  const title = String(formData.get('title'))
-  await db.todo.create({ data: { title } })
+  const { userId } = await verifySession()
+  const parsed = createTodoSchema.safeParse({ title: formData.get('title') })
+  if (!parsed.success) return
+
+  await db.todo.create({ data: { title: parsed.data.title, userId } })
 }
 
 export async function deleteTodo(id: string) {
-  await db.todo.delete({ where: { id } })
+  const { userId } = await verifySession()
+  await db.todo.delete({ where: { id, userId } })
 }
 ```
+
+Notice `deleteTodo` scopes the delete to `userId` as well as `id` — authorization is not just "is someone logged in," it is "does this specific user own this specific row." A valid session alone does not prove ownership.
 
 ## Calling from a form and from a Client Component
 
 A Server Action can be wired directly to a form with `<form action={createTodo}>`, and Next.js posts the form data to the action on the server. It can also be imported into a Client Component and called like a normal function — Next.js turns that call into a network request for you.
 
 ```tsx
-// app/todo-button.tsx — calling an action from a Client Component
+// app/todo-button.tsx
 'use client'
 
 import { deleteTodo } from './actions'
@@ -71,19 +133,69 @@ export function DeleteButton({ id }: { id: string }) {
 
 ## How it differs from a Route Handler
 
-A Route Handler in `route.ts` is a public URL you design, wire up, and `fetch` by hand. A Server Action is a function you call directly; Next.js generates the endpoint and the network call for you and supports progressive enhancement through forms. Reach for a Route Handler when you need a real public API or webhook; reach for a Server Action for form and mutation flows inside your own app.
+A Route Handler in `route.ts` is a public URL you design, wire up, and `fetch` by hand. A Server Action is a function you call directly; Next.js generates the endpoint and the network call for you and supports progressive enhancement through forms. Both are equally public once deployed — the difference is who designs the wire format, not who can reach it.
 
-<Mermaid title="How a Server Action call reaches the server" code={diagramSa1En} />
+## Mental Model
 
-export const diagramSa1En = `
-graph LR
-  A["form or Client Component"] -->|"calls action"| B["Next.js generated endpoint"]
-  B -->|"runs on server only"| C["Server Action function"]
-  C -->|"reads or writes"| D["Database"]
-`;
+Think of a Server Action as a button that happens to compile into an HTTP endpoint, not an HTTP endpoint that happens to have a button. The function signature you write is the same function signature a stranger's `curl` command calls. If you would not accept the input from an anonymous POST body, do not accept it from `formData.get(...)` either — it is the same untrusted bag of bytes either way.
+
+## Trade-offs
+
+| | Server Action | Route Handler |
+|---|---|---|
+| **You write** | A function, called directly from a form or a client call | A URL, wired up and `fetch`-ed by hand |
+| **Endpoint** | Generated by Next.js from the action ID | Whatever path you put the `route.ts` file at |
+| **Progressive enhancement** | Built in — works via a real `<form>` before hydration | None — requires JavaScript to `fetch` |
+| **Best for** | Mutations and form flows inside your own app | A real public API, a webhook, or a non-form client |
+| **Public reachability** | Yes, via its action ID | Yes, via its path |
+
+## Common Misconceptions
+
+- **"Only my form calls this action, so it's safe."** The action ID is reachable by direct POST from anywhere; the form is one caller among any number of possible callers.
+- **"Rendering the form only for logged-in users is enough."** Render-time gating controls what UI shows up, not what requests the server will accept — the action itself still needs its own check.
+- **"An action I never export from my app can't be reached."** Every *exported* action from a `'use server'` file becomes a candidate endpoint the moment it is used anywhere in the app; only an action that is truly unused anywhere gets removed by dead-code elimination (see the [security and patterns](/en/server-actions-and-mutations/security-and-patterns/) lesson for what that build step actually proves).
+
+## Reading AI-generated code
+
+When a generated snippet defines a Server Action, check for these before trusting it:
+
+- Does the action call `verifySession()` (or an equivalent auth check) before it reads or writes anything, or does it assume the caller is already authenticated because a form only renders behind a login?
+- Is every field from `formData` parsed through a schema, or is a raw string handed straight to the database?
+- If the action deletes or updates a row, does the query filter by the current user's ID as well as the row's ID — or could any authenticated user act on any other user's data?
+- Is the `"use server"` directive on an inline function inside a Server Component, or has it been placed inside a Client Component by mistake?
+- Does the action return only the fields the UI needs, or does it hand back a raw database record?
+
+<SpotTheBug code={`'use client'
+
+export default function Page() {
+  async function save(formData: FormData) {
+    'use server'
+    console.log(formData)
+  }
+  return (
+    <form action={save}>
+      <button type="submit">Save</button>
+    </form>
+  )
+}`}>
+An inline `"use server"` function can only be declared inside a **Server Component**. This file starts with `'use client'`, so `save` is defined inside a Client Component — Next.js 16.3.6 rejects the build. The real compiler output (Turbopack) is:
+
+```text
+Error: Turbopack build failed with 1 error:
+./app/bug-inline-in-client/page.tsx:1:1
+Error: The "use client" directive must be placed before other expressions. Move it to the top of the file to resolve this issue.
+> 1 | 'use client'
+    | ^^^^^^^^^^^^
+  2 |
+  3 | export default function Page() {
+  4 |   async function save(formData: FormData) {
+```
+
+The message points at the `'use client'` line even though that line is already first — the inline `'use server'` function nested inside the Client Component is what actually confuses the compiler's directive check. The fix is to move `save` into a separate `'use server'` file and import it, exactly like the shared actions module above.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-A Server Action is a `"use server"` async function that runs only on the server and is callable from a form or a Client Component without you ever writing an API route.
+A Server Action is a `"use server"` async function that compiles into a public POST endpoint — callable from a form or a Client Component, but just as reachable from anywhere else, so every action must authorize and validate on its own.
 </Callout>
 
 export const quizSa1En = [
@@ -96,6 +208,7 @@ export const quizSa1En = [
       'A middleware function that runs on every request',
     ],
     answer: 1,
+    explain: '"use server" tells the compiler to keep the function\'s implementation on the server and swap a callable reference into the client bundle instead.',
   },
   {
     q: 'What happens when you add \'use server\' at the top of a module file?',
@@ -106,6 +219,7 @@ export const quizSa1En = [
       'Nothing, the directive is ignored in module files',
     ],
     answer: 1,
+    explain: 'A module-level "use server" directive turns every exported function in that file into a callable Server Action.',
   },
   {
     q: 'How do you call a Server Action from a Client Component?',
@@ -116,6 +230,29 @@ export const quizSa1En = [
       'Register it in middleware first',
     ],
     answer: 1,
+    explain: 'Importing the action into a Client Component and calling it directly is enough — Next.js turns the call into the network request for you.',
+  },
+  {
+    q: 'Why is it wrong to think "only my form calls this action, so it needs no checks"?',
+    options: [
+      'Because forms are always slower than fetch calls',
+      "Because the action's ID is reachable by a direct POST from anywhere, not only from your form",
+      'Because Server Actions cannot read FormData safely',
+      "Because Next.js disables actions that aren't called from a form",
+    ],
+    answer: 1,
+    explain: 'The compiled action ID is a public POST endpoint. Anyone who can reach your app can send that same request without ever touching your UI.',
+  },
+  {
+    q: '```tsx\n\'use client\'\n\nexport default function Page() {\n  async function save(formData: FormData) {\n    \'use server\'\n  }\n  return <form action={save}><button>Save</button></form>\n}\n```\nWhat happens when this builds?',
+    options: [
+      'It builds fine — inline actions work in any component',
+      'It fails to build — an inline "use server" function is only valid inside a Server Component',
+      'It builds, but the action silently never runs',
+      'It builds and runs, but only in development mode',
+    ],
+    answer: 1,
+    explain: 'Turbopack rejects this file. The action is nested inside a Client Component (\'use client\' at the top), and an inline "use server" function requires a Server Component — the fix is to move it to a separate \'use server\' file.',
   },
   {
     q: 'When should you reach for a Route Handler instead of a Server Action?',
@@ -126,6 +263,7 @@ export const quizSa1En = [
       'To avoid running code on the server',
     ],
     answer: 1,
+    explain: 'A Route Handler is the right tool when you are designing a URL for an external caller or a webhook. Both are equally public once deployed, though.',
   },
 ];
 

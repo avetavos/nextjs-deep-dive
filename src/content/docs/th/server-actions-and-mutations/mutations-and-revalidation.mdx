@@ -1,6 +1,6 @@
 ---
 title: Mutations และ Revalidation
-description: flow ของ mutation แบบเต็ม — validate, เขียนลง DB, updateTag / revalidateTag / revalidatePath และ redirect แล้ว client cache ถูก refresh อย่างไร
+description: มุตเมชันคือ flow ห้าขั้น — authorize, validate, เขียน, updateTag / revalidateTag / revalidatePath, redirect (ถ้ามี) — และทำไม redirect() กับ notFound() ถึงห้ามถูก try/catch กลืน
 sidebar:
   order: 3
 ---
@@ -9,19 +9,32 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
-mutation คือ flow สี่ขั้น validate input, เขียนลง database, เรียก `updateTag`, `revalidateTag` หรือ `revalidatePath` เพื่อ refresh ข้อมูลที่ cache ไว้ซึ่งได้รับผลกระทบ และ redirect ถ้าจำเป็น เพื่อให้ UI สะท้อนการเปลี่ยนแปลงโดยไม่ต้อง reload เอง
+มุตเมชันคือ flow ห้าขั้น: authorize ผู้เรียก, validate input, เขียนลง database, เรียก `updateTag`, `revalidateTag`, หรือ `revalidatePath` เพื่อ refresh ข้อมูลที่ cache ไว้ที่กระทบ แล้ว `redirect` ถ้าต้องการ — เพื่อให้ UI สะท้อนการเปลี่ยนแปลงโดยไม่ต้อง reload เอง
 
-## Flow ของ mutation แบบเต็ม
+## Flow เต็มของมุตเมชัน
 
-ภายใน action เรา validate ก่อน แล้วค่อย mutate แล้วค่อย revalidate ข้อมูลที่เพิ่งเปลี่ยน หลัง revalidate แล้วจึง redirect เพราะ `redirect` throw ภายในและหยุดโค้ดที่เหลือของ function ไม่ให้รันต่อ
+ใน action เรา authorize ก่อน validate ต่อ แล้วค่อย mutate แล้วค่อย revalidate ข้อมูลที่เพิ่งเปลี่ยน หลังจาก revalidate แล้วเท่านั้นถึง redirect เพราะ `redirect` throw ข้างในและหยุด function ส่วนที่เหลือไม่ให้รัน
 
 ```ts
-// app/actions.ts — validate, write, revalidate, redirect
+// lib/db.ts
+export const db = {
+  post: {
+    create: async (_args: { data: { title: string; authorId?: string } }) => {},
+    update: async (_args: { where: { id: string; authorId?: string }; data: { published?: boolean } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
@@ -29,24 +42,68 @@ import { z } from 'zod'
 const schema = z.object({ title: z.string().min(1) })
 
 export async function createPost(formData: FormData) {
+  const { userId } = await verifySession()
   const parsed = schema.safeParse({ title: formData.get('title') })
   if (!parsed.success) {
     return { error: 'Invalid title' }
   }
 
-  await db.post.create({ data: { title: parsed.data.title } })
+  await db.post.create({ data: { title: parsed.data.title, authorId: userId } })
 
   revalidatePath('/posts')
   redirect('/posts')
 }
 ```
 
-## updateTag, revalidateTag และ revalidatePath
+## redirect() กับ notFound() throw — try/catch กลืนมันได้
 
-`revalidatePath('/posts')` invalidate ทุกอย่างที่ cache ไว้สำหรับ route นั้น การ invalidate ด้วย tag ตรงจุดกว่าเมื่อข้อมูลเดียวกันโผล่ในหลาย route ให้ tag ตอน read แล้ว expire tag หลัง write ภายใน Server Action ให้ใช้ `updateTag('posts')` ซึ่ง expire tag ทันที request ถัดไปจึงรอข้อมูลใหม่และผู้ใช้เห็นสิ่งที่ตัวเองเพิ่งเขียน ส่วน `revalidateTag(tag, profile)` จะ mark tag ว่า stale และยังเสิร์ฟข้อมูลเก่าระหว่าง refresh เบื้องหลัง ใน Next.js 16 argument ตัวที่สอง `profile` เป็นค่าบังคับ (แบบ argument เดียวถูก deprecate และเป็น TypeScript error) และ `'max'` คือค่าที่แนะนำ ใช้ `revalidateTag` ใน Route Handler และ webhook ซึ่งเรียก `updateTag` ไม่ได้
+`redirect()` และ `notFound()` ทั้งคู่ทำงานด้วยการ throw control-flow error พิเศษที่ Next.js ดักจับไว้ชั้นบนแล้วแปลงเป็น navigation หรือ segment `not-found` ที่ render ถ้าเราครอบ call ที่สร้าง error นั้นด้วย `try/catch` ของเราเอง `catch` block ของเราจะดักมันไปก่อน Next.js ไม่มีวันเห็น แล้ว redirect หรือ 404 ก็ไม่เกิดขึ้นเลยเงียบ ๆ
 
 ```ts
-// app/posts/data.ts — tag the read so you can revalidate by tag later
+// app/posts/actions.ts
+import { notFound, unstable_rethrow } from 'next/navigation'
+
+// BUG: try/catch swallows notFound()
+export async function getPostBad(id: string) {
+  try {
+    if (id === 'missing') notFound()
+    return { id, ok: true }
+  } catch (err) {
+    console.error('swallowed:', err)
+    return { id, ok: false, error: 'caught, not a real 404' }
+  }
+}
+
+// FIX: unstable_rethrow lets Next.js's own errors escape
+export async function getPostGood(id: string) {
+  try {
+    if (id === 'missing') notFound()
+    return { id, ok: true }
+  } catch (err) {
+    unstable_rethrow(err)
+    console.error('real application error:', err)
+    return { id, ok: false, error: 'other error' }
+  }
+}
+```
+
+Build ทั้งสองแบบกับ Next.js 16.3.6 แล้ว request จาก server จริง เห็นความต่างตรง ๆ ใน HTTP response เลย ไม่ใช่แค่ทฤษฎี
+
+```text
+bad variant  -> HTTP 200
+good variant -> HTTP 404
+```
+
+variant "bad" รัน `catch` block, log error แล้ว return object ปกติ — หน้า render ด้วย `ok: false` และ status 200 variant "good" rethrow ด้วย `unstable_rethrow` สัญญาณ `NEXT_HTTP_ERROR_FALLBACK;404` ของ Next.js เอง เลยหลุดออกจาก `catch` block ไปถึง framework ซึ่ง render หน้า not-found จริงและ return 404 digest ที่ฝังอยู่ใน RSC payload ของ response นั้น — `{"digest":"NEXT_HTTP_ERROR_FALLBACK;404"}` — คือ control-flow marker ของ Next.js เอง กลไกเดียวกับที่ `redirect()` ใช้สำหรับ navigation
+
+`unstable_rethrow` ยังเป็นชื่อ API แบบ unstable/experimental ณ Next.js 16.3.6 — คำว่า "unstable" สะท้อนสถานะปัจจุบันของมัน ไม่ใช่พิมพ์ผิด Next.js แนะนำให้ใช้เฉพาะกับ `try/catch` ที่ปนกันระหว่าง application error กับ error ที่ framework ควบคุม (`redirect()`, `permanentRedirect()`, `notFound()`, และ request-time API อย่าง `cookies()`/`headers()` ภายใต้ rendering mode บางแบบ) ถ้าจัดโครงสร้างโค้ดให้ `redirect()`/`notFound()` ถูกเรียก **นอก** `try/catch` ได้เลย — เหมือนตัวอย่าง `createPost` ด้านบน — แบบนั้นง่ายกว่าและเลี่ยงปัญหาทั้งหมดได้ ใช้ `unstable_rethrow` เฉพาะตอนที่ call ของ framework หนีไม่พ้นต้องอยู่ใน block ที่เราต้อง catch error อื่นด้วยเท่านั้น
+
+## updateTag, revalidateTag, และ revalidatePath
+
+`revalidatePath('/posts')` invalidate ทุกอย่างที่ cache ไว้สำหรับ route นั้น การ invalidate แบบ tag แม่นยำกว่าเมื่อข้อมูลเดียวกันปรากฏในหลาย route: tag การอ่านไว้ก่อน แล้วค่อย expire tag หลัง write ภายใน Server Action ใช้ `updateTag('posts')` — มัน expire tag ทันที request ถัดไปจึงรอข้อมูลใหม่ ผู้ใช้เลยเห็น write ของตัวเองทันที `revalidateTag(tag, profile)` ต่างออกไป มัน mark tag ว่า stale แล้วยังเสิร์ฟข้อมูลเก่าต่อไปพลาง refresh เบื้องหลัง ใน Next.js 16 argument `profile` ตัวที่สองเป็น required (แบบ argument เดียว deprecated และเป็น TypeScript error) และ `'max'` คือค่าที่แนะนำ ใช้ `revalidateTag` ใน Route Handler และ webhook ที่ `updateTag` ใช้ไม่ได้
+
+```ts
+// app/posts/data.ts
 export async function getPosts() {
   const res = await fetch('https://api.example.com/posts', {
     next: { tags: ['posts'] },
@@ -56,19 +113,22 @@ export async function getPosts() {
 ```
 
 ```ts
-// app/actions.ts — expire only the tagged data so the next request sees the write
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { updateTag } from 'next/cache'
 
 export async function publishPost(id: string) {
-  await db.post.update({ where: { id }, data: { published: true } })
+  const { userId } = await verifySession()
+  await db.post.update({ where: { id, authorId: userId }, data: { published: true } })
   updateTag('posts')
 }
 ```
 
 ```ts
-// app/api/revalidate/route.ts — outside a Server Action, use revalidateTag with a profile
+// app/api/revalidate/route.ts
 import { revalidateTag } from 'next/cache'
 
 export async function POST() {
@@ -77,67 +137,137 @@ export async function POST() {
 }
 ```
 
-## Client cache ถูก refresh อย่างไร
+## client cache ถูก refresh อย่างไร
 
-ส่วนนี้โยงกลับไปที่ caching module ฝั่ง server การ revalidate จะล้าง entry ใน Data Cache ของ fetch ที่ได้รับผลกระทบ ฝั่ง client response ของ Server Action ยัง refresh Client Cache ของ route ปัจจุบันด้วย segment ที่ render ไปแล้วจึงถูกแทนด้วย output ใหม่จาก server ผู้ใช้เห็นข้อมูลใหม่โดยไม่ต้อง hard reload cache ทั้งสองตัวจึงคงความ consistent
+ส่วนนี้ต่อกับโมดูล caching เมื่อ action เรียก `updateTag`, `revalidatePath`, หรือ `redirect` Next.js จะ revalidate และ re-render route ปัจจุบันภายใน HTTP round trip **เดียวกัน** — response ของ action พ่วงทั้งค่าที่ return และ RSC payload ที่ render ใหม่มาด้วย app เราเลยไม่ต้อง fetch ซ้ำเพื่อเห็น UI ที่อัปเดตแล้ว `revalidateTag` แบบ stale-while-revalidate profile เป็นข้อยกเว้นเดียว มันไม่บังคับ re-render ทันทีแบบนั้น หน้าปัจจุบันจึงยังโชว์ค่าเก่าต่อไปพลาง tag refresh อยู่เบื้องหลัง แล้วการเปลี่ยนแปลงจะเห็นได้ตอน navigate หรืออ่านครั้งถัดไปแทน
 
-<Mermaid title="flow ของ mutation และ revalidation" code={diagramSa3Th} />
+<Mermaid title="Flow ของ mutation และ revalidation" code={diagramSa3Th} />
 
 export const diagramSa3Th = `
 graph TD
-  A["Action validates input"] --> B["Writes to the database"]
+  A["verifySession() then schema.safeParse()"] --> B["Writes to the database"]
   B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
   C --> E["Client Cache refreshed"]
   D --> F["UI shows fresh data"]
   E --> F
-  B --> G["Optional redirect after revalidate"]
+  B --> G["redirect() outside any try/catch"]
 `;
 
+## Mental Model
+
+มองว่า `redirect()` กับ `notFound()` เหมือน exception ที่เราตั้งใจปล่อยให้ลอยขึ้นไป: หน้าที่ทั้งหมดของมันคือ unwind stack แล้วส่งการควบคุมให้ Next.js `try/catch` ที่ครอบโค้ดซึ่งอาจเรียกมันคือ catch clause สำหรับ error *ของเรา* ไม่ใช่ของมัน — ถ้าไม่ตั้งใจปล่อยให้ error ของ framework หลุดผ่านไป catch block ของเราจะกลายเป็นที่สุดท้ายที่มันถูกเห็น
+
+## ข้อแลกเปลี่ยน
+
+| กลไก | re-render ใน round trip เดียวกันไหม | ใช้เมื่อ |
+|---|---|---|
+| `updateTag(tag)` | ใช่ — read ถัดไปรอข้อมูลใหม่ | ผู้ใช้ต้องเห็น write ของตัวเองทันที |
+| `revalidateTag(tag, profile)` | ไม่ — stale-while-revalidate เบื้องหลัง | Route Handler/webhook หรือตอนไม่ต้อง re-render ทันที |
+| `revalidatePath(path)` | ใช่ | route เดียวกระทบ tagging เกินความจำเป็น |
+| `redirect()` / `notFound()` นอก try/catch | ไม่เกี่ยว — throw แล้วส่งให้ Next.js จัดการ | ทุกครั้ง ที่ต้องการให้ framework จัดการ navigation หรือ 404 |
+| `redirect()` / `notFound()` ใน try/catch ที่ไม่ได้ป้องกัน | ไม่เกี่ยว — ถูกกลืนเงียบ ๆ | ไม่ควรเกิดขึ้นเลย — นี่คือ bug ที่บทนี้พิสูจน์ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ครอบ body ของ action ทั้งก้อนด้วย try/catch ปลอดภัยกว่าเสมอ"** ปลอดภัยกว่าสำหรับ error *ของเรา* แต่มันปิด `redirect()` กับ `notFound()` เงียบ ๆ ถ้าถูกเรียกอยู่ข้างในนั้น — พิสูจน์แล้วด้านบน: โค้ด path เดียวกัน return HTTP 200 แทนที่จะเป็น 404
+- **"`revalidateTag` กับ `updateTag` ใช้แทนกันได้"** `updateTag` บังคับให้ response ปัจจุบันรอข้อมูลใหม่ ส่วน `revalidateTag` ตั้งใจไม่ทำแบบนั้น ใช้ผิดตัวจะเพิ่ม latency โดยไม่จำเป็น หรือเสิร์ฟข้อมูลเก่าตอนที่ผู้ใช้คาดว่าจะเห็น write ของตัวเอง
+- **"`redirect()` return ค่า เลยควร `return redirect(...)`"** มันไม่ return เลย TypeScript type มันเป็น `never` เพราะมัน throw เสมอ
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างทำ mutation และ revalidation ให้เช็คสิ่งเหล่านี้ก่อนเชื่อ
+
+- body ของ action ทั้งก้อนถูกครอบด้วย `try/catch` เดียว โดยมี `redirect()` หรือ `notFound()` ถูกเรียกอยู่ข้างในไหม แบบนั้นจะกลืน control-flow error ของ framework เอง
+- `revalidateTag` ถูกเรียกด้วย argument เดียวไหม ใน Next.js 16 argument `profile` เป็น required — เรียกแบบ argument เดียวเป็น type error ไม่ใช่แค่ lint warning
+- `updateTag` ถูกใช้ตรงที่โค้ดต้องการ background revalidation จริง ๆ ไหม (หรือกลับกัน) อ่าน intent ให้ดี: ผู้ใช้ต้องเห็น write ของตัวเองทันทีไหม
+- `redirect()` มาหลัง revalidation call ไหม เพื่อให้ route ปลายทางสะท้อนข้อมูลใหม่แล้ว
+
+<SpotTheBug code={`import { notFound } from 'next/navigation'
+
+export async function getPost(id: string) {
+  try {
+    const post = await db.post.findUnique({ where: { id } })
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    console.error('Failed to load post', err)
+    return null
+  }
+}`}>
+`notFound()` throw internal error `NEXT_HTTP_ERROR_FALLBACK` ของ Next.js เพื่อให้ framework render segment `not-found` ที่นี่มันถูกเรียกอยู่ใน `try` block ที่ `catch` ของมัน log error *อะไรก็ตาม* แล้ว return `null` แทน — รวมถึง error ที่ `notFound()` เพิ่ง throw ด้วย พิสูจน์แล้วกับ server จริง: logic แบบเดียวกัน build และ deploy แล้วตอบกลับด้วย HTTP 200 พร้อม JSON body แทนที่จะเป็นหน้า 404 วิธีแก้คือเรียก `notFound()` นอก `try/catch` ไปเลย หรือเรียก `unstable_rethrow(err)` เป็นบรรทัดแรกของ `catch` block เพื่อให้ error ของ Next.js เองหลุดผ่านต่อไปได้
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-validate, write แล้ว `updateTag`/`revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Client Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
+Authorize, validate, เขียน แล้วค่อย `updateTag`/`revalidateTag`/`revalidatePath` เพื่อ refresh cache — และเก็บ `redirect()`/`notFound()` ไว้นอก `try/catch` ที่ไม่ได้ rethrow อย่างตั้งใจ ไม่งั้นมันจะถูกกลืนเงียบ ๆ
 </Callout>
 
 export const quizSa3Th = [
   {
     q: 'ลำดับที่ถูกต้องของ mutation flow คืออะไร',
     options: [
-      'redirect, validate, write, revalidate',
-      'validate, write, revalidate แล้ว redirect ถ้าจำเป็น',
-      'write, redirect, validate, revalidate',
-      'revalidate, write, validate, redirect',
+      'Redirect, validate, write, revalidate',
+      'Authorize, validate, write, revalidate แล้วค่อย redirect ถ้าต้องการ',
+      'Write, redirect, validate, revalidate',
+      'Revalidate, write, validate, redirect',
     ],
     answer: 1,
+    explain: 'authorization กับ validation เกิดก่อนการเขียนใด ๆ revalidation เกิดหลังเขียน redirect มาสุดท้ายเพราะมัน throw และจบ function',
   },
   {
-    q: 'ทำไม redirect ต้องมาหลัง revalidate ใน action',
+    q: '```ts\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nserver จริงจะ return อะไรเมื่อ `post` ไม่มี',
     options: [
-      'redirect ช้ากว่า revalidate',
-      'redirect throw ภายในและหยุดโค้ดที่เหลือไม่ให้รันต่อ',
-      'revalidate ต้องมี redirect ถึงจะมีผล',
-      'ลำดับไม่สำคัญเลย',
+      'HTTP 404 พร้อม render หน้า not-found',
+      'HTTP 200 เพราะ catch block ดัก notFound() แล้ว return null',
+      'HTTP 500 เพราะ notFound() ใช้ใน try block ไม่ได้',
+      'process crash',
     ],
     answer: 1,
+    explain: 'notFound() throw control-flow error ของ Next.js เอง ซึ่ง catch block นี้ดักแล้วทิ้งไป — พิสูจน์แล้วกับ server จริงที่ build/start: response เป็น 200 ไม่ใช่ 404',
   },
   {
-    q: 'การ invalidate ด้วย tag (updateTag / revalidateTag) มีประโยชน์กว่า revalidatePath เมื่อไร',
+    q: 'ทำไม redirect ต้องมาหลัง revalidation ใน action',
     options: [
-      'เมื่อข้อมูลเดียวกันโผล่ในหลาย route',
+      'redirect ช้ากว่า revalidation',
+      'redirect throw ข้างในและหยุดโค้ดที่มาทีหลังไม่ให้รัน',
+      'revalidation ต้องมี redirect ถึงจะมีผล',
+      'ลำดับไม่มีผลอะไรเลย',
+    ],
+    answer: 1,
+    explain: 'redirect() throw control-flow error ทันทีที่ถูกเรียก โค้ดที่เขียนไว้หลังมัน — รวมถึง revalidation call — จะไม่มีวันได้รัน',
+  },
+  {
+    q: '`unstable_rethrow` ทำอะไรใน catch block',
+    options: [
+      'retry action อัตโนมัติ',
+      'rethrow error ภายในของ Next.js เอง (เช่นจาก redirect() หรือ notFound()) ให้ framework จัดการต่อ ในขณะที่โค้ดเรายัง handle error อื่นได้',
+      'แปลง error ใด ๆ ให้เป็น response 500',
+      'ปิด revalidation สำหรับ request นั้น',
+    ],
+    answer: 1,
+    explain: 'unstable_rethrow(err) ปล่อยให้ exception ที่ framework ควบคุมหลุดออกจาก catch block ที่ต้อง handle application error ปกติด้วย — มันยังเป็น API แบบ unstable/experimental ณ Next.js 16.3.6',
+  },
+  {
+    q: 'การ invalidate แบบ tag (updateTag / revalidateTag) มีประโยชน์กว่า revalidatePath เมื่อไร',
+    options: [
+      'เมื่อข้อมูลเดียวกันปรากฏในหลาย route',
       'เมื่อไม่เคย tag fetch ไหนเลย',
-      'เมื่ออยากล้าง cache ทั้ง app',
-      'เมื่อ action ไม่แตะข้อมูลที่ cache ไว้',
+      'เมื่อต้องการล้าง cache ทั้ง app',
+      'เมื่อ action ไม่แตะข้อมูลที่ cache ไว้เลย',
     ],
     answer: 0,
+    explain: 'tag ให้เรา invalidate เฉพาะ fetch ที่เปลี่ยนจริง ไม่ว่าจะ render อยู่ที่ไหน แทนที่จะเป็นทั้ง path',
   },
   {
-    q: 'response ของ action refresh cache ฝั่ง client ตัวไหน',
+    q: '```ts\nrevalidateTag(\'posts\')\n```\nถ้า compile ใน Next.js 16 จะเกิดอะไรขึ้น',
     options: [
-      'image cache ของ browser',
-      'Client Cache ของ route ปัจจุบัน',
-      'localStorage เท่านั้น',
-      'cache ของ service worker',
+      'compile ผ่านและ revalidate ทันที',
+      'เป็น TypeScript error — revalidateTag ต้องการ argument `profile` ตัวที่สองใน Next.js 16',
+      'ไม่เกิดอะไรขึ้นตอน runtime เงียบ ๆ',
+      'ใช้ได้เฉพาะใน Server Action เท่านั้น',
     ],
     answer: 1,
+    explain: 'รูปแบบ argument เดียวของ revalidateTag ถูก deprecate และ type checker ปฏิเสธใน Next.js 16 — argument ที่สอง (cache-life profile เช่น \'max\') เป็น required',
   },
 ];
 

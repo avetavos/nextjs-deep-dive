@@ -1,6 +1,6 @@
 ---
 title: Security and Patterns
-description: A Server Action is a public endpoint — always validate input and authorize the user inside it — plus the built-in protections and reusable patterns.
+description: A Server Action is a public endpoint — the Origin/Host CSRF check, body size limits, the encryption key for multi-instance deployments, and reusable authorize-then-validate patterns.
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -19,17 +20,26 @@ Every Server Action is a public HTTP endpoint, so you must validate the input an
 Anyone who discovers the action ID can call it with any payload. So the action must re-check who the user is and re-parse the input on every call. Authorize first, validate second, then mutate — the UI that rendered the form is not a security boundary.
 
 ```ts
-// app/actions.ts — authorize, then validate, then mutate
+// lib/db.ts
+export const db = {
+  post: {
+    update: async (_args: { where: { id: string; authorId?: string }; data: { title?: string } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
 'use server'
 
-import { auth } from '@/lib/auth'
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { z } from 'zod'
 
 const schema = z.object({ id: z.string().uuid(), title: z.string().min(1) })
 
 export async function updatePost(formData: FormData) {
-  const session = await auth()
-  if (!session?.user) throw new Error('Unauthorized')
+  const { userId } = await verifySession()
 
   const parsed = schema.safeParse({
     id: formData.get('id'),
@@ -38,18 +48,109 @@ export async function updatePost(formData: FormData) {
   if (!parsed.success) return { error: 'Invalid input' }
 
   await db.post.update({
-    where: { id: parsed.data.id, authorId: session.user.id },
+    where: { id: parsed.data.id, authorId: userId },
     data: { title: parsed.data.title },
   })
 }
 ```
 
-## The built-in protections are not authorization
+## The CSRF model: Origin vs Host
 
-Next.js encrypts variables you close over in an action, generates unguessable action IDs, and dead-code-eliminates any action you never use so it never becomes a public endpoint. These reduce the attack surface, but none of them check whether THIS user may perform THIS action. Authorization and validation remain your job.
+Server Actions only accept `POST`, which rules out most CSRF vectors on its own — a cross-site `<form>` cannot forge a request that also carries the exact encrypted action ID. As a second layer, Next.js compares the request's `Origin` header against its `Host` (or `X-Forwarded-Host`) header and rejects the request outright if they do not match, so an action can only be invoked from the same host that served the page. A request that carries no `Origin` header at all is let through with a warning rather than rejected outright.
+
+Behind a reverse proxy or CDN where the public host differs from what the app server sees, configure `serverActions.allowedOrigins` with the host the *browser* shows, not the internal one:
 
 ```ts
-// app/actions.ts — unused actions are stripped at build; used ones get an ID
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const config: NextConfig = {
+  experimental: {
+    serverActions: {
+      allowedOrigins: ['my-proxy.com', '*.my-proxy.com'],
+    },
+  },
+}
+
+export default config
+```
+
+Entries support wildcards: `*.my-proxy.com` matches exactly one subdomain label, `**.my-proxy.com` matches one or more. Note the option still lives under `experimental` in Next.js 16.3.6 even though Server Actions themselves have been stable since Next.js 14.
+
+## Body size limit
+
+Action requests are capped at 1MB by default, specifically to limit resource consumption from parsing oversized payloads. Raise it with `serverActions.bodySizeLimit` when you genuinely expect larger uploads — the limit applies to the raw HTTP body, including `multipart/form-data` boundaries and part headers, so leave some overhead room above the actual file size you expect.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const config: NextConfig = {
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '2mb',
+    },
+  },
+}
+
+export default config
+```
+
+## The encryption key for multi-instance deployments
+
+Next.js encrypts the variables an inline action closes over before sending them to the client, using a private key generated fresh on every build. That is fine for a single instance, but if you self-host across multiple servers behind a load balancer, each instance builds its own key by default — an action invoked against one instance can fail to decrypt on another. Set `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` to a stable, shared value across all instances so closures stay decryptable no matter which instance handles the request:
+
+```text
+# generate a compatible key: 16, 24, or 32 decoded bytes, base64-encoded
+openssl rand -base64 32
+```
+
+Set the resulting value as `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in every instance's environment. This is unrelated to the `allowedOrigins`/CSRF check above — it solves a different problem (decrypting closures consistently), not who is allowed to call the action.
+
+## Closures are encrypted, but not secret
+
+Encryption of closure variables raises the bar for casual inspection, but the official guidance is explicit: do not rely on encryption alone to keep a value out of the client's hands. Treat anything closed over by an inline action the same way you would treat a value you were about to serialize into a client-visible prop — if it must never reach the browser, keep it out of the closure entirely and re-derive it from the session or the database inside the action instead.
+
+```tsx
+// app/page.tsx
+async function getLatestVersion() {
+  return 1
+}
+
+export default async function Page() {
+  const publishVersion = await getLatestVersion()
+
+  async function publish() {
+    'use server'
+    if (publishVersion !== await getLatestVersion()) {
+      throw new Error('The version has changed since pressing publish')
+    }
+    // ...
+  }
+
+  return (
+    <form>
+      <button formAction={publish}>Publish</button>
+    </form>
+  )
+}
+```
+
+## Unused actions are dead-code-eliminated — but the rule is narrower than it sounds
+
+An action that is genuinely never imported or called anywhere in your app is removed from the client-visible bundle at build time and never gets a callable public ID — that part is exactly what the docs promise. What it does **not** mean is that an action only becomes "used" once it is behind an authorization check. The moment an exported action is called from *anywhere* in your app — even a page nobody has linked to yet — it is a live, publicly reachable endpoint, full stop.
+
+Building a probe with one action that a page actually renders and one that is never imported anywhere, then inspecting the build's output confirms both halves of this directly:
+
+```text
+used action's encrypted ID   -> present in the page's rendered HTML (discoverable by any visitor)
+unused action's encrypted ID -> absent from every client-visible artifact (HTML, RSC payload, static JS)
+```
+
+The server's own internal routing table still lists the unused action's ID (it needs some record to route requests by ID at all), but because that ID is never shipped to the browser in any form, no external caller can construct a request for it without already knowing a value they were never given. Treat this as raising the cost of discovery, not as a substitute for the authorization check inside the action.
+
+```ts
+// app/actions.ts
 'use server'
 
 // Used in the app: Next.js creates an encrypted, unguessable ID for it.
@@ -61,11 +162,11 @@ export async function deleteUser(formData: FormData) {}
 
 ## A reusable action wrapper with typed results
 
-To avoid repeating the auth and validation boilerplate, wrap actions in a helper that authorizes, parses with a schema, and returns a typed result. Every action then returns the same success-or-error shape, which pairs cleanly with `useActionState`.
+To avoid repeating the authorize-then-validate boilerplate, wrap actions in a helper that authorizes with `verifySession()`, parses with a schema, and returns a typed result. Every action then returns the same success-or-error shape, which pairs cleanly with `useActionState`.
 
 ```ts
-// app/lib/action.ts — one wrapper: authorize, validate, typed result
-import { auth } from '@/lib/auth'
+// app/lib/action.ts
+import { verifySession } from '@/app/lib/dal'
 import { z } from 'zod'
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: string }
@@ -75,25 +176,27 @@ export function authedAction<S extends z.ZodType, T>(
   run: (input: z.infer<S>, userId: string) => Promise<T>,
 ) {
   return async (formData: FormData): Promise<Result<T>> => {
-    const session = await auth()
-    if (!session?.user) return { ok: false, error: 'Unauthorized' }
+    const { userId } = await verifySession()
 
     const parsed = schema.safeParse(Object.fromEntries(formData))
     if (!parsed.success) return { ok: false, error: 'Invalid input' }
 
-    const data = await run(parsed.data, session.user.id)
+    const data = await run(parsed.data, userId)
     return { ok: true, data }
   }
 }
 ```
+
+`verifySession()` redirects rather than returning null when there is no session, so this wrapper's job narrows to validation and the typed result shape — authentication is already handled before the wrapper's own code runs.
 
 ## Keep DB access in a data-access layer
 
 Do not scatter raw database queries across actions. Route every read and write through a data-access layer whose functions each enforce their own ownership checks. Actions call that layer, so authorization lives next to the data and is hard to forget.
 
 ```ts
-// app/data/posts.ts — the only place that touches the posts table
+// app/data/posts.ts
 import 'server-only'
+import { db } from '@/lib/db'
 
 export async function updatePostForUser(id: string, userId: string, title: string) {
   return db.post.update({
@@ -107,16 +210,69 @@ export async function updatePostForUser(id: string, userId: string, title: strin
 
 export const diagramSa4En = `
 graph TD
-  A["Public request hits action ID"] --> B{"Authorized user?"}
-  B -->|"No"| C["Reject: Unauthorized"]
-  B -->|"Yes"| D{"Input valid by schema?"}
-  D -->|"No"| E["Reject: Invalid input"]
-  D -->|"Yes"| F["Data-access layer with ownership check"]
-  F --> G["Mutate the database"]
+  A["Public request hits action ID"] --> B{"Origin matches Host?"}
+  B -->|"No"| Z["Rejected — CSRF check fails"]
+  B -->|"Yes"| C{"Authorized user?"}
+  C -->|"No"| D["Reject: Unauthorized"]
+  C -->|"Yes"| E{"Input valid by schema?"}
+  E -->|"No"| F["Reject: Invalid input"]
+  E -->|"Yes"| G["Data-access layer with ownership check"]
+  G --> H["Mutate the database"]
 `;
 
+## Mental Model
+
+None of the framework's built-in protections — the Origin/Host check, the body size limit, encrypted action IDs, dead-code elimination, closure encryption — are trying to answer "is this specific user allowed to do this specific thing." They answer narrower questions: is this request even plausible, is it too large, can it be casually discovered, can it be casually inspected. Authorization is a question only your own code can answer, every single time.
+
+## Trade-offs
+
+| Protection | What it actually guards against | What it does not do |
+|---|---|---|
+| Origin/Host check | Cross-site forged `POST` requests | Nothing against a same-origin caller with any payload |
+| `bodySizeLimit` (1MB default) | Resource exhaustion from oversized payloads | Nothing about whether the payload's *contents* are valid |
+| Encrypted action IDs + dead-code elimination | Casual discovery of an unused action's endpoint | Authorization of a used action's caller |
+| Closure variable encryption | Casual inspection of captured values in transit | Keeping a value out of the client's hands if it must stay secret |
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | Consistent decryption across multiple self-hosted instances | Anything about who is allowed to call the action |
+
+## Common Misconceptions
+
+- **"Encrypted action IDs mean I don't need to check who is calling."** They make the ID hard to *find*, not hard to *use* once found — anyone who can reach an authenticated session or observe the network can call it.
+- **"An action becomes safe once it's dead-code-eliminated."** Dead-code elimination only applies to actions that are truly unused anywhere in the app — the moment any code path uses one, it is a live public endpoint regardless of whether that code path is auth-gated.
+- **"`allowedOrigins` and the encryption key solve the same problem."** They do not — one is a CSRF allowlist for who may call the action at all, the other is about consistently decrypting closures across server instances. Neither substitutes for authorization inside the action.
+
+## Reading AI-generated code
+
+When a generated snippet touches Server Action security, check for these before trusting it:
+
+- Does the action call an authorization check (`verifySession()` or equivalent) as its first line, or does it assume the caller is already authenticated?
+- Is a secret or a value that must never reach the browser captured in an inline action's closure, relying on encryption to keep it hidden?
+- Does the code assume an action is safe because it is "not used in the UI yet" — without checking whether it is imported and callable from anywhere in the codebase?
+- If the app sits behind a reverse proxy or CDN, does `next.config` set `serverActions.allowedOrigins` to the *public* host the browser sees, not the internal one the app server reports?
+- Does every mutation route through a data-access layer that checks ownership, or does the action query the database directly with only the caller-supplied ID?
+
+<SpotTheBug code={`'use server'
+
+import { z } from 'zod'
+
+const schema = z.object({ id: z.string().uuid(), title: z.string().min(1) })
+
+export async function updatePost(formData: FormData) {
+  const parsed = schema.safeParse({
+    id: formData.get('id'),
+    title: formData.get('title'),
+  })
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  await db.post.update({
+    where: { id: parsed.data.id },
+    data: { title: parsed.data.title },
+  })
+}`}>
+This action validates its input with `zod` — that part looks solid — but it never calls `verifySession()` or any other authorization check, and the `where` clause only filters by `id`, not by the caller's `userId`. Per the official data security guidance, "a page-level authentication check does not extend to the Server Actions defined within it" — this action is reachable directly, by anyone, and as written it lets any authenticated (or even unauthenticated, if no check exists elsewhere) caller update any post by guessing or observing its `id`. The fix is to call `verifySession()` first and add `authorId: userId` to the `where` clause, exactly like the `updatePost` example earlier in this lesson.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Treat every Server Action as a public endpoint: authorize the user and validate the input inside the action — the built-in protections harden it but never replace your authorization.
+Treat every Server Action as a public endpoint: authorize the user and validate the input inside the action — the built-in protections (Origin/Host check, body size limit, encrypted IDs, dead-code elimination) narrow the attack surface, but none of them is authorization.
 </Callout>
 
 export const quizSa4En = [
@@ -129,36 +285,62 @@ export const quizSa4En = [
       'Because the form already guarantees safe input',
     ],
     answer: 1,
+    explain: 'A Server Action compiles into a callable public endpoint. The UI that renders the form is not a security boundary.',
   },
   {
-    q: 'What do the built-in protections like unguessable action IDs provide?',
+    q: 'What does the Origin/Host check protect against?',
     options: [
-      'Full authorization so you can skip auth checks',
-      'A reduced attack surface, but not authorization',
-      'Automatic input validation for every field',
-      'Encryption of the database at rest',
+      'SQL injection in the action body',
+      'Cross-site requests forged from a different origin',
+      'Oversized request payloads',
+      'An attacker who already has a valid session on your own site',
     ],
     answer: 1,
+    explain: "Next.js compares the request's Origin header to its Host (or X-Forwarded-Host) and rejects a mismatch, which is a CSRF defense — it says nothing about whether a same-origin caller is authorized.",
   },
   {
-    q: 'What happens to a Server Action that is never used anywhere?',
+    q: 'What is the default body size limit for a Server Action request, and how do you raise it?',
     options: [
-      'It is exposed as a default public endpoint',
-      'It is dead-code-eliminated and gets no public endpoint',
-      'It throws an error at runtime',
-      'It is cached and called automatically',
+      '10MB by default, raised with bodySizeLimit',
+      '1MB by default, raised with serverActions.bodySizeLimit in next.config',
+      'There is no default limit',
+      '1MB, and it cannot be changed',
     ],
     answer: 1,
+    explain: 'Action requests are capped at 1MB by default to limit resource consumption; serverActions.bodySizeLimit raises it, e.g. to \'2mb\'.',
   },
   {
-    q: 'What is the point of a data-access layer for mutations?',
+    q: 'When does an exported Server Action stop being a candidate public endpoint?',
     options: [
-      'To make queries run on the client',
-      'To centralize DB access so ownership checks are enforced consistently',
-      'To avoid using a database entirely',
-      'To disable revalidation',
+      'As soon as it is placed behind an authorization check',
+      'Only when it is truly unused anywhere in the app, so dead-code elimination removes it at build time',
+      'As soon as it is renamed to something less guessable',
+      'Never — every exported action is always reachable regardless of usage',
     ],
     answer: 1,
+    explain: "Dead-code elimination only removes an action that is never called from anywhere in the app. An action guarded by an auth check is still \"used\" and still gets a real, callable ID — the check just makes that ID reject unauthorized callers.",
+  },
+  {
+    q: 'What problem does NEXT_SERVER_ACTIONS_ENCRYPTION_KEY solve?',
+    options: [
+      'It authorizes which users may call an action',
+      'It keeps closure encryption consistent across multiple self-hosted instances behind a load balancer',
+      'It raises the body size limit',
+      'It replaces the Origin/Host CSRF check',
+    ],
+    answer: 1,
+    explain: 'Each self-hosted instance otherwise generates its own encryption key at build; setting this variable to a shared value keeps closures decryptable no matter which instance handles a given request.',
+  },
+  {
+    q: '```ts\nexport async function updatePost(formData: FormData) {\n  const parsed = schema.safeParse({ id: formData.get(\'id\'), title: formData.get(\'title\') })\n  if (!parsed.success) return\n  await db.post.update({ where: { id: parsed.data.id }, data: { title: parsed.data.title } })\n}\n```\nWhat is missing from this action?',
+    options: [
+      'Nothing — schema validation is enough on its own',
+      'An authorization check and an ownership filter (authorId) on the update',
+      'A revalidatePath call',
+      'A try/catch block',
+    ],
+    answer: 1,
+    explain: "Validating shape with zod does not check who the caller is or whether they own the row being updated. Without verifySession() and an authorId filter, any caller can update any post by id.",
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: Mutations and Revalidation
-description: The full mutation flow — validate, write to the DB, updateTag / revalidateTag / revalidatePath, and optionally redirect — and how the client caches get refreshed.
+description: The full mutation flow — authorize, validate, write, updateTag / revalidateTag / revalidatePath, and optionally redirect — and why redirect() and notFound() must never be swallowed by try/catch.
 sidebar:
   order: 3
 ---
@@ -9,19 +9,32 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
-A mutation is a four-step flow: validate the input, write to the database, call `updateTag`, `revalidateTag`, or `revalidatePath` to refresh the affected cached data, and optionally `redirect` — so the UI reflects the change without a manual reload.
+A mutation is a five-step flow: authorize the caller, validate the input, write to the database, call `updateTag`, `revalidateTag`, or `revalidatePath` to refresh the affected cached data, and optionally `redirect` — so the UI reflects the change without a manual reload.
 
 ## The full mutation flow
 
-Inside the action you validate first, then mutate, then revalidate the data that just changed. Only after revalidation do you redirect, because `redirect` throws internally and stops the rest of the function from running.
+Inside the action you authorize first, validate second, then mutate, then revalidate the data that just changed. Only after revalidation do you redirect, because `redirect` throws internally and stops the rest of the function from running.
 
 ```ts
-// app/actions.ts — validate, write, revalidate, redirect
+// lib/db.ts
+export const db = {
+  post: {
+    create: async (_args: { data: { title: string; authorId?: string } }) => {},
+    update: async (_args: { where: { id: string; authorId?: string }; data: { published?: boolean } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
@@ -29,24 +42,68 @@ import { z } from 'zod'
 const schema = z.object({ title: z.string().min(1) })
 
 export async function createPost(formData: FormData) {
+  const { userId } = await verifySession()
   const parsed = schema.safeParse({ title: formData.get('title') })
   if (!parsed.success) {
     return { error: 'Invalid title' }
   }
 
-  await db.post.create({ data: { title: parsed.data.title } })
+  await db.post.create({ data: { title: parsed.data.title, authorId: userId } })
 
   revalidatePath('/posts')
   redirect('/posts')
 }
 ```
 
+## redirect() and notFound() throw — try/catch can swallow them
+
+`redirect()` and `notFound()` both work by throwing a special control-flow error that Next.js catches further up and turns into a navigation or a rendered `not-found` segment. If you wrap the call that produces that error in your own `try/catch`, your `catch` block intercepts it first — Next.js never sees it, and the redirect or 404 silently never happens.
+
+```ts
+// app/posts/actions.ts
+import { notFound, unstable_rethrow } from 'next/navigation'
+
+// BUG: try/catch swallows notFound()
+export async function getPostBad(id: string) {
+  try {
+    if (id === 'missing') notFound()
+    return { id, ok: true }
+  } catch (err) {
+    console.error('swallowed:', err)
+    return { id, ok: false, error: 'caught, not a real 404' }
+  }
+}
+
+// FIX: unstable_rethrow lets Next.js's own errors escape
+export async function getPostGood(id: string) {
+  try {
+    if (id === 'missing') notFound()
+    return { id, ok: true }
+  } catch (err) {
+    unstable_rethrow(err)
+    console.error('real application error:', err)
+    return { id, ok: false, error: 'other error' }
+  }
+}
+```
+
+Building both against Next.js 16.3.6 and requesting each variant from a real server shows the difference directly in the HTTP response, not just in theory:
+
+```text
+bad variant  -> HTTP 200
+good variant -> HTTP 404
+```
+
+The "bad" variant's `catch` block ran, logged the error, and returned a normal object — the page rendered with `ok: false` and status 200. The "good" variant re-threw with `unstable_rethrow`, so Next.js's own `NEXT_HTTP_ERROR_FALLBACK;404` signal escaped the `catch` block and reached the framework, which rendered the real not-found page and returned a 404. The digest embedded in that response's RSC payload — `{"digest":"NEXT_HTTP_ERROR_FALLBACK;404"}` — is Next.js's own control-flow marker, the same mechanism `redirect()` uses for navigation.
+
+`unstable_rethrow` is still an unstable/experimental API name as of Next.js 16.3.6 — the "unstable" prefix reflects its current status, not a typo. Next.js recommends it specifically for a `try/catch` that mixes application errors with framework-controlled ones (`redirect()`, `permanentRedirect()`, `notFound()`, and request-time APIs like `cookies()`/`headers()` under certain rendering modes). If you can instead structure your code so `redirect()`/`notFound()` are called **outside** any `try/catch` — as in the `createPost` example above — that is simpler and avoids the whole problem; reach for `unstable_rethrow` only when the framework call is unavoidably inside a block you must also catch other errors in.
+
 ## updateTag, revalidateTag, and revalidatePath
 
 `revalidatePath('/posts')` invalidates everything cached for that route. Tag-based invalidation is more surgical when the same data appears on several routes: tag your reads, then expire the tag after the write. Inside a Server Action use `updateTag('posts')` — it expires the tag immediately, so the very next request waits for fresh data and the user reads their own write. `revalidateTag(tag, profile)` instead marks the tag stale and keeps serving the old data while it refreshes in the background; in Next.js 16 the second `profile` argument is required (the one-argument form is deprecated and a TypeScript error) and `'max'` is the recommended value. Reach for `revalidateTag` in Route Handlers and webhooks, where `updateTag` is not allowed.
 
 ```ts
-// app/posts/data.ts — tag the read so you can revalidate by tag later
+// app/posts/data.ts
 export async function getPosts() {
   const res = await fetch('https://api.example.com/posts', {
     next: { tags: ['posts'] },
@@ -56,19 +113,22 @@ export async function getPosts() {
 ```
 
 ```ts
-// app/actions.ts — expire only the tagged data so the next request sees the write
+// app/actions.ts
 'use server'
 
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { updateTag } from 'next/cache'
 
 export async function publishPost(id: string) {
-  await db.post.update({ where: { id }, data: { published: true } })
+  const { userId } = await verifySession()
+  await db.post.update({ where: { id, authorId: userId }, data: { published: true } })
   updateTag('posts')
 }
 ```
 
 ```ts
-// app/api/revalidate/route.ts — outside a Server Action, use revalidateTag with a profile
+// app/api/revalidate/route.ts
 import { revalidateTag } from 'next/cache'
 
 export async function POST() {
@@ -79,23 +139,67 @@ export async function POST() {
 
 ## How the client caches get refreshed
 
-This ties back to the caching module. On the server, revalidation clears the Data Cache entry for the affected fetch. On the client, the Server Action response also refreshes the Client Cache for the current route, so the already-rendered segments are replaced with fresh server output. The user sees the new data without a hard reload — the two caches stay consistent.
+This ties back to the caching module. When an action calls `updateTag`, `revalidatePath`, or `redirect`, Next.js does the revalidation and the re-render of the current route inside the **same** HTTP round trip — the action's response carries both the returned value and a freshly rendered RSC payload, so your app does not need a follow-up fetch to see the updated UI. `revalidateTag` with a stale-while-revalidate profile is the one exception: it does not force that immediate re-render, so the current view keeps showing the old value while the tag refreshes in the background, and the change is visible on the next navigation or read instead.
 
 <Mermaid title="The mutation and revalidation flow" code={diagramSa3En} />
 
 export const diagramSa3En = `
 graph TD
-  A["Action validates input"] --> B["Writes to the database"]
+  A["verifySession() then schema.safeParse()"] --> B["Writes to the database"]
   B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
   C --> E["Client Cache refreshed"]
   D --> F["UI shows fresh data"]
   E --> F
-  B --> G["Optional redirect after revalidate"]
+  B --> G["redirect() outside any try/catch"]
 `;
 
+## Mental Model
+
+Treat `redirect()` and `notFound()` the same way you treat an exception you intend to propagate: their whole job is to unwind the stack and hand control to Next.js. A `try/catch` around code that might call them is a catch clause for *your* errors, not theirs — unless you explicitly let the framework's own errors pass through, your catch block becomes the last place they are ever seen.
+
+## Trade-offs
+
+| Mechanism | Re-renders in the same round trip? | Use when |
+|---|---|---|
+| `updateTag(tag)` | Yes — next read waits for fresh data | The user must see their own write immediately |
+| `revalidateTag(tag, profile)` | No — stale-while-revalidate in the background | Route Handlers/webhooks, or when an immediate re-render is not required |
+| `revalidatePath(path)` | Yes | One route is affected and tagging is overkill |
+| `redirect()` / `notFound()` outside try/catch | N/A — throws and hands off to Next.js | Always, when you need the framework to handle the navigation or 404 |
+| `redirect()` / `notFound()` inside an unguarded try/catch | N/A — silently swallowed | Never — this is the bug this lesson proves |
+
+## Common Misconceptions
+
+- **"Wrapping the whole action body in try/catch is always safer."** It is safer for *your* errors, but it silently disables `redirect()` and `notFound()` if they are called inside that block — proven above: the same code path returns HTTP 200 instead of 404.
+- **"`revalidateTag` and `updateTag` are interchangeable."** `updateTag` forces the current response to wait for fresh data; `revalidateTag` explicitly does not — using the wrong one either adds unnecessary latency or serves stale data when the user expected to see their own write.
+- **"`redirect()` returns, so you should `return redirect(...)`."** It never returns — TypeScript types it as `never` precisely because it always throws.
+
+## Reading AI-generated code
+
+When a generated snippet does a mutation and revalidation, check for these before trusting it:
+
+- Is the whole action body wrapped in one `try/catch`, with `redirect()` or `notFound()` called somewhere inside it? That swallows the framework's own control-flow error.
+- Does `revalidateTag` get called with only one argument? In Next.js 16 the `profile` argument is required — a one-argument call is a type error, not just a lint warning.
+- Is `updateTag` used where the code actually wanted background revalidation (or vice versa)? Read the intent: does the user need to see their own write immediately?
+- Does `redirect()` come *after* the revalidation call, so the destination route already reflects the fresh data?
+
+<SpotTheBug code={`import { notFound } from 'next/navigation'
+
+export async function getPost(id: string) {
+  try {
+    const post = await db.post.findUnique({ where: { id } })
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    console.error('Failed to load post', err)
+    return null
+  }
+}`}>
+`notFound()` throws Next.js's internal `NEXT_HTTP_ERROR_FALLBACK` error so the framework can render the `not-found` segment. Here it is called inside a `try` block whose `catch` logs *any* error and returns `null` instead — including the one `notFound()` just threw. Proven against a real server: the same logic, built and deployed, answers with HTTP 200 and a JSON body instead of a 404 page. The fix is either to call `notFound()` outside the `try/catch` entirely, or to call `unstable_rethrow(err)` as the first line of the `catch` block so Next.js's own error is allowed to continue.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Validate, write, then `updateTag`/`revalidateTag`/`revalidatePath` to clear the Data Cache and refresh the Client Cache — that is what makes the UI reflect a mutation without a manual reload.
+Authorize, validate, write, then `updateTag`/`revalidateTag`/`revalidatePath` to refresh the caches — and keep `redirect()`/`notFound()` outside any `try/catch` that does not explicitly rethrow them, or they are silently swallowed.
 </Callout>
 
 export const quizSa3En = [
@@ -103,11 +207,23 @@ export const quizSa3En = [
     q: 'What is the correct order of the mutation flow?',
     options: [
       'Redirect, validate, write, revalidate',
-      'Validate, write, revalidate, then optionally redirect',
+      'Authorize, validate, write, revalidate, then optionally redirect',
       'Write, redirect, validate, revalidate',
       'Revalidate, write, validate, redirect',
     ],
     answer: 1,
+    explain: 'Authorization and validation happen before any write; revalidation happens after the write; redirect comes last because it throws and ends the function.',
+  },
+  {
+    q: '```ts\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nWhat does a live server return when `post` is missing?',
+    options: [
+      'HTTP 404, with the not-found page rendered',
+      'HTTP 200, because the catch block intercepts notFound() and returns null',
+      'HTTP 500, because notFound() is not allowed in a try block',
+      'The process crashes',
+    ],
+    answer: 1,
+    explain: "notFound() throws Next.js's own control-flow error, which this catch block intercepts and discards — proven against a real build/start server: the response is 200, not 404.",
   },
   {
     q: 'Why must redirect come after revalidation in an action?',
@@ -118,6 +234,18 @@ export const quizSa3En = [
       'The order does not matter at all',
     ],
     answer: 1,
+    explain: 'redirect() throws a control-flow error the moment it is called, so any code written after it — including a revalidation call — would never run.',
+  },
+  {
+    q: 'What does `unstable_rethrow` do inside a catch block?',
+    options: [
+      "It retries the action automatically",
+      "It re-throws Next.js's own internal errors (like from redirect() or notFound()) so the framework still handles them, while your code keeps handling other errors",
+      'It converts any error into a 500 response',
+      'It disables revalidation for that request',
+    ],
+    answer: 1,
+    explain: "unstable_rethrow(err) lets Next.js's framework-controlled exceptions escape a catch block that also needs to handle ordinary application errors — it is still an unstable/experimental API as of Next.js 16.3.6.",
   },
   {
     q: 'When is tag-based invalidation (updateTag / revalidateTag) more useful than revalidatePath?',
@@ -128,16 +256,18 @@ export const quizSa3En = [
       'When the action does not touch cached data',
     ],
     answer: 0,
+    explain: 'Tags let you invalidate exactly the fetches that changed, wherever they are rendered, instead of an entire path.',
   },
   {
-    q: 'Which client-side cache does the action response refresh?',
+    q: '```ts\nrevalidateTag(\'posts\')\n```\nWhat happens when this is compiled in Next.js 16?',
     options: [
-      'The browser image cache',
-      'The Client Cache for the current route',
-      'Only localStorage',
-      'The service worker cache',
+      'It compiles and revalidates immediately',
+      "It is a TypeScript error — revalidateTag requires a second `profile` argument in Next.js 16",
+      'It silently does nothing at runtime',
+      'It only works inside a Server Action',
     ],
     answer: 1,
+    explain: "The one-argument form of revalidateTag is deprecated and rejected by the type checker in Next.js 16 — the second argument (a cache-life profile, such as 'max') is required.",
   },
 ];
 

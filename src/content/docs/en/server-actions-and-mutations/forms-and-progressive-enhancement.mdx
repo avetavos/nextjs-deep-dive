@@ -1,6 +1,6 @@
 ---
 title: Forms and Progressive Enhancement
-description: How a form action works without JS then upgrades on hydration, plus useActionState, useFormStatus, and useOptimistic for real form UX.
+description: How a form action works without JS then upgrades on hydration, plus the real useActionState signature, useFormStatus placement, and useOptimistic rollback behavior.
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -19,7 +20,7 @@ Wiring a Server Action to `<form action={action}>` gives you a form that submits
 Because the action is attached to a real `<form>`, the browser can post it with a plain HTTP request. The mutation works with JavaScript disabled or still loading. Once React hydrates the page, the same form is intercepted client-side, so there is no full-page reload — you get the baseline for free and the upgrade automatically.
 
 ```tsx
-// app/new-todo.tsx — works before JS, upgrades after hydration
+// app/new-todo.tsx
 import { createTodo } from './actions'
 
 export function NewTodoForm() {
@@ -32,30 +33,90 @@ export function NewTodoForm() {
 }
 ```
 
-## useActionState for result, pending, and errors
+## useActionState needs `(prevState, formData)` — not `(formData)`
 
-`useActionState(action, initialState)` wraps an action so you get back the latest returned state, a form action to bind, and a `pending` flag. Your action takes the previous state as its first argument and returns the new state — perfect for surfacing validation errors next to the fields.
+Every plain Server Action takes `formData` as its only argument, as in the section above. `useActionState(action, initialState)` expects something different: an action whose **first** parameter is the previous state and whose **second** parameter is `formData`. Swapping a plain action into `useActionState` is not a style choice you can get away with — it is a real TypeScript error, because the two shapes are incompatible.
 
-```tsx
-// app/actions.ts — return field errors instead of throwing
+```ts
+// app/actions.ts
 'use server'
 
+export async function createTodoPlain(formData: FormData) {
+  const title = String(formData.get('title'))
+  return { ok: true, title }
+}
+```
+
+```tsx
+// @expect-error swapping a plain (formData) action into useActionState is a type error
+'use client'
+
+import { useActionState } from 'react'
+import { createTodoPlain } from './actions'
+
+export function BadForm() {
+  const [state, formAction] = useActionState(createTodoPlain, { ok: false, title: '' })
+  return (
+    <form action={formAction}>
+      <input name="title" />
+      <button type="submit">Add</button>
+    </form>
+  )
+}
+```
+
+Compiling this against Next.js 16.3.6 / React 19.2.8 gives:
+
+```text
+error TS2769: No overload matches this call.
+  Overload 1 of 2, '(action: (state: { ok: boolean; title: string; }) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>, initialState: { ok: boolean; title: string; }, permalink?: string | undefined): [state: ...]', gave the following error.
+    Argument of type '(formData: FormData) => Promise<{ ok: boolean; title: string; }>' is not assignable to parameter of type '(state: { ok: boolean; title: string; }) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>'.
+      Types of parameters 'formData' and 'state' are incompatible.
+        Type '{ ok: boolean; title: string; }' is missing the following properties from type 'FormData': append, delete, get, getAll, and 7 more.
+  Overload 2 of 2, '(action: (state: { ok: boolean; title: string; }, payload: unknown) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>, initialState: { ok: boolean; title: string; }, permalink?: string | undefined): [state: ...]', gave the following error.
+    Argument of type '(formData: FormData) => Promise<{ ok: boolean; title: string; }>' is not assignable to parameter of type '(state: { ok: boolean; title: string; }, payload: unknown) => { ok: boolean; title: string; } | Promise<{ ok: boolean; title: string; }>'.
+      Types of parameters 'formData' and 'state' are incompatible.
+        Type '{ ok: boolean; title: string; }' is missing the following properties from type 'FormData': append, delete, get, getAll, and 7 more.
+```
+
+TypeScript is telling you, in a roundabout way, that `useActionState` tried to treat your returned state object as if it were the next `formData` argument. The fix is to give the action a `prevState` parameter — authorize and validate stay exactly where they were.
+
+## useActionState for result, pending, and errors
+
+`useActionState(action, initialState)` wraps an action so you get back the latest returned state, a form action to bind, and a `pending` flag. Your action takes the previous state as its first argument and returns the new state — perfect for surfacing validation errors next to the fields. As with every action in this module, authorize with `verifySession()` before validating the input.
+
+```ts
+// lib/db.ts
+export const db = {
+  todo: {
+    create: async (_args: { data: { title: string; userId?: string } }) => {},
+  },
+}
+```
+
+```ts
+// app/actions.ts
+'use server'
+
+import { verifySession } from '@/app/lib/dal'
+import { db } from '@/lib/db'
 import { z } from 'zod'
 
 const schema = z.object({ title: z.string().min(1, 'Title is required') })
 
 export async function createTodo(prevState: unknown, formData: FormData) {
+  const { userId } = await verifySession()
   const parsed = schema.safeParse({ title: formData.get('title') })
   if (!parsed.success) {
     return { errors: parsed.error.flatten().fieldErrors }
   }
-  await db.todo.create({ data: { title: parsed.data.title } })
+  await db.todo.create({ data: { title: parsed.data.title, userId } })
   return { errors: {} }
 }
 ```
 
 ```tsx
-// app/new-todo.tsx — bind the action with useActionState
+// app/new-todo.tsx
 'use client'
 
 import { useActionState } from 'react'
@@ -74,49 +135,105 @@ export function NewTodoForm() {
 }
 ```
 
-## useFormStatus for the submit button
+## useFormStatus must be called from a child of the form
 
-`useFormStatus` reads the pending state of the enclosing form. Put it in a child component of the form so the button can disable itself while the action runs, without threading props down.
+`useFormStatus` reads the pending state of the *enclosing* form — enclosing meaning a real ancestor in the render tree, not "the component that happens to render the form tag." Calling it in the same component that renders `<form>` is a common mistake: it compiles, it runs, and it silently never reports `pending: true`, because that component is not a descendant of its own form.
 
 ```tsx
-// app/submit-button.tsx — a child of the form
+// app/submit-button-wrong.tsx
 'use client'
 
 import { useFormStatus } from 'react-dom'
 
-export function SubmitButton() {
+export function FormWrong({ action }: { action: (formData: FormData) => void }) {
   const { pending } = useFormStatus()
   return (
-    <button disabled={pending} type="submit">
-      {pending ? 'Saving…' : 'Add todo'}
-    </button>
+    <form action={action}>
+      <input name="title" />
+      <button disabled={pending} type="submit">
+        {pending ? 'Saving...' : 'Save (wrong)'}
+      </button>
+    </form>
   )
 }
 ```
 
-## useOptimistic for instant feedback
-
-`useOptimistic` lets you show the expected result immediately, before the server responds. You render the optimistic list, add the new item on submit, and React reconciles once the real data arrives.
-
 ```tsx
-// app/thread.tsx — optimistic update before the action resolves
+// app/submit-button-right.tsx
 'use client'
 
-import { useOptimistic } from 'react'
-import { send } from './actions'
+import { useFormStatus } from 'react-dom'
+
+function SubmitStatus() {
+  const { pending } = useFormStatus()
+  return (
+    <button disabled={pending} type="submit">
+      {pending ? 'Saving...' : 'Save (right)'}
+    </button>
+  )
+}
+
+export function FormRight({ action }: { action: (formData: FormData) => void }) {
+  return (
+    <form action={action}>
+      <input name="title" />
+      <SubmitStatus />
+    </form>
+  )
+}
+```
+
+Both compile and both run. The difference only shows up while an action is in flight, so it is easy for an AI-generated snippet to look correct and still be wrong. Running both against the same 15-second `slowSave` action in a real browser (Next.js 16.3.6, React 19.2.8) and reading each button's status 200ms after clicking submit:
+
+```text
+FormRight  -> "pending: true"   (SubmitStatus is a child of <form>)
+FormWrong  -> "pending: false"  (useFormStatus is in the same component as <form>, never true)
+```
+
+## useOptimistic for instant feedback, with rollback on failure
+
+`useOptimistic` lets you show the expected result immediately, before the server responds. You render the optimistic list, add the new item on submit, and React reconciles once the real data arrives — and if the action throws instead of resolving, React discards the pending optimistic update and the UI reverts to the last confirmed state.
+
+```ts
+// app/thread-actions.ts
+'use server'
+
+export async function send(message: string) {
+  await new Promise((r) => setTimeout(r, 300))
+  if (message === 'boom') {
+    throw new Error('send failed')
+  }
+}
+```
+
+```tsx
+// app/thread.tsx
+'use client'
+
+import { useOptimistic, useState } from 'react'
+import { send } from './thread-actions'
 
 type Message = { message: string }
 
-export function Thread({ messages }: { messages: Message[] }) {
+export function Thread() {
+  const [messages, setMessages] = useState<Message[]>([{ message: 'hello' }])
   const [optimistic, addOptimistic] = useOptimistic<Message[], string>(
     messages,
     (state, next) => [...state, { message: next }],
   )
+  const [status, setStatus] = useState('idle')
 
   async function action(formData: FormData) {
     const message = String(formData.get('message'))
     addOptimistic(message)
-    await send(message)
+    setStatus('sending')
+    try {
+      await send(message)
+      setMessages((m) => [...m, { message }])
+      setStatus('idle')
+    } catch (e) {
+      setStatus('error: ' + (e as Error).message)
+    }
   }
 
   return (
@@ -129,6 +246,17 @@ export function Thread({ messages }: { messages: Message[] }) {
 }
 ```
 
+Submitting the message `"boom"` against an action that rejects that exact value (Next.js 16.3.6, React 19.2.8, in a real browser) produces this sequence:
+
+```text
+before submit  -> list: "hello"
+100ms later    -> list: "hello, boom"          (optimistic entry showing already)
+600ms later    -> list: "hello"                (action rejected — optimistic entry rolled back)
+                  status: "error: send failed"
+```
+
+The optimistic message never becomes part of the confirmed `messages` state, because `setMessages` only runs in the `try` branch — `useOptimistic` itself throws away the pending update once the action's promise rejects.
+
 <Mermaid title="Baseline submit then hydrated upgrade" code={diagramSa2En} />
 
 export const diagramSa2En = `
@@ -139,8 +267,51 @@ graph TD
   D --> E["useActionState + useFormStatus + useOptimistic"]
 `;
 
+## Mental Model
+
+`useActionState`, `useFormStatus`, and `useOptimistic` are three independent lenses on the same in-flight request, not three parts of one API. `useActionState` lives on the component that owns the action and its result. `useFormStatus` lives on a descendant of the `<form>` and only ever reports that form's status. `useOptimistic` lives wherever you render the list that should feel instant, and it unwinds itself automatically the moment the action's promise rejects.
+
+## Trade-offs
+
+| Hook | What it gives you | Cost |
+|---|---|---|
+| `useActionState` | Return value, bound form action, pending flag, in one hook | Action signature must be `(prevState, formData)` — a real type error if it isn't |
+| `useFormStatus` | No prop drilling for pending state | Only works from a descendant of the `<form>` — not the component that renders it |
+| `useOptimistic` | Instant feedback before the server responds | You must handle the rejection path yourself, or the optimistic entry lingers forever |
+
+## Common Misconceptions
+
+- **"Any async function works with `useActionState`."** Only one whose first parameter is the previous state does — a plain `(formData) => ...` action fails to type-check.
+- **"`useFormStatus` reads whichever form is nearest in the file."** It reads the nearest form *ancestor in the render tree*. The component that renders `<form>` itself is not that form's descendant.
+- **"`useOptimistic` needs a manual rollback call."** It does not — the rollback is automatic once the action's promise rejects. What you must write yourself is the error state your UI shows afterward.
+
+## Reading AI-generated code
+
+When a generated snippet uses these hooks, check for these before trusting it:
+
+- Does the action passed to `useActionState` take `(prevState, formData)`, or does it still take only `formData` from an earlier, plain-action version?
+- Is `useFormStatus` called in a component that is a **child** of `<form>`, or in the same component that renders the `<form>` tag?
+- If `useOptimistic` is used, does the surrounding code have a `try/catch` (or `.catch`) around the action call, so the rejection path actually runs? Without it, the promise rejection is unhandled even though the optimistic UI still rolls back.
+- Does the confirmed state (`setMessages` here) only update inside the success path, so a failed action can never "confirm" data that was never written?
+
+<SpotTheBug code={`'use client'
+
+import { useFormStatus } from 'react-dom'
+
+export function SaveButton({ action }: { action: (formData: FormData) => void }) {
+  const { pending } = useFormStatus()
+  return (
+    <form action={action}>
+      <input name="title" />
+      <button disabled={pending}>{pending ? 'Saving...' : 'Save'}</button>
+    </form>
+  )
+}`}>
+`useFormStatus` is called in `SaveButton`, the same component that renders the `<form>` element — not in a component nested *inside* it. Per React's own docs, `useFormStatus` "will only return status information for a parent `<form>`," and this component is not a child of its own form. The button compiles and renders, but `pending` stays `false` for the entire submission — proven in a real browser against a 15-second action, `useFormStatus` here read `pending: false` the whole time while an identical hook one component level down read `pending: true`. The fix is to extract the button into its own component and render it as a child of `<form>`.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-A form action mutates even without JavaScript, and `useActionState`, `useFormStatus`, and `useOptimistic` layer on pending, validation errors, and optimistic UI once hydrated.
+A form action mutates even without JavaScript, and `useActionState`, `useFormStatus`, and `useOptimistic` layer on pending, validation errors, and rollback-on-failure once hydrated — but each has a real, provable placement or signature requirement that AI-generated code frequently gets wrong.
 </Callout>
 
 export const quizSa2En = [
@@ -153,6 +324,7 @@ export const quizSa2En = [
       'It secretly polls an API route',
     ],
     answer: 1,
+    explain: 'The action is wired to a real <form>, so the browser can submit it as a plain HTTP POST with no JavaScript involved at all.',
   },
   {
     q: 'What does useActionState give you back?',
@@ -163,16 +335,40 @@ export const quizSa2En = [
       'The raw FormData object',
     ],
     answer: 1,
+    explain: 'useActionState returns a three-item tuple: the latest state, a form action to bind, and a pending flag.',
   },
   {
-    q: 'Where must useFormStatus be called to read the form pending state?',
+    q: '```ts\nasync function createTodoPlain(formData: FormData) {\n  return { ok: true }\n}\n\nuseActionState(createTodoPlain, { ok: false })\n```\nDoes this compile?',
     options: [
-      'In the Server Action itself',
-      'In the same component that renders the form tag',
-      'In a child component of the form',
-      'In the root layout',
+      'Yes, useActionState accepts any async function',
+      'No — the action must take (prevState, formData), not just (formData)',
+      'Yes, but only if the action is marked "use server"',
+      'No — useActionState requires a synchronous action',
     ],
-    answer: 2,
+    answer: 1,
+    explain: "TypeScript rejects this: useActionState's overloads expect the action's first parameter to be the previous state, and a plain (formData) action does not match either overload.",
+  },
+  {
+    q: '```tsx\nfunction SaveButton({ action }) {\n  const { pending } = useFormStatus()\n  return <form action={action}><button disabled={pending}>Save</button></form>\n}\n```\nWhat is wrong here?',
+    options: [
+      'Nothing — this correctly disables the button while pending',
+      'useFormStatus is called in the same component as <form>, so pending never becomes true',
+      'useFormStatus cannot be used with disabled buttons',
+      'The form is missing a formAction attribute',
+    ],
+    answer: 1,
+    explain: 'useFormStatus only reports status for an ancestor form. The component that renders <form> itself is not a descendant of it, so pending stays false the whole time — proven against a real 15-second action in a browser.',
+  },
+  {
+    q: 'If the action passed to useOptimistic throws, what happens to the optimistic entry?',
+    options: [
+      'It stays in the list permanently',
+      'React automatically rolls it back to the last confirmed state',
+      'The whole component unmounts',
+      'It is retried automatically up to three times',
+    ],
+    answer: 1,
+    explain: "Proven in a real browser: submitting a message that makes the action reject shows the optimistic entry for a moment, then the list reverts to its last confirmed state once the promise rejects — no manual rollback code needed.",
   },
   {
     q: 'What is the purpose of useOptimistic?',
@@ -183,6 +379,7 @@ export const quizSa2En = [
       'To retry the action automatically on failure',
     ],
     answer: 1,
+    explain: 'useOptimistic renders an expected value immediately, then reconciles with the real result — or rolls back automatically if the action fails.',
   },
 ];
 
