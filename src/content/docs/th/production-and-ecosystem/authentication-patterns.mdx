@@ -1,6 +1,6 @@
 ---
 title: Pattern การทำ Authentication
-description: session และ cookie ทำ optimistic check ใน proxy แต่ทำ authorization จริงใน Data Access Layer และทำไม proxy อย่างเดียวไม่พอ
+description: แยก authentication กับ authorization ให้ชัด, session กับ cookie attribute, stateless vs database session, forbidden()/unauthorized(), และทำไม proxy อย่างเดียวไม่พอ
 sidebar:
   order: 2
 ---
@@ -9,10 +9,20 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
 ทำ optimistic check เบา ๆ ใน proxy เพื่อ redirect request ที่ไม่ auth ชัด ๆ ออกไป แต่ทำ authorization จริงให้ใกล้ data ที่สุด ใน Data Access Layer ที่ verify session ก่อนจะ return อะไรออกมา
+
+## Authentication vs Authorization
+
+สองคำนี้มักถูกใช้ปนกัน แต่จริง ๆ มันตอบคำถามคนละคำถาม:
+
+- **Authentication (authn)**: *คนนี้คือใคร?* verify ว่า user เป็นคนที่เขาอ้างจริงไหม — เช็ก password, session cookie ที่ valid, token ที่ verify แล้ว
+- **Authorization (authz)**: *เขาทำอะไรได้บ้าง?* เมื่อรู้ identity ที่ authenticate แล้ว ตัดสินว่าเขาเข้าถึง route นี้, record นี้ หรือทำ mutation นี้ได้ไหม
+
+request หนึ่งอาจ authenticated แล้ว (มี session valid) แต่ยัง unauthorized อยู่ก็ได้ (user คนนั้นแค่ไม่ใช่ admin) การแยกสองอย่างนี้ให้ชัดสำคัญตรงที่ว่า check ควรอยู่ตรงไหน: authentication มักเกิดครั้งเดียวต่อ request (resolve session) ส่วน authorization เกิดต่อ resource ตรงก่อนที่จะแตะ data ที่ resource นั้นป้องกันอยู่
 
 ## Session และ cookie
 
@@ -30,9 +40,86 @@ export async function getSession() {
 }
 ```
 
+### Cookie attribute และเหตุผลที่แต่ละตัวสำคัญ
+
+การ set session cookie ไม่ใช่แค่ `cookies().set('session', value)` — option แต่ละตัวในตารางข้างล่างปิดช่องโหว่จริง ๆ คนละแบบ `cookies().set(name, value, options)` เรียกได้เฉพาะใน Server Function หรือ Route Handler เท่านั้น (HTTP ห้าม set cookie หลัง streaming เริ่มไปแล้ว)
+
+| Option | Type | ป้องกันอะไร |
+|---|---|---|
+| `httpOnly` | `boolean` | บล็อกไม่ให้ client-side JavaScript (`document.cookie`) อ่าน cookie — กัน session ถูกขโมยผ่าน XSS payload |
+| `secure` | `boolean` | ส่ง cookie เฉพาะผ่าน HTTPS — กัน cookie รั่วบน connection HTTP ธรรมดา |
+| `sameSite` | `boolean \| 'lax' \| 'strict' \| 'none'` | คุมว่า cookie ถูกส่งไปกับ cross-site request หรือเปล่า — เป็นด่านหลักกัน CSRF |
+| `path` | `string`, default `'/'` | จำกัด cookie ให้อยู่แค่ path หนึ่งภายใน domain |
+| `expires` / `maxAge` | `Date` / `number` | จำกัดว่า cookie ที่ถูกขโมยไปจะยัง valid ได้นานแค่ไหน |
+| `domain` | `string` | domain ไหนที่ cookie ใช้ได้ |
+| `partitioned` | `boolean` | เปิดใช้ [CHIPS](https://github.com/privacycg/CHIPS) partitioned storage สำหรับ third-party context |
+
+```ts
+// app/lib/session.ts — set a session cookie with the recommended attributes
+import 'server-only'
+import { cookies } from 'next/headers'
+import { encrypt } from '@/app/lib/crypto'
+
+export async function createSession(userId: string) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const session = await encrypt({ userId, expiresAt })
+  const cookieStore = await cookies()
+
+  cookieStore.set('session', session, {
+    httpOnly: true,
+    secure: true,
+    expires: expiresAt,
+    sameSite: 'lax',
+    path: '/',
+  })
+}
+```
+
+## Stateless vs Database session
+
+session มีสองแบบ trade-off คือความง่ายกับการควบคุม:
+
+| | Stateless session | Database session |
+|---|---|---|
+| **data อยู่ที่ไหน** | encrypt/sign ตรงใน cookie เลย | เป็น row ใน database; cookie เก็บแค่ session ID |
+| **อ่าน session** | decrypt cookie — ไม่มี I/O | lookup session ID — query เพิ่มหนึ่งครั้ง (หรือมี cache คั่น) |
+| **revoke session ก่อนหมดอายุ** | ยาก — cookie ครบในตัวเองและ valid จนกว่าจะหมดอายุ | ง่าย — ลบ row แล้ว session ตายทันที |
+| **track active session / "log out ทุกที่"** | ทำไม่ได้ถ้าไม่มี bookkeeping เพิ่ม | ทำได้เป็นธรรมชาติ — query row ทั้งหมดของ user |
+| **เหมาะกับ** | แอปง่าย ๆ overhead จัดการ session ต่ำ | แอปที่ต้องการ revoke, track device หรือ audit session |
+
+```ts
+// app/lib/session.ts — stateless: the whole session lives in the signed cookie
+import 'server-only'
+import { SignJWT, jwtVerify } from 'jose'
+
+const encodedKey = new TextEncoder().encode(process.env.SESSION_SECRET)
+
+export async function encrypt(payload: { userId: string; expiresAt: Date }) {
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(encodedKey)
+}
+```
+
+```ts
+// app/lib/session.ts — database: the cookie only carries an opaque session id
+import { cookies } from 'next/headers'
+import { db } from '@/app/lib/db'
+
+export async function createSession(userId: string) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const [{ id }] = await db.insert(sessions).values({ userId, expiresAt }).returning({ id: sessions.id })
+
+  const cookieStore = await cookies()
+  cookieStore.set('session', id, { httpOnly: true, secure: true, expires: expiresAt, sameSite: 'lax', path: '/' })
+}
+```
+
 ## Optimistic check ใน proxy
 
-proxy (`proxy.ts`) เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render วิธีนี้เร็วก็จริง แต่แค่ redirect ห้ามใช้เป็นด่านเดียว
+proxy (`proxy.ts`) เป็นที่ที่เหมาะกับ gate แบบ optimistic ราคาถูก ถ้าไม่มี session ชัด ๆ ก็ redirect ก่อน render วิธีนี้เร็วก็จริง แต่แค่ redirect ห้ามใช้เป็นด่านเดียว เพราะ proxy รันทุก route รวมถึง [prefetched route](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/) ด้วย ตรงนี้อ่าน session จาก cookie อย่างเดียวพอ — ห้าม query database ใน proxy เด็ดขาด
 
 ```ts
 // proxy.ts — optimistic redirect only
@@ -73,19 +160,136 @@ export const verifySession = cache(async () => {
 
 จากนั้นทุก page, Server Action หรือ route handler ที่แตะ data ที่ป้องกันไว้จะเรียก `verifySession()` ก่อน สำหรับโปรเจกต์จริง library อย่าง NextAuth (Auth.js), Clerk หรือ Better Auth จัดการ session, provider และ token ให้ แต่ pattern DAL สำหรับ authorization ก็ยังต้องวางทับ library พวกนี้อยู่ดี
 
+## forbidden() และ unauthorized()
+
+นอกจาก `redirect('/login')` ธรรมดา Next.js มี function เฉพาะทางสองตัวสำหรับ authorization failure — และ ณ 16.3.6 **ทั้งคู่ยัง experimental อยู่** ต้องเปิดผ่าน `experimental.authInterrupts` ใน `next.config.ts`:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    authInterrupts: true,
+  },
+}
+
+export default nextConfig
+```
+
+- **`unauthorized()`** — throw, render `unauthorized.tsx` ที่ใกล้ที่สุด แล้ว return `401` จริง ใช้ตอน "คุณยังไม่ได้ sign in"
+- **`forbidden()`** — throw, render `forbidden.tsx` ที่ใกล้ที่สุด แล้ว return `403` จริง ใช้ตอน "sign in แล้ว แต่นี่ไม่ใช่ของคุณ"
+
+```ts
+// app/admin/page.tsx
+import { forbidden } from 'next/navigation'
+
+async function verifySession() {
+  // Real apps call the DAL from the previous section; inlined here so the
+  // snippet has no cross-file dependency.
+  return { role: 'user' as string }
+}
+
+export default async function AdminPage() {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    forbidden()
+  }
+  return <div>Admin Dashboard</div>
+}
+```
+
+```tsx
+// app/admin/forbidden.tsx — rendered in place of the page when forbidden() throws
+export default function Forbidden() {
+  return <h1>403 - Forbidden</h1>
+}
+```
+
+พิสูจน์ทั้งสองด้านนี้ใน probe: เรียก `forbidden()` โดยปิด flag ไว้ทำให้ build พังตรง ๆ —
+
+```text
+Error: `forbidden()` is experimental and only allowed to be enabled when `experimental.authInterrupts` is enabled.
+```
+
+— และเปิด flag แล้ว route เดียวกันก็ return status code จริงพร้อม UI ของเราเอง:
+
+```text
+HTTP 403
+<title>403: This page could not be accessed.</title>
+<meta name="robots" content="noindex"/>
+<h1>403 - Forbidden</h1>
+```
+
+ทั้งสอง function ทำงานด้วยการ throw (TypeScript return type เป็น `never`) นี่คือเหตุผลที่ `try/catch` ล้อมรอบมันคือ bug จริง ไม่ใช่แค่เรื่อง style: มันกลืน throw ไป แล้ว UI ของ `forbidden`/`unauthorized` ก็ไม่ render เลย ถ้า call นั้นอยู่หลัง promise ที่ไม่เคย `await` ก็เกิดผลแบบเดียวกัน — rejection ไม่มีอะไรมาจับ
+
+## Mental Model
+
+นึกภาพ authentication เป็นด่านตรวจ passport ที่ชายแดน — มันถามแค่ "คนนี้มีตัวตนจริงไหม และเป็นคนที่เขาอ้างไหม" แล้วเกิดครั้งเดียว authorization คือยามรักษาความปลอดภัย *ข้างใน* ตึกที่เช็กทุกประตูว่าคนที่ verify แล้วคนนี้ผ่านประตู *นี้* เฉพาะได้ไหม proxy คือคนต้อนรับหน้าประตูทางเข้าที่แค่เหลือบดูรูปใน passport ส่วน DAL คือยามที่ทุกประตูที่เช็ก badge กับ access list จริง ๆ ก่อนจะเปิดให้
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| Stateless session | อ่านได้โดยไม่ต้อง round-trip ไป database | revoke ก่อนหมดอายุไม่ได้ถ้าไม่มี state เพิ่ม |
+| Database session | revoke ได้ทันที, "log out ทุกที่" ได้ | ต้อง lookup เพิ่ม (หรือมี cache) ทุกครั้งที่อ่าน session |
+| Optimistic check ใน proxy | เร็ว รวมศูนย์ redirect กรณีชัด ๆ ได้ก่อน | ไม่ authoritative — bypass หรือถูก matcher/prefetch ข้ามได้ |
+| `verifySession()` ใน DAL | จุดเดียวที่ authoritative จริง | ต้องเรียกเองทุกที่ที่แตะ protected data |
+| `forbidden()` / `unauthorized()` | status code จริง + UI เฉพาะ throw ครั้งเดียว | ยัง experimental — ต้องมี `authInterrupts` และ `try/catch` หลงเหลือจะกลืนมันแบบเงียบ ๆ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **authentication กับ authorization คือ check เดียวกัน** — authentication ยืนยัน identity, authorization ตัดสินว่า identity นั้นทำอะไรได้บ้าง user ที่ login แล้วก็ยัง unauthorized สำหรับ resource บางอันได้
+- **stateless (แบบ JWT) session "ลบ" ได้ง่าย ๆ** — ทำไม่ได้ cookie ครบในตัวเองและ valid จนหมดอายุ เว้นแต่จะมี blocklist ฝั่ง server เพิ่ม (ซึ่งก็ดึง database round-trip ที่พยายามเลี่ยงกลับมาอยู่ดี)
+- **`forbidden()` กับ `unauthorized()` เป็น API ที่ stable ใช้ทั่วไปได้แล้ว** — ณ 16.3.6 ทั้งคู่ยัง experimental และต้องมี `experimental.authInterrupts: true` ไม่ใส่ flag จะทำให้ build พังพร้อม error ชัดเจน ไม่ใช่ fallback แบบเงียบ ๆ
+- **ห่อ `forbidden()`/`unauthorized()` ด้วย `try/catch` คือโค้ด defensive เฉย ๆ** — ทั้งคู่ทำงานด้วยการ throw `try/catch` ที่ล้อมมันจะกลืน interrupt แล้ว UI ของ forbidden/unauthorized ก็ไม่ render เลย
+- **redirect ระดับ proxy คือ authorization** — มันเป็นแค่ hint แบบ optimistic proxy ถูกข้ามได้ด้วยช่องว่างของ matcher, ไม่ re-run ทุกครั้งที่ client navigate แบบที่ layout อาจสมมติไว้ และ (ตาม CVE-2025-29927) เคย bypass ได้ทั้งดุ้นมาแล้วในอดีต
+
 <Mermaid title="gate แบบ optimistic ใน proxy, check ตัวจริงใน DAL" code={diagramAuthTh} />
 
 export const diagramAuthTh = `
 graph TD
-  A["Request"] --> B["proxy: optimistic redirect"]
+  A["Request"] --> B["proxy: optimistic redirect (authn only)"]
   B --> C["Page / Server Action"]
   C --> D["verifySession() in DAL"]
   D -->|no session| E["redirect to /login"]
-  D -->|valid| F["Return protected data"]
+  D -->|valid, wrong role| F["forbidden()"]
+  D -->|valid| G["Return protected data"]
 `;
 
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาจัดการ auth ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- มันใช้ `forbidden()` / `unauthorized()` โดยไม่มี `experimental.authInterrupts: true` ใน `next.config.ts` หรือเปล่า? แบบนี้ทำให้ build พังพร้อม error ชัดเจนใน 16.3.6 — ไม่ใช่ no-op เงียบ ๆ
+- `forbidden()`/`unauthorized()`/`redirect()` ถูกห่อด้วย `try/catch` ที่ไหนหรือเปล่า? ทั้งสามตัวทำงานด้วยการ throw — `try/catch` ที่ล้อมจะกลืน interrupt แบบเงียบ ๆ
+- `cookies().set('session', value)` ข้าม options object ไปเลยหรือเปล่า? cookie ที่ไม่มี `httpOnly`/`secure`/`sameSite` ถูก script ที่แทรกเข้ามาอ่านได้และส่งข้าม site ได้
+- โค้ดถือว่า redirect ระดับ proxy คือ authorization check โดยไม่มี `verifySession()` เรียกใน DAL, page, Server Action หรือ Route Handler ที่แตะ data จริง ๆ หรือเปล่า?
+- มันสับสนระหว่าง "login แล้ว" กับ "อนุญาตแล้ว" หรือเปล่า? check แบบ `if (session) return data` ข้าม authorization ไปเลย — มันแค่ยืนยัน authentication เท่านั้น
+- สำหรับ stateless (JWT) session โค้ดสมมติว่ามี function "delete session" ฝั่ง server อยู่หรือเปล่า? revoke ทำไม่ได้ถ้าไม่มี database session หรือ blocklist
+
+<SpotTheBug code={`// app/admin/page.tsx
+import { verifySession } from '@/app/lib/dal'
+import { forbidden } from 'next/navigation'
+
+export default async function AdminPage() {
+  const session = await verifySession()
+
+  try {
+    if (session.role !== 'admin') {
+      forbidden()
+    }
+  } catch {
+    // ignore and keep rendering
+  }
+
+  return <AdminDashboard />
+}`}>
+`forbidden()` ทำงานด้วยการ throw — return type ของมันคือ `never` การห่อด้วย `try/catch` จับ throw นั้นแล้วกลืนไป ดังนั้น comment ใน catch block ("ignore and keep rendering") คือสิ่งที่เกิดขึ้นจริง: user ที่ไม่ใช่ admin ก็ยังตกลงมาเห็น `<AdminDashboard />` อยู่ดี ทางแก้คือห้ามห่อ `forbidden()`/`unauthorized()`/`redirect()` ด้วย `try/catch` เด็ดขาด — ถ้าตรงรอบ ๆ call นั้นจำเป็นต้องมี catch จริง ๆ ให้ใช้ `unstable_rethrow` ข้างใน `catch` เพื่อปล่อยให้ interrupt propagate ต่อไป
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-ใช้ proxy ทำ optimistic redirect เร็ว ๆ แต่วาง authorization check ตัวจริงไว้ใน Data Access Layer ที่ verify session ก่อน return data
+ใช้ proxy ทำ optimistic redirect เร็ว ๆ แต่วาง authorization check ตัวจริงไว้ใน Data Access Layer ที่ verify session ก่อน return data — และห้ามให้ `try/catch` ล้อมรอบ `forbidden()`, `unauthorized()` หรือ `redirect()` เด็ดขาด
 </Callout>
 
 export const quizAuthTh = [
@@ -98,36 +302,80 @@ export const quizAuthTh = [
       'hook useCookie()',
     ],
     answer: 1,
+    explain: 'cookies() จาก next/headers อ่าน cookie ของ incoming request ฝั่ง server ได้ ทั้งใน Server Component, Server Function และ Route Handler',
   },
   {
-    q: 'proxy ควรทำอะไรสำหรับ auth',
+    q: 'ความต่างหลักระหว่าง authentication กับ authorization คืออะไร',
     options: [
-      'รัน authorization check แบบเต็ม',
-      'optimistic redirect เบา ๆ',
-      'query database เพื่อเช็ค permission',
-      'ไม่ทำอะไรเลย auth ใช้ proxy ไม่ได้',
+      'เป็นชื่อสองชื่อของ check เดียวกัน',
+      'authentication ยืนยัน identity; authorization ตัดสินว่า identity นั้นเข้าถึงอะไรได้',
+      'authorization รันก่อนเสมอ แล้วค่อย authentication',
+      'authentication ใช้ได้แค่กับ API route เท่านั้น',
     ],
     answer: 1,
+    explain: 'authentication ตอบ "คนนี้คือใคร" — authorization ตอบ "เขาทำอะไรได้บ้าง" user คนหนึ่ง authenticated แล้วก็ยัง unauthorized สำหรับ resource บางอันได้',
   },
   {
-    q: 'ทำไม proxy อย่างเดียวถึงไม่พอสำหรับ authorization',
+    q: `\`\`\`ts
+// next.config.ts
+const nextConfig = {}
+\`\`\`
+\`\`\`ts
+// app/admin/page.tsx
+import { forbidden } from 'next/navigation'
+forbidden()
+\`\`\`
+route นี้จะเกิดอะไรขึ้นตอน build ด้วย Next.js 16.3.6?`,
     options: [
-      'มันอ่าน cookie ไม่ได้',
-      'matcher อาจข้ามบาง path, layout ไม่ re-run ทุกครั้งที่ navigate และมันถูก bypass ได้',
-      'มันรันแค่ตอน development',
-      'มัน redirect request ไม่ได้',
+      'build ผ่านปกติ และ return 403',
+      'build พัง: forbidden() ต้องเปิด experimental.authInterrupts ก่อน',
+      'fallback ไปเป็นหน้า 404 แบบเงียบ ๆ',
+      'พังเฉพาะตอน development เท่านั้น ไม่พังตอน production build',
     ],
     answer: 1,
+    explain: 'ณ 16.3.6 forbidden() และ unauthorized() ยัง experimental และต้องมี experimental.authInterrupts: true ใน next.config.ts ถ้าไม่ใส่ next build จะพังพร้อม error ชัดเจน',
   },
   {
-    q: 'authorization check ตัวจริงควรอยู่ตรงไหน',
+    q: 'ทำไม database session ถึง revoke ง่ายกว่า stateless (แบบ JWT) session',
     options: [
-      'ใน Data Access Layer ที่อยู่ใกล้ data',
-      'ใน proxy เท่านั้น',
-      'ใน browser ก่อน fetch',
-      'ใน root layout เท่านั้น',
+      'database session ถูก encrypt แต่ JWT ไม่ถูก encrypt',
+      'ลบ row ของ session ทำให้มันใช้ไม่ได้ทันที; stateless cookie ยัง valid จนกว่าจะหมดอายุ',
+      'stateless session อ่านฝั่ง server ไม่ได้',
+      'ไม่มีความต่าง — revoke ได้เหมือนกันทั้งคู่',
     ],
-    answer: 0,
+    answer: 1,
+    explain: 'database session คือ row บวก cookie ID ที่ไม่มีความหมายในตัวเอง — ลบ row แล้วการเข้าถึงก็จบ ส่วน stateless session ครบในตัวเองใน cookie และยัง valid จนหมดอายุ เพราะไม่มี record ฝั่ง server ให้ลบ',
+  },
+  {
+    q: `\`\`\`ts
+export async function AdminPage() {
+  const session = await verifySession()
+  try {
+    if (session.role !== 'admin') forbidden()
+  } catch {}
+  return <Dashboard />
+}
+\`\`\`
+โค้ดนี้ผิดตรงไหน?`,
+    options: [
+      'ไม่ผิด — try/catch เป็น defensive practice ที่ดีตรงนี้',
+      'forbidden() throw เพื่อ render UI 403; try/catch กลืนมันไป ทำให้ non-admin ยังเห็น Dashboard อยู่ดี',
+      'forbidden() ต้อง await และโค้ดนี้ลืม await',
+      'verifySession() เรียกใน try/catch ไม่ได้',
+    ],
+    answer: 1,
+    explain: 'forbidden() (เหมือน redirect() และ unauthorized()) ทำงานด้วยการ throw try/catch ที่ล้อมมันจับ throw นั้นไว้ execution จึงตกไปที่ return <Dashboard /> ไม่ว่า role จะเป็นอะไร ซึ่งเป็น bug ด้าน access-control ตรงจุดที่มันควรจะป้องกันเลย',
+  },
+  {
+    q: 'cookie option ตัวไหนคือด่านหลักในการกัน CSRF',
+    options: [
+      'httpOnly',
+      'secure',
+      'sameSite',
+      'path',
+    ],
+    answer: 2,
+    explain: 'sameSite คุมว่า cookie ถูกส่งไปพร้อม cross-site request หรือเปล่า ซึ่งเป็นเครื่องมือหลักในการกัน CSRF ส่วน httpOnly กัน client-side JS อ่าน (กัน XSS) และ secure บังคับ HTTPS',
   },
 ];
 

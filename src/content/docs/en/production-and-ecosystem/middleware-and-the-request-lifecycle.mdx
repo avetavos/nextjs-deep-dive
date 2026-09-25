@@ -1,6 +1,6 @@
 ---
 title: Proxy (Middleware) and the Request Lifecycle
-description: How proxy.ts — the Next.js 16 name for middleware.ts — runs before a request completes on every matching route, how to scope it with matcher, and why it always runs on the Node.js runtime.
+description: How proxy.ts — the Next.js 16 name for middleware.ts — runs before a request completes on every matching route, how to scope it with matcher, how headers propagate to Server Components, and why it always runs on the Node.js runtime.
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -37,20 +38,19 @@ export function proxy(request: NextRequest) {
 }
 ```
 
-## Scope it with matcher
+Proxy also runs before every entry in the Next.js execution chain — `next.config.ts` `headers`/`redirects` run first, then proxy, then filesystem routes and rewrites. One consequence that trips people up: [Server Actions](/nextjs/en/server-actions-and-mutations/security-and-patterns/) are not separate routes in that chain — they are POST requests to the page where they're used, so a `matcher` that excludes a path also silently skips every Server Action call on that path.
 
-Without a `matcher`, proxy runs on every request — including static assets. Scope it so it only runs where you need it. The `matcher` config accepts path patterns and can exclude internals.
+## NextResponse.next() vs redirect() vs rewrite()
 
-```ts
-// proxy.ts — scope which routes run proxy
-export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
-}
-```
+Proxy can produce a response in three different ways, and each means something different for the browser and for your app:
 
-## Redirects, rewrites, and the Node.js runtime
+| Call | What the browser sees | What runs next |
+|---|---|---|
+| `NextResponse.next()` | Nothing — the request continues normally | The matched page or Route Handler renders |
+| `NextResponse.redirect(url)` | A new URL in the address bar (3xx response) | A brand-new request to `url` |
+| `NextResponse.rewrite(url)` | The original URL stays in the address bar | The content at `url` renders instead — same URL, different content |
 
-Use proxy for redirects, rewrites (same URL, different content), and setting headers or cookies. A rewrite serves different content without changing the browser URL — useful for A/B tests or geo routing.
+Use `redirect` when the user should end up somewhere else (send them to `/login`). Use `rewrite` for A/B tests or geo routing, where the URL should stay the same but the served content should change:
 
 ```ts
 // A/B or geo rewrite — same URL, different content served
@@ -63,24 +63,143 @@ export function proxy(request: NextRequest) {
 }
 ```
 
-Proxy always runs on the Node.js runtime, and that is not configurable — exporting `runtime` from `proxy.ts` is a build error. It still sits in front of every matching request, so keep it fast: no database calls, no heavy computation, no large dependencies. Do the lightweight decision here and push real work to the route.
+## Propagating headers from proxy to a Server Component
+
+Proxy can hand information downstream to the page that ends up rendering — the trick is which argument you set it on. `NextResponse.next({ request: { headers } })` makes the header available to your app's render path; `NextResponse.next({ headers })` only sets it on the response that goes back to the browser. Mixing the two up is an easy, silent mistake, because both compile and both "work" — just for different audiences.
+
+```ts
+// proxy.ts — forward a header to the render path, not just to the browser
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function proxy(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-hello-from-proxy', 'hello')
+
+  // request.headers reaches the Server Component via headers()
+  return NextResponse.next({ request: { headers: requestHeaders } })
+}
+```
+
+```ts
+// app/page.tsx — read the header proxy forwarded
+import { headers } from 'next/headers'
+
+export default async function Page() {
+  const h = await headers()
+  return <div>{h.get('x-hello-from-proxy')}</div>
+}
+```
+
+Proving it in the probe (`next build && next start`, then reading everything `headers()` sees on the server) shows the forwarded header landing right next to the framework's own `x-forwarded-*` headers:
+
+```text
+host=localhost:3416|user-agent=curl/8.18.0|accept=*/*|x-forwarded-host=localhost:3416|x-forwarded-port=3416|x-forwarded-proto=http|x-forwarded-for=::1|x-hello-from-proxy=hello
+```
+
+Proxy always runs on the Node.js runtime, and that is not configurable — exporting `runtime` from `proxy.ts` is a build error. It still sits in front of every matching request, so keep it fast: no database calls, no heavy computation, no large dependencies (and `fetch`'s `cache`/`next.revalidate`/`next.tags` options have no effect inside proxy). Do the lightweight decision here and push real work to the route.
 
 <Callout title="middleware.ts is deprecated">
 The old `middleware.ts` file and `export function middleware` still work in Next.js 16, but `next build` prints a deprecation warning. Migrate with `npx @next/codemod@canary middleware-to-proxy .` — it renames the file and the function. The only reason to keep `middleware.ts` is if you need the (also deprecated) Edge runtime.
 </Callout>
 
-<Mermaid title="Proxy intercepts before the route resolves" code={diagramMwEn} />
+## Matcher pitfalls: static assets and prefetch requests
+
+Without a `matcher`, proxy runs on **every request** — including `_next/static`, `_next/image`, and files in `public/`. An auth check with no matcher can unintentionally block your own CSS and JS from loading. Scope it with a negative-match pattern:
+
+```ts
+// proxy.ts — scope which routes run proxy
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+}
+```
+
+The second trap is subtler: proxy also runs on **prefetch requests**, not just the navigation the user actually lands on. `<Link>` prefetches routes in the background as they enter the viewport, and each of those prefetches goes through proxy too. A Segment Cache prefetch carries the `Next-Router-Prefetch` header (surfaced by Next.js internally as request metadata); an older-style browser prefetch instead carries the standard `purpose: prefetch` header. If your proxy runs a side effect (an analytics ping, a write) on every visit, it will fire for links the user only scrolled past:
+
+```ts
+// Detect a prefetch so proxy doesn't treat it as a real visit
+export function proxy(request: NextRequest) {
+  const isPrefetch =
+    request.headers.get('purpose') === 'prefetch' ||
+    request.headers.get('next-router-prefetch') !== null
+  if (isPrefetch) {
+    return NextResponse.next()
+  }
+  // ... real-visit logic
+}
+```
+
+Because Proxy only performs the cheap, optimistic part of a check, it should never be your only line of defense for auth — see [Authentication Patterns](/nextjs/en/production-and-ecosystem/authentication-patterns/) for why, and where the real check belongs.
+
+## Mental Model
+
+Think of proxy as a doorperson standing in front of every matching route, not a bouncer who verifies IDs against a database. They can glance at what you're carrying (cookies, headers, the URL) and wave you toward a different door (`rewrite`), send you away (`redirect`), or let you straight through (`next()`) — all before anyone inside starts doing real work. What they cannot do: check a guest list against a live database without slowing down every single person who walks by, including the ones just peeking through the window (prefetches).
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Proxy with no matcher | Simplest to write, definitely runs everywhere | Also runs on `_next/static`, `_next/image`, and every prefetch |
+| Proxy with a broad matcher | Fast, centralized redirects for whole route trees | Can accidentally exclude Server Action POSTs on the same path |
+| `NextResponse.next({ request: { headers } })` | Header reaches Server Components via `headers()` | Easy to typo into `{ headers }`, which silently only reaches the browser |
+| Rewrite for A/B / geo routing | URL stays stable for the user and for SEO | The proxy itself must stay fast — no data fetching |
+
+## Common Misconceptions
+
+- **A `matcher` that excludes `/api` also protects Server Actions on other paths.** It does not — Server Actions are POSTs to the page they're defined on, so a matcher that excludes a *page* path also excludes the Server Actions called from that page.
+- **`NextResponse.next({ headers: h })` forwards a header to the Server Component.** It only sets a header on the outgoing response to the browser. Forwarding to the render path requires the nested form: `NextResponse.next({ request: { headers: h } })`.
+- **Proxy only runs when a user actually navigates to a page.** It also runs on prefetch requests fired by `<Link>` as it enters the viewport — detectable via the `purpose: prefetch` or `next-router-prefetch` headers.
+- **Proxy can safely do a real permission check against the database.** It runs in front of every matching request (including prefetches), so a slow check there taxes every visit; the authoritative check belongs close to the data (see the next lesson).
+
+<Mermaid title="Request lifecycle: proxy runs before the route resolves" code={diagramMwEn} />
 
 export const diagramMwEn = `
-graph LR
-  A["Incoming request"] --> B["proxy.ts (Node.js)"]
-  B -->|redirect| C["NextResponse.redirect"]
-  B -->|rewrite| D["NextResponse.rewrite"]
-  B -->|next| E["Route handler / page"]
+graph TD
+  A["Incoming request"] --> B{"Matcher matches?"}
+  B -->|no| F["Route handler / page (proxy skipped)"]
+  B -->|yes| C["proxy.ts (Node.js runtime)"]
+  C -->|redirect| D["NextResponse.redirect — new request"]
+  C -->|rewrite| E["NextResponse.rewrite — same URL, different content"]
+  C -->|next with headers| F
+  F --> G["headers() in Server Component sees forwarded headers"]
 `;
 
+This is the abridged view — the full request lifecycle (proxy → routing → RSC render → cache layers → streaming → hydration → client navigation) gets its own end-to-end walkthrough in [The Request Lifecycle](/nextjs/en/foundations/the-request-lifecycle/).
+
+## Reading AI-generated code
+
+When a generated snippet touches `proxy.ts`, check for these before trusting it:
+
+- Does it still use `middleware.ts` / `export function middleware`? That name is deprecated in Next.js 16 — it still works, but `next build` warns, and generated code trained on older examples reaches for it by default.
+- Is there a `matcher`? If it's missing, proxy runs on every request, including static assets — often invisible in local dev and only noticed as a production perf/behavior surprise.
+- When it forwards a header to the app, does it use `NextResponse.next({ request: { headers } })`, or does it use the flatter `NextResponse.next({ headers })` — which looks almost identical but only reaches the browser, never the Server Component?
+- Does it export a `runtime` from `proxy.ts`? That's a build error — proxy is Node.js-only and not configurable.
+- Does it treat proxy as a place for a database call, a heavy computation, or session verification? That belongs in a Data Access Layer, not proxy — proxy is the optimistic check only.
+- Does it assume proxy only fires on "real" navigations? It also runs for every `<Link>` prefetch — logic with side effects needs to filter those out explicitly.
+
+<SpotTheBug code={`// proxy.ts — supposed to forward a header to the page that renders
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function proxy(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-hello-from-proxy', 'hello')
+
+  return NextResponse.next({ headers: requestHeaders })
+}
+
+// app/page.tsx
+import { headers } from 'next/headers'
+
+export default async function Page() {
+  const h = await headers()
+  return <div>{h.get('x-hello-from-proxy')}</div>
+}`}>
+`NextResponse.next({ headers: requestHeaders })` sets the header only on the *response* sent to the browser — it never reaches the render path. To make it visible to `headers()` in a Server Component, it has to be nested under `request`: `NextResponse.next({ request: { headers: requestHeaders } })`. Both forms compile and neither throws, so this bug only shows up as `h.get('x-hello-from-proxy')` silently returning `null`.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Proxy runs on Node.js before every matching request — use it for fast redirects, rewrites, and headers, and scope it with `matcher` so it never touches routes it should not.
+Proxy runs on Node.js before every matching request (including prefetches) — use it for fast redirects, rewrites, and header forwarding via `NextResponse.next({ request: { headers } })`, scope it with `matcher`, and never put a database check or a slow computation inside it.
 </Callout>
 
 export const quizMwEn = [
@@ -93,6 +212,7 @@ export const quizMwEn = [
       'Only for API routes',
     ],
     answer: 1,
+    explain: 'Proxy intercepts the request after it arrives but before the route is resolved and rendered — it can redirect, rewrite, or forward headers before any render work happens.',
   },
   {
     q: 'What is the matcher config used for?',
@@ -103,6 +223,7 @@ export const quizMwEn = [
       'Selecting the rendering mode',
     ],
     answer: 0,
+    explain: 'Without a matcher, proxy runs on every request, including static assets under _next/static. The matcher scopes it to only the routes that need it.',
   },
   {
     q: 'What runtime does proxy use?',
@@ -113,6 +234,24 @@ export const quizMwEn = [
       'The browser main thread',
     ],
     answer: 0,
+    explain: 'Proxy always runs on the Node.js runtime. Exporting a runtime from proxy.ts is a build error — it is not a configurable option.',
+  },
+  {
+    q: `\`\`\`ts
+// proxy.ts
+const requestHeaders = new Headers(request.headers)
+requestHeaders.set('x-hello-from-proxy', 'hello')
+return NextResponse.next({ headers: requestHeaders })
+\`\`\`
+A Server Component calls \`(await headers()).get('x-hello-from-proxy')\`. What does it get?`,
+    options: [
+      "'hello', because the header was forwarded",
+      'null — this form only sets a header on the response to the browser',
+      'A build error, because headers cannot be set this way',
+      'The header, but only on the first request',
+    ],
+    answer: 1,
+    explain: "NextResponse.next({ headers }) sets a header on the outgoing response only. To forward a header to the render path, it must be nested: NextResponse.next({ request: { headers } }).",
   },
   {
     q: 'Which of these belongs in proxy?',
@@ -123,6 +262,23 @@ export const quizMwEn = [
       'Sending a transactional email',
     ],
     answer: 1,
+    explain: 'Proxy sits in front of every matching request, so it must stay fast. A lightweight cookie-based redirect is exactly the kind of decision it is meant for.',
+  },
+  {
+    q: `\`\`\`ts
+export const config = {
+  matcher: ['/dashboard/:path*'],
+}
+\`\`\`
+A Server Action defined on \`/dashboard/settings\` is called from the client. Does proxy run for that call?`,
+    options: [
+      'Yes — Server Actions are POST requests to the page they are defined on, and this path matches',
+      'No — Server Actions are a separate routing layer that always bypasses proxy',
+      'Only if the matcher also lists the action name',
+      'Only in development, never in production',
+    ],
+    answer: 0,
+    explain: 'Server Actions are handled as POST requests to the route where they are used, not as separate routes — so a matcher that includes /dashboard/settings also covers the Server Actions called from that page (and one that excludes it would silently skip them too).',
   },
 ];
 

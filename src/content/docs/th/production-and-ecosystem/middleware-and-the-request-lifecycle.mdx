@@ -1,6 +1,6 @@
 ---
 title: Proxy (Middleware) และ Request Lifecycle
-description: proxy.ts (ชื่อใหม่ของ middleware.ts ใน Next.js 16) ทำงานก่อน request จะเสร็จบนทุก route ที่ match วิธี scope ด้วย matcher และทำไมมันรันบน Node.js runtime เสมอ
+description: proxy.ts (ชื่อใหม่ของ middleware.ts ใน Next.js 16) ทำงานก่อน request จะเสร็จบนทุก route ที่ match วิธี scope ด้วย matcher วิธีส่ง header ไปถึง Server Component และทำไมมันรันบน Node.js runtime เสมอ
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -37,20 +38,19 @@ export function proxy(request: NextRequest) {
 }
 ```
 
-## จำกัดขอบเขตด้วย matcher
+proxy ยังรันก่อนขั้นตอนอื่น ๆ ทั้งหมดใน execution chain ของ Next.js ด้วย — `headers`/`redirects` ใน `next.config.ts` รันก่อน แล้วค่อยเป็น proxy แล้วค่อย filesystem route กับ rewrite มีจุดหนึ่งที่คนพลาดบ่อย: [Server Action](/nextjs/th/server-actions-and-mutations/security-and-patterns/) ไม่ใช่ route แยกใน chain นี้ — มันคือ POST request ไปที่หน้าที่เรียกใช้มัน ดังนั้น `matcher` ที่ exclude path ไหนก็จะข้าม Server Action call บน path นั้นไปด้วยแบบเงียบ ๆ
 
-ถ้าไม่มี `matcher` proxy จะรันทุก request รวมถึง static asset ด้วย เราจึงควร scope ให้รันเฉพาะจุดที่ต้องการ config `matcher` รับ path pattern และ exclude ส่วน internal ได้
+## NextResponse.next() vs redirect() vs rewrite()
 
-```ts
-// proxy.ts — scope which routes run proxy
-export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
-}
-```
+proxy สร้าง response ได้ 3 แบบ แต่ละแบบมีความหมายต่างกันทั้งฝั่ง browser และฝั่งแอปของเรา:
 
-## Redirect, rewrite และ Node.js runtime
+| เรียก | browser เห็นอะไร | อะไรรันต่อ |
+|---|---|---|
+| `NextResponse.next()` | ไม่เห็นอะไรเปลี่ยน — request ไปต่อตามปกติ | page หรือ Route Handler ที่ match render |
+| `NextResponse.redirect(url)` | URL ใหม่ใน address bar (3xx response) | request ใหม่ไปที่ `url` |
+| `NextResponse.rewrite(url)` | URL เดิมยังอยู่ใน address bar | content ที่ `url` render แทน — URL เดิม content ต่าง |
 
-ใช้ proxy สำหรับ redirect, rewrite (URL เดิมแต่เสิร์ฟ content ต่างกัน) และ set header หรือ cookie การ rewrite เสิร์ฟ content คนละแบบโดยไม่เปลี่ยน URL บน browser เหมาะกับ A/B test หรือ geo routing
+ใช้ `redirect` เมื่อ user ควรไปจบที่หน้าอื่นจริง ๆ (ส่งไป `/login`) ใช้ `rewrite` สำหรับ A/B test หรือ geo routing ที่ URL ต้องเหมือนเดิมแต่ content ที่เสิร์ฟต่างกัน:
 
 ```ts
 // A/B or geo rewrite — same URL, different content served
@@ -63,24 +63,143 @@ export function proxy(request: NextRequest) {
 }
 ```
 
-proxy รันบน Node.js runtime เสมอและเปลี่ยนไม่ได้ ถ้า export `runtime` จาก `proxy.ts` จะ build ไม่ผ่าน แต่มันยังอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
+## ส่ง header จาก proxy ไปยัง Server Component
+
+proxy ส่งข้อมูลต่อไปยัง page ที่ render ได้ — จุดสำคัญคือ set มันไว้ที่ argument ไหน `NextResponse.next({ request: { headers } })` จะทำให้ header ไปถึง render path ของแอป ส่วน `NextResponse.next({ headers })` จะ set แค่บน response ที่กลับไปหา browser เท่านั้น สลับกันสองแบบนี้เป็นความผิดพลาดที่เงียบมาก เพราะ compile ผ่านทั้งคู่และ "ทำงาน" ทั้งคู่ — แค่คนละกลุ่มเป้าหมาย
+
+```ts
+// proxy.ts — forward a header to the render path, not just to the browser
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function proxy(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-hello-from-proxy', 'hello')
+
+  // request.headers reaches the Server Component via headers()
+  return NextResponse.next({ request: { headers: requestHeaders } })
+}
+```
+
+```ts
+// app/page.tsx — read the header proxy forwarded
+import { headers } from 'next/headers'
+
+export default async function Page() {
+  const h = await headers()
+  return <div>{h.get('x-hello-from-proxy')}</div>
+}
+```
+
+พิสูจน์จริงใน probe (`next build && next start` แล้วอ่านทุก header ที่ `headers()` เห็นฝั่ง server) จะเห็น header ที่ forward มาโผล่อยู่ข้าง ๆ header `x-forwarded-*` ของ framework เอง:
+
+```text
+host=localhost:3416|user-agent=curl/8.18.0|accept=*/*|x-forwarded-host=localhost:3416|x-forwarded-port=3416|x-forwarded-proto=http|x-forwarded-for=::1|x-hello-from-proxy=hello
+```
+
+proxy รันบน Node.js runtime เสมอและเปลี่ยนไม่ได้ ถ้า export `runtime` จาก `proxy.ts` จะ build ไม่ผ่าน แต่มันยังอยู่หน้าทุก request ที่ match เพราะฉะนั้นต้องเร็ว ไม่ยิง database ไม่คำนวณหนัก ไม่ใช้ dependency ใหญ่ (และ option `cache`/`next.revalidate`/`next.tags` ของ `fetch` ก็ไม่มีผลใน proxy ด้วย) ตัดสินใจเบา ๆ ตรงนี้แล้วโยนงานจริงไปที่ route
 
 <Callout title="middleware.ts ถูก deprecate แล้ว">
 ไฟล์ `middleware.ts` และ `export function middleware` แบบเดิมยังใช้ได้ใน Next.js 16 แต่ `next build` จะพิมพ์ deprecation warning ออกมา migrate ด้วย `npx @next/codemod@canary middleware-to-proxy .` ซึ่งจะเปลี่ยนชื่อทั้งไฟล์และ function ให้ เหตุผลเดียวที่จะเก็บ `middleware.ts` ไว้คือถ้ายังต้องใช้ Edge runtime (ซึ่งถูก deprecate เช่นกัน)
 </Callout>
 
-<Mermaid title="proxy ดัก request ก่อน route จะถูก resolve" code={diagramMwTh} />
+## กับดักของ matcher: static asset กับ prefetch request
+
+ถ้าไม่มี `matcher` proxy จะรัน**ทุก request** รวมถึง `_next/static`, `_next/image` และไฟล์ใน `public/` ด้วย auth check ที่ไม่มี matcher อาจไปบล็อก CSS กับ JS ของตัวเองโดยไม่ตั้งใจ scope มันด้วย negative-match pattern:
+
+```ts
+// proxy.ts — scope which routes run proxy
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+}
+```
+
+กับดักที่สองแนบเนียนกว่านั้น: proxy ยังรันบน **prefetch request** ด้วย ไม่ใช่แค่ navigation จริงที่ user ไปถึง `<Link>` prefetch route ในพื้นหลังตอนมันเข้า viewport และแต่ละ prefetch พวกนั้นก็วิ่งผ่าน proxy เหมือนกัน Segment Cache prefetch จะมี header `Next-Router-Prefetch` ติดมา (Next.js โชว์มันเป็น request metadata ภายใน) ส่วน browser prefetch แบบเก่าจะมี header มาตรฐาน `purpose: prefetch` แทน ถ้า proxy ของเรามี side effect (ยิง analytics, เขียนอะไรสักอย่าง) ทำทุกครั้งที่มี request มันจะยิงแม้กับลิงก์ที่ user แค่ scroll ผ่าน:
+
+```ts
+// Detect a prefetch so proxy doesn't treat it as a real visit
+export function proxy(request: NextRequest) {
+  const isPrefetch =
+    request.headers.get('purpose') === 'prefetch' ||
+    request.headers.get('next-router-prefetch') !== null
+  if (isPrefetch) {
+    return NextResponse.next()
+  }
+  // ... real-visit logic
+}
+```
+
+เพราะ proxy ทำได้แค่ส่วนที่ optimistic ราคาถูก มันไม่ควรเป็นด่านเดียวสำหรับ auth เด็ดขาด — ดูเหตุผลและตำแหน่งที่ check ตัวจริงควรอยู่ใน [Pattern การทำ Authentication](/nextjs/th/production-and-ecosystem/authentication-patterns/)
+
+## Mental Model
+
+นึกภาพ proxy เป็นคนเปิดประตูที่ยืนอยู่หน้าทุก route ที่ match ไม่ใช่ยามที่ตรวจบัตรประชาชนเทียบกับ database เขาเหลือบดูสิ่งที่คุณถืออยู่ได้ (cookie, header, URL) แล้วโบกให้ไปประตูอื่น (`rewrite`), ไล่กลับ (`redirect`), หรือปล่อยผ่านตรง ๆ (`next()`) — ทั้งหมดนี้ก่อนที่ใครข้างในจะเริ่มทำงานจริง สิ่งที่เขาทำไม่ได้: เช็ก guest list กับ database สด ๆ โดยไม่ทำให้ทุกคนที่เดินผ่านช้าลง รวมถึงคนที่แค่แอบมองผ่านหน้าต่าง (prefetch)
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| proxy ไม่มี matcher | เขียนง่ายสุด รันทุกที่แน่นอน | รันบน `_next/static`, `_next/image` และทุก prefetch ด้วย |
+| proxy ที่มี matcher กว้าง ๆ | redirect เร็ว รวมศูนย์ทั้ง route tree | อาจ exclude Server Action POST บน path เดียวกันไปด้วยโดยไม่ตั้งใจ |
+| `NextResponse.next({ request: { headers } })` | header ไปถึง Server Component ผ่าน `headers()` | พิมพ์ผิดเป็น `{ headers }` ง่ายมาก ซึ่งจะไปถึงแค่ browser เงียบ ๆ |
+| rewrite สำหรับ A/B / geo routing | URL คงที่ทั้งฝั่ง user และฝั่ง SEO | proxy เองต้องเร็วอยู่เสมอ — ห้าม fetch data |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **`matcher` ที่ exclude `/api` จะป้องกัน Server Action บน path อื่นด้วย** — ไม่จริง Server Action คือ POST ไปที่ page ที่มันถูกนิยาม ดังนั้น matcher ที่ exclude path ของ *page* ก็ exclude Server Action ที่ถูกเรียกจาก page นั้นไปด้วย
+- **`NextResponse.next({ headers: h })` ส่ง header ไปถึง Server Component** — มันแค่ set header บน response ขาออกไปหา browser เท่านั้น การส่งไปถึง render path ต้องใช้ nested form: `NextResponse.next({ request: { headers: h } })`
+- **proxy รันเฉพาะตอน user navigate จริง ๆ** — มันรันบน prefetch request ที่ `<Link>` ยิงตอนเข้า viewport ด้วย เช็กได้จาก header `purpose: prefetch` หรือ `next-router-prefetch`
+- **proxy เช็ก permission จริงกับ database ได้อย่างปลอดภัย** — มันรันหน้าทุก request ที่ match (รวม prefetch) ดังนั้น check ที่ช้าตรงนี้จะไปถ่วงทุก visit check ตัวจริงต้องอยู่ใกล้ data (ดูบทถัดไป)
+
+<Mermaid title="Request lifecycle: proxy รันก่อน route จะถูก resolve" code={diagramMwTh} />
 
 export const diagramMwTh = `
-graph LR
-  A["Incoming request"] --> B["proxy.ts (Node.js)"]
-  B -->|redirect| C["NextResponse.redirect"]
-  B -->|rewrite| D["NextResponse.rewrite"]
-  B -->|next| E["Route handler / page"]
+graph TD
+  A["Incoming request"] --> B{"Matcher matches?"}
+  B -->|no| F["Route handler / page (proxy skipped)"]
+  B -->|yes| C["proxy.ts (Node.js runtime)"]
+  C -->|redirect| D["NextResponse.redirect — new request"]
+  C -->|rewrite| E["NextResponse.rewrite — same URL, different content"]
+  C -->|next with headers| F
+  F --> G["headers() in Server Component sees forwarded headers"]
 `;
 
+นี่คือมุมมองแบบย่อ — request lifecycle เต็ม ๆ (proxy → routing → RSC render → cache layers → streaming → hydration → client navigation) จะมีบทเดินเรื่องแบบ end-to-end ของตัวเองใน [The Request Lifecycle](/nextjs/th/foundations/the-request-lifecycle/)
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาแตะ `proxy.ts` ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- มันยังใช้ `middleware.ts` / `export function middleware` อยู่หรือเปล่า? ชื่อนั้นถูก deprecate ใน Next.js 16 แล้ว — ยังใช้ได้แต่ `next build` จะเตือน และโค้ดที่ generate จาก example เก่ามักหยิบชื่อนี้มาใช้เป็น default
+- มี `matcher` หรือเปล่า? ถ้าไม่มี proxy จะรันทุก request รวมถึง static asset — มักมองไม่เห็นตอน dev local แล้วมาเจอเป็นเรื่องผิดปกติด้าน perf/behavior ตอน production
+- ตอน forward header ไปแอป มันใช้ `NextResponse.next({ request: { headers } })` หรือใช้แบบแบน ๆ `NextResponse.next({ headers })` ซึ่งหน้าตาเกือบเหมือนกันแต่ไปถึงแค่ browser ไม่ถึง Server Component เลย?
+- มัน export `runtime` จาก `proxy.ts` หรือเปล่า? นั่นคือ build error — proxy เป็น Node.js-only และ config ไม่ได้
+- มันใช้ proxy เป็นที่ยิง database, คำนวณหนัก หรือ verify session หรือเปล่า? สิ่งนั้นควรอยู่ใน Data Access Layer ไม่ใช่ proxy — proxy ทำได้แค่ optimistic check เท่านั้น
+- มันสมมติว่า proxy รันเฉพาะตอน navigate "จริง" หรือเปล่า? มันรันทุกครั้งที่ `<Link>` prefetch ด้วย — logic ที่มี side effect ต้อง filter พวกนี้ออกเอง
+
+<SpotTheBug code={`// proxy.ts — supposed to forward a header to the page that renders
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function proxy(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-hello-from-proxy', 'hello')
+
+  return NextResponse.next({ headers: requestHeaders })
+}
+
+// app/page.tsx
+import { headers } from 'next/headers'
+
+export default async function Page() {
+  const h = await headers()
+  return <div>{h.get('x-hello-from-proxy')}</div>
+}`}>
+`NextResponse.next({ headers: requestHeaders })` set header ไว้แค่บน *response* ที่ส่งไปหา browser เท่านั้น — มันไม่มีทางไปถึง render path เพื่อให้ `headers()` ใน Server Component เห็นได้ ต้อง nest ไว้ใต้ `request`: `NextResponse.next({ request: { headers: requestHeaders } })` ทั้งสองแบบ compile ผ่านและไม่ throw ดังนั้น bug นี้จะโผล่มาแค่ตอนที่ `h.get('x-hello-from-proxy')` คืนค่า `null` แบบเงียบ ๆ เท่านั้น
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-proxy รันบน Node.js ก่อนทุก request ที่ match ใช้ทำ redirect, rewrite และ header แบบเร็ว ๆ แล้ว scope ด้วย `matcher` เพื่อไม่ให้ไปแตะ route ที่ไม่ควรแตะ
+proxy รันบน Node.js ก่อนทุก request ที่ match (รวม prefetch) ใช้ทำ redirect, rewrite และ forward header ผ่าน `NextResponse.next({ request: { headers } })` แบบเร็ว ๆ scope ด้วย `matcher` และห้ามใส่ database check หรือคำนวณหนักลงไปในนั้นเด็ดขาด
 </Callout>
 
 export const quizMwTh = [
@@ -93,6 +212,7 @@ export const quizMwTh = [
       'เฉพาะ API route',
     ],
     answer: 1,
+    explain: 'proxy ดัก request หลังจากมันมาถึงแต่ก่อน route จะถูก resolve และ render — มัน redirect, rewrite หรือ forward header ได้ก่อนที่งาน render ใด ๆ จะเกิดขึ้น',
   },
   {
     q: 'config matcher ใช้ทำอะไร',
@@ -103,6 +223,7 @@ export const quizMwTh = [
       'เลือก rendering mode',
     ],
     answer: 0,
+    explain: 'ถ้าไม่มี matcher proxy จะรันทุก request รวมถึง static asset ใต้ _next/static ด้วย matcher ทำให้ scope มันให้รันเฉพาะ route ที่ต้องการได้',
   },
   {
     q: 'proxy ใช้ runtime อะไร',
@@ -113,6 +234,24 @@ export const quizMwTh = [
       'main thread ของ browser',
     ],
     answer: 0,
+    explain: 'proxy รันบน Node.js runtime เสมอ การ export runtime จาก proxy.ts คือ build error — มันไม่ใช่ตัวเลือกที่ config ได้',
+  },
+  {
+    q: `\`\`\`ts
+// proxy.ts
+const requestHeaders = new Headers(request.headers)
+requestHeaders.set('x-hello-from-proxy', 'hello')
+return NextResponse.next({ headers: requestHeaders })
+\`\`\`
+Server Component เรียก \`(await headers()).get('x-hello-from-proxy')\` จะได้ค่าอะไร?`,
+    options: [
+      "'hello' เพราะ header ถูก forward แล้ว",
+      'null — form นี้แค่ set header บน response ที่กลับไปหา browser เท่านั้น',
+      'build error เพราะ set header แบบนี้ไม่ได้',
+      'ได้ header แต่แค่ request แรกเท่านั้น',
+    ],
+    answer: 1,
+    explain: 'NextResponse.next({ headers }) set header บน response ขาออกเท่านั้น การ forward header ไปถึง render path ต้อง nest ไว้: NextResponse.next({ request: { headers } })',
   },
   {
     q: 'ข้อไหนควรอยู่ใน proxy',
@@ -123,6 +262,23 @@ export const quizMwTh = [
       'ส่ง transactional email',
     ],
     answer: 1,
+    explain: 'proxy อยู่หน้าทุก request ที่ match ดังนั้นมันต้องเร็ว redirect เบา ๆ ตาม cookie คือ decision แบบที่มันถูกออกแบบมาให้ทำ',
+  },
+  {
+    q: `\`\`\`ts
+export const config = {
+  matcher: ['/dashboard/:path*'],
+}
+\`\`\`
+Server Action ที่นิยามอยู่ใน \`/dashboard/settings\` ถูกเรียกจาก client proxy รันสำหรับ call นั้นไหม?`,
+    options: [
+      'รัน — Server Action คือ POST request ไปที่ page ที่มันถูกนิยาม และ path นี้ match',
+      'ไม่รัน — Server Action เป็น routing layer แยกที่ bypass proxy เสมอ',
+      'รันเฉพาะถ้า matcher list ชื่อ action ไว้ด้วย',
+      'รันเฉพาะตอน development เท่านั้น ไม่รันตอน production',
+    ],
+    answer: 0,
+    explain: 'Server Action ถูกจัดการเป็น POST request ไปที่ route ที่มันถูกใช้ ไม่ใช่ route แยก ดังนั้น matcher ที่รวม /dashboard/settings ก็ครอบคลุม Server Action ที่ถูกเรียกจาก page นั้นด้วย (และถ้า exclude มันก็จะข้ามไปด้วยแบบเงียบ ๆ เหมือนกัน)',
   },
 ];
 

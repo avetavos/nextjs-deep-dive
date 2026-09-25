@@ -1,6 +1,6 @@
 ---
 title: Deployment และ Self-Hosting
-description: deploy บน Vercel เทียบกับ self-host, output standalone สำหรับ Docker image เล็ก ๆ, ISR กับ revalidateTag ทำงานยังไงข้ามหลาย instance และ go-live checklist
+description: deploy บน Vercel เทียบกับ self-host, Dockerfile แบบ multi-stage จริง ๆ ที่ build ด้วย output standalone, cacheHandlers เทียบกับ cacheHandler, instrumentation.ts, Node.js version ขั้นต่ำ, encryption key สำหรับหลาย instance และ go-live checklist
 sidebar:
   order: 4
 ---
@@ -9,14 +9,15 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
-เรา deploy บน Vercel แบบ zero-config ได้ หรือจะ self-host เป็น Node server หลัง CDN ก็ได้ แต่พอรันมากกว่าหนึ่ง instance เมื่อไร caching และ ISR ต้องมี shared cache handler เพื่อให้ทุก instance ตรงกัน
+เรา deploy บน Vercel แบบ zero-config ได้ หรือจะ self-host เป็น Node server หลัง CDN ก็ได้ แต่พอรันมากกว่าหนึ่ง instance เมื่อไร ทั้ง cache แบบ tag-based และ Server Action ต้องมีการประสานกัน (shared cache handler, encryption key คงที่) เพื่อให้ทุก instance ตรงกัน
 
 ## Vercel เทียบกับ self-hosting
 
-Vercel ตรวจเจอ Next.js app แล้วจัดการ build, CDN, image optimization และ server runtime ให้โดยไม่ต้อง config self-hosting ให้เราคุมเองทั้งหมด เรา build แล้วรัน `next start` (Node server ที่อยู่ยาว) เอง โดยปกติวางไว้หลัง CDN ที่ cache static asset
+Vercel ตรวจเจอ Next.js app แล้วจัดการ build, CDN, image optimization และ server runtime ให้โดยไม่ต้อง config self-hosting ให้เราคุมเองทั้งหมด เรา build แล้วรัน `next start` (Node server ที่อยู่ยาว) เอง โดยปกติวางไว้หลัง CDN หรือ reverse proxy (nginx หรือคล้ายกัน) ที่ cache static asset และกัน request ที่ผิดปกติหรือ rate-limit ไม่ให้ถึง process ของ Next.js โดยตรง
 
 ```bash
 # Self-hosting: build once, then run a long-lived Node server
@@ -24,9 +25,11 @@ next build
 next start -p 3000
 ```
 
-## Docker image ขนาดเล็กด้วย output standalone
+Node.js version ขั้นต่ำที่ Next.js 16 รองรับ: **20.9** ต่ำกว่านี้ไม่รองรับ ไม่ว่าจะ self-host ตรง ๆ หรือเลือก base image สำหรับ container
 
-ตั้ง `output: 'standalone'` แล้ว Next.js จะ trace ว่า server ต้องใช้ไฟล์ไหนบ้างแล้ว copy เข้า `.next/standalone` เราได้ image เล็ก ๆ ที่ ship ได้โดยไม่ต้องมี `node_modules`
+## Dockerfile แบบ multi-stage เต็ม ๆ — build และรันจริง
+
+`output: 'standalone'` ทำให้ Next.js trace ว่า server ต้องใช้ไฟล์ไหนบ้างแล้ว copy เข้า `.next/standalone` — image เล็ก ๆ ที่ ship ได้โดยไม่ต้องมี `node_modules` เต็ม
 
 ```ts
 // next.config.ts
@@ -39,34 +42,142 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
+Dockerfile สำหรับ production แบ่งเป็นสาม stage — `deps` ติดตั้ง package ครั้งเดียว, `builder` compile, `runner` ship เฉพาะ output ที่ trace มาแล้วโดยรันเป็น non-root user:
+
 ```dockerfile
-# Minimal runtime image — copy only the traced standalone output
-FROM node:20-alpine
+# Dockerfile
+# syntax=docker/dockerfile:1
+FROM node:20-alpine AS deps
 WORKDIR /app
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
-# standalone ships its own server.js — do NOT use "next start" here
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 CMD ["node", "server.js"]
 ```
 
+Build และรันจริงใน probe (`docker build` แล้ว `docker run -p 3412:3000`):
+
+```text
+#16 4.993 Route (app)
+#16 4.993 ┌ ○ /
+#16 4.993 ├ ○ /_not-found
+#16 4.993 └ ƒ /boom
+#20 writing image sha256:ec357758ea09b2b7e8316a98fb4ea19e3e4290da28400f99be1de5ca06bf6196 done
+```
+
+```text
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3412/
+200
+$ docker exec nextdd-probe-run whoami
+nextjs
+```
+
+`USER nextjs` ไม่ใช่แค่ของประดับ — `whoami` ข้างใน container ที่รันอยู่จริง ยืนยันว่า process เป็น uid 1001 ไม่ใช่ root สังเกตว่า `CMD` ของ runner stage คือ `node server.js` ไม่ใช่ `next start` หรือ `npx next` เด็ดขาด: standalone output ship `server.js` ของตัวเองมาแล้ว ไม่ได้รวม `next` CLI หรือ `node_modules` ที่เหลือมาด้วย
+
+### HOSTNAME=0.0.0.0: เป็น default อยู่แล้ว แต่ pin ไว้ก็ยังคุ้ม
+
+`server.js` ของ standalone เอง default เป็น `0.0.0.0` อยู่แล้วถ้าไม่ set `HOSTNAME` — grep ไฟล์ที่ generate มายืนยันได้:
+
+```text
+const hostname = process.env.HOSTNAME || '0.0.0.0'
+```
+
+การตั้ง `ENV HOSTNAME=0.0.0.0` ชัดเจนใน Dockerfile ไม่ได้เปลี่ยน default นั้น — มันแค่กันไม่ให้อะไรอื่นมา override เนื่องจาก `HOSTNAME` เป็นชื่อทั่ว ๆ ไป orchestration layer หรือ shell บางตัวอาจ set ค่าอื่นที่ไม่ใช่ IP เข้าไป (container ID, pod name) การ pin มันไว้ใน image ตัดปัญหากลุ่มนี้ทิ้งไปแทนที่จะพึ่งค่าที่สืบทอดมาจากที่อื่น
+
 ## Caching และ ISR ข้ามหลาย instance
 
-ISR, full-route cache และ `revalidateTag` เขียนลง cache ทั้งหมด บน instance เดียว filesystem cache แบบ default ก็พอ แต่พอรันหลาย instance แต่ละตัวมี local cache ของตัวเอง เพราะฉะนั้น `revalidateTag` บน pod หนึ่งจะทิ้งตัวอื่นให้ค้างอยู่ ทางแก้คือ shared cache handler (หนุนหลังด้วย Redis หรือคล้าย ๆ กัน) ที่ทุก instance อ่านและเขียนร่วมกัน
+full-route cache กับ ISR เขียนลง cache ของ server ของ Next.js บน instance เดียวที่ self-host filesystem cache แบบ default ก็พอ แต่พอรันหลาย instance แต่ละตัวมี local cache ของตัวเองและมีมุมมองของตัวเองว่า tag ไหนถูก revalidate ไปแล้ว เพราะฉะนั้น `revalidateTag` บน instance หนึ่งจะทิ้งตัวอื่นให้ค้างจนกว่าจะรู้ตัวเอง
+
+### cacheHandler vs cacheHandlers — คนละปุ่มกัน
+
+config key สองตัวนี้สับสนกันง่ายเพราะฟังดูเป็นพหูพจน์ของกันและกัน แต่จริง ๆ config คนละระบบ caching เลย:
+
+| Key | config อะไร | เริ่มมีตั้งแต่ |
+|---|---|---|
+| `cacheHandler` (เอกพจน์) | full-route / ISR cache แบบเดิม — ตัวที่อยู่หลัง `revalidatePath`, `revalidateTag` และ static regeneration | ก่อน 16, cache override ตัวแรกสำหรับ self-hosting |
+| `cacheHandlers` (พหูพจน์, เป็น object) | backend สำหรับ directive ตระกูล `'use cache'` — `default` สำหรับ `'use cache'`, `remote` สำหรับ `'use cache: remote'` บวก custom handler ที่ตั้งชื่อเองได้ | `v16.0.0` |
 
 ```ts
-// next.config.ts — shared cache for multi-instance self-hosting
+// next.config.ts — legacy full-route/ISR cache, shared across instances
+module.exports = {
+  cacheHandler: require.resolve('./cache-handler.js'),
+  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+}
+```
+
+```ts
+// next.config.ts — backends for 'use cache' / 'use cache: remote'
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  cacheHandler: require.resolve('./cache-handler.js'),
-  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+  cacheHandlers: {
+    default: require.resolve('./cache-handlers/default-handler.js'),
+    remote: require.resolve('./cache-handlers/remote-handler.js'),
+  },
 }
 
 export default nextConfig
 ```
 
-พอมี shared handler การเรียก `updateTag('products')` หรือ `revalidateTag('products', 'max')` ใน Server Action จะ invalidate entry ให้ทุก instance พร้อมกัน route ทั้งหมดรันบน Node.js runtime ส่วน segment config `runtime = 'edge'` ต่อ route ถูก deprecate ใน Next.js 16 แล้ว ให้ลบออกแทนที่จะวางแผนรอบ ๆ มัน
+ถ้าโปรเจกต์ยังใช้ route segment config กับ `revalidateTag`/`revalidatePath` (ยังไม่มี `'use cache'` เลย) ก็ต้องการแค่ `cacheHandler` พอเริ่มใช้ `'use cache'` backend ของมันจะถูก config แยกผ่าน `cacheHandlers` — ตั้งอันหนึ่งไม่ได้ config อีกอันให้อัตโนมัติ ไม่ว่าจะแบบไหน tag invalidation ข้าม instance ก็ต้อง implement `refreshTags()` ของ handler ให้ sync จาก shared storage (Redis หรือคล้ายกัน) ก่อนแต่ละ request ด้วย เพราะ in-memory handler แบบ default track tag แค่ในเครื่องตัวเองเท่านั้น
+
+## instrumentation.ts: register() กับ onRequestError พิสูจน์แล้ว
+
+`instrumentation.ts` ที่ root ของโปรเจกต์รันครั้งเดียวตอน server instance ใหม่เริ่มทำงาน ก่อนที่มันจะเริ่มรับ traffic และยังดูทุก error ฝั่ง server ผ่าน `onRequestError` ได้ด้วย
+
+```ts
+// instrumentation.ts
+export function register() {
+  console.log('runtime:', process.env.NEXT_RUNTIME) // 'nodejs' or 'edge'
+}
+
+export async function onRequestError(err: unknown, request: any, context: any) {
+  const message = err instanceof Error ? err.message : String(err)
+  // ship this to your observability provider instead of console.log
+  console.log('request error:', message, context.routerKind, context.routeType)
+}
+```
+
+พิสูจน์ครบวงจรใน probe: route ที่บังคับ dynamic (`export const dynamic = 'force-dynamic'`) ที่ throw error ถูกยิงด้วย `curl` แล้วได้ server log จริงแบบนี้ —
+
+```text
+✓ Ready in 0ms
+INSTRUMENTATION_REGISTER_CALLED nodejs
+⨯ Error: probe-boom-error
+    at <unknown> (.next/server/chunks/ssr/[root-of-the-server]__0v8669b._.js:1:225) {
+  digest: '3670713050'
+}
+ON_REQUEST_ERROR_CALLED probe-boom-error App Router render
+```
+
+— ยืนยันว่า `register()` รันด้วย `NEXT_RUNTIME=nodejs` ก่อน request แรก และ `onRequestError` ถูกยิงพร้อม message ของ error ที่ throw กับ `context.routeType` (`'render'` สำหรับ Server Component, ยังมี `'route'`, `'action'`, หรือ `'proxy'` ขึ้นกับว่า error เกิดตรงไหน)
+
+## Server Action ข้ามหลาย instance
+
+Next.js encrypt closure variable ของ Server Action ก่อนส่งไปหา client โดยใช้ key ที่สร้างตอน build ถ้า build ของแต่ละ instance ได้ key คนละตัว (default) action ที่ encrypt โดย instance A จะ decrypt ด้วย instance B ไม่ได้ แล้ว client จะเจอ error "Failed to find Server Action" ทุกครั้งที่ rolling deploy หรือ load balancer ส่ง request ตามไปยัง instance คนละตัว
+
+```bash
+NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=your-generated-key next build
+```
+
+ตั้งค่านี้ครั้งเดียวแล้วใช้ซ้ำกับทุก build ของทุก instance (base64-encoded AES key ยาว 16, 24 หรือ 32 byte — Next.js สร้างแบบ 32 byte ให้เป็น default ถ้าไม่ตั้งตัวแปรนี้) ส่วนด้าน security ของเรื่องนี้ — encryption ป้องกันอะไรได้และไม่ได้ — เป็นเรื่องของ Server Actions เอง ดูที่ [Server Actions Security and Patterns](/nextjs/th/server-actions-and-mutations/security-and-patterns/) สำหรับอีกครึ่งหนึ่งของภาพนี้ ครึ่งที่บทนี้พูดถึงคือด้าน operations ล้วน ๆ: ถ้าไม่มี key ที่แชร์กัน Server Action ที่ถูกต้องและปลอดภัยอยู่แล้วก็ยังพังได้ทันทีที่รันมากกว่าหนึ่ง instance
 
 ## Checklist ก่อนขึ้น production
 
@@ -74,24 +185,75 @@ export default nextConfig
 
 - เก็บ data fetching ไว้ใน Server Components mark leaf เป็น `'use client'` เฉพาะตอนที่ต้อง interactive จริง ๆ
 - เลือก rendering mode ต่อ route อย่างตั้งใจ ทั้ง static, dynamic หรือ ISR แล้ว confirm ว่าแต่ละตัวทำงานตามที่คาดใน production build
-- เข้าใจ caching layer ของตัวเอง (request memoization, Data Cache, full-route cache) แล้ววาง shared cache handler ก่อน scale เกินหนึ่ง instance
-- mutate ผ่าน Server Actions แล้วเรียก `updateTag` / `revalidateTag` / `revalidatePath` เพื่อให้ cache ถูกต้องหลัง write
+- เข้าใจ caching layer ของตัวเอง (request memoization, Data Cache, full-route cache) แล้ววาง `cacheHandler` แบบ shared (บวก `cacheHandlers` ถ้าใช้ `'use cache'`) ก่อน scale เกินหนึ่ง instance
+- mutate ผ่าน Server Actions แล้วเรียก `updateTag` / `revalidateTag` / `revalidatePath` เพื่อให้ cache ถูกต้องหลัง write — และตั้ง `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` ก่อนรันมากกว่าหนึ่ง instance
 - gate route ที่ป้องกันไว้ด้วย optimistic proxy redirect และ Data Access Layer check ควบคู่กัน
-- เก็บ secret แบบไม่มี prefix ไว้ใน `.env.local` เปิดเผยเฉพาะค่า `NEXT_PUBLIC_`
+- เก็บ secret แบบไม่มี prefix ไว้ใน `.env.local` เปิดเผยเฉพาะค่า `NEXT_PUBLIC_` และต้องเป็น static literal เท่านั้น
+- ต่อ `onRequestError` ของ `instrumentation.ts` เข้ากับ observability provider จริง ก่อนที่ incident แรกจะเกิด ไม่ใช่หลัง
 
-<Mermaid title="self-hosting หลาย instance แชร์ cache เดียวกัน" code={diagramDeployTh} />
+## Mental Model
+
+มอง self-hosted instance ทุกตัวเป็นของใช้แล้วทิ้งและสลับกันได้ เหมือนที่ load balancer มองมัน — request ไหนก็ตกไปที่ instance ไหนก็ได้ ณ เวลาไหนก็ได้ รวมถึงตอน rollout กำลังทำอยู่ครึ่ง ๆ สิ่งที่ต้องอยู่รอดได้แม้ request ตกไปคนละ instance กับตอนก่อนหน้า — cache, encryption key ของ Server Action, session — ต้องอยู่ในที่ที่แชร์กันได้ (Redis, env var คงที่, cookie ที่ sign แล้ว) ห้ามอยู่แค่ใน memory ของ instance เดียวหรือ key สุ่มของ build เดียวเด็ดขาด
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| Vercel | CDN, image optimization, runtime แบบ zero-config | คุม infrastructure ข้างล่างได้น้อยกว่า |
+| Self-host ด้วย `output: 'standalone'` | image เล็ก คุม infrastructure ได้เต็มที่ | ต้องดูแล reverse proxy, TLS และ process supervision เอง |
+| Self-host instance เดียว | filesystem cache แบบ default ใช้ได้เลย | ไม่มี redundancy — process เดียว จุดล้มเหลวจุดเดียว |
+| Self-host หลาย instance | redundancy, scale ตามแนวนอนได้ | ต้องมี `cacheHandler`/`cacheHandlers` แบบ shared และ `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` คงที่ ไม่งั้น cache ค้างและ action เริ่มพัง |
+| pin `HOSTNAME=0.0.0.0` ชัดเจน | ตัดความกำกวมว่า default จะ resolve เป็นอะไร | มีอีกบรรทัดต้อง maintain ถึงแม้จะตรงกับ default ที่มีอยู่แล้วก็ตาม |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **runner stage แบบ standalone รัน `next start` หรือ `npx next` ได้เลย** — ไม่ได้ `output: 'standalone'` trace เฉพาะสิ่งที่ `server.js` เองต้องการเท่านั้น `next` CLI และ `node_modules` ส่วนใหญ่ถูกตัดออกไปตั้งใจ พิสูจน์แล้ว: `CMD ["npx", "next", "start"]` ใน standalone runner พังทันทีด้วย `sh: next: not found`
+- **`cacheHandler` กับ `cacheHandlers` config cache ตัวเดียวกัน** — ไม่จริง `cacheHandler` (เอกพจน์) คือ full-route/ISR cache override แบบเดิม ส่วน `cacheHandlers` (พหูพจน์, เป็น object) config backend สำหรับ directive ตระกูล `'use cache'` เริ่มมีใน `v16.0.0` ตั้งตัวหนึ่งไม่มีผลกับอีกตัวเลย
+- **`HOSTNAME=0.0.0.0` จำเป็นไม่งั้น container จะเข้าไม่ถึง** — `server.js` ของ standalone default เป็น `0.0.0.0` อยู่แล้ว พิสูจน์ได้จากอ่านไฟล์ที่ generate มา การ pin มันชัดเจนก็ยังเป็น practice ที่ดี เพราะมันตัดโอกาสที่อะไรอื่นจะมา override default นั้นแบบเงียบ ๆ แต่มันไม่ได้แก้ช่องโหว่จริงในพฤติกรรม default
+- **`forbidden()`/`unauthorized()` และ security ของ Server Action เป็นเรื่อง "deployment" ที่ต้องแก้ตรงนี้** — ครึ่งด้าน operations (encryption key ที่แชร์กันเพื่อไม่ให้ deploy หลาย instance พัง) อยู่ในบทนี้ ส่วนครึ่งด้าน security (encryption ป้องกันอะไรได้และไม่ได้) เป็นเรื่องของ [authentication](/nextjs/th/production-and-ecosystem/authentication-patterns/) กับ [Server Actions security](/nextjs/th/server-actions-and-mutations/security-and-patterns/)
+
+<Mermaid title="self-hosting หลาย instance ต้องมี cache และ key ที่แชร์กัน" code={diagramDeployTh} />
 
 export const diagramDeployTh = `
 graph TD
-  A["CDN"] --> B["Instance 1 (next start)"]
-  A --> C["Instance 2 (next start)"]
-  B --> D["Shared cache handler (Redis)"]
+  A["CDN / reverse proxy"] --> B["Instance 1 (node server.js)"]
+  A --> C["Instance 2 (node server.js)"]
+  B --> D["Shared cacheHandler / cacheHandlers (Redis)"]
   C --> D
   D --> E["revalidateTag invalidates all instances"]
+  B --> F["Same NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"]
+  C --> F
 `;
 
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ Dockerfile หรือ deployment config ที่ generate มาโผล่ขึ้นมา ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- `CMD` ของ runner stage รัน `next start` หรือ `npx next` แทน `node server.js` หรือเปล่า? พอใช้ `output: 'standalone'` แบบนั้นจะพังตอน container เริ่ม — binary `next` ไม่ได้อยู่ในนั้น
+- Dockerfile จบด้วยการรันเป็น root หรือเปล่า (ไม่มี `USER` directive)? confirm ด้วย `docker exec <container> whoami` — ควรได้ชื่อ non-root ไม่ใช่ `root`
+- config ตั้ง `cacheHandler` ทั้งที่โปรเจกต์ใช้ `'use cache'` จริง ๆ (หรือกลับกัน) หรือเปล่า? มันคนละระบบกัน ตั้งผิดตัวจะทำให้อีกตัวเหลือ default ไว้แบบเงียบ ๆ
+- มี deployment หลาย instance (replica, load balancer, Kubernetes) โดยไม่ pin `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` หรือเปล่า? แต่ละ instance จะได้ key สุ่มของตัวเองเป็น default ทำให้ Server Action พังเป็นพัก ๆ ขึ้นกับว่า instance ไหนรับ request ตามมา
+- `instrumentation.ts` มีอยู่แต่ log ผ่าน `console` อย่างเดียวใน `onRequestError` หรือเปล่า? แบบนั้นมองไม่เห็นทันทีที่ stdout ของ container ไม่ถูกเก็บไปที่ไหนเลย ต้อง ship ไปปลายทางจริง
+- base image ใช้ Node.js version ต่ำกว่า 20.9 หรือเปล่า? นั่นต่ำกว่า minimum ที่ Next.js 16 ระบุไว้ ไม่ว่า build วันนี้จะยังผ่านอยู่หรือไม่ก็ตาม
+
+<SpotTheBug lang="dockerfile" code={`FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+CMD ["npx", "next", "start"]`}>
+runner stage copy มาแค่ `.next/standalone`, `.next/static` และ `public` — โดยตั้งใจ นั่นคือทุกอย่างที่ `output: 'standalone'` trace ว่าจำเป็นสำหรับรัน `node server.js` มันไม่รวม `next` CLI หรือ `node_modules` ที่เหลือมาให้เลย รัน Dockerfile นี้เป๊ะ ๆ จะได้ `sh: next: not found` ทันทีที่ container เริ่ม เพราะ `npx next start` ต้องการ package `next` เต็มตัวที่ไม่เคยถูก copy เข้ามา ทางแก้คือ `CMD ["node", "server.js"]` — standalone output มี server entry point ของตัวเองมาให้อยู่แล้ว
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-Vercel คือ zero-config self-hosting ก็ทำได้ แต่นาทีที่รันมากกว่าหนึ่ง instance เราต้องมี shared cache handler ไม่งั้น ISR กับ `revalidateTag` จะค้าง
+Vercel คือ zero-config self-hosting ก็ทำได้ด้วย Dockerfile ที่จบด้วย `node server.js` แบบ non-root user — แต่นาทีที่รันมากกว่าหนึ่ง instance เราต้องมี `cacheHandler`/`cacheHandlers` แบบ shared และ `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` คงที่ ไม่งั้นทั้ง cache และ Server Action จะเริ่มพังแบบคาดเดาไม่ได้
 </Callout>
 
 export const quizDeployTh = [
@@ -99,41 +261,74 @@ export const quizDeployTh = [
     q: 'output: standalone สร้างอะไรออกมา',
     options: [
       'static HTML export',
-      'server bundle ขนาดเล็กที่ trace มาแล้วโดยไม่มี node_modules',
+      'server bundle ขนาดเล็กที่ trace มาแล้วโดยไม่มี node_modules หรือ next CLI',
       'deployment แบบ Edge อย่างเดียว',
       'serverless function หนึ่งตัวต่อ route',
     ],
     answer: 1,
+    explain: 'output: standalone trace ว่า server.js ต้องใช้ไฟล์ไหนบ้างแล้ว copy เข้า .next/standalone — ตั้งใจไม่รวม node_modules เต็มและ binary ของ next CLI',
   },
   {
-    q: 'สั่งรัน standalone build ด้วยคำสั่งอะไร',
+    q: `\`\`\`dockerfile
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+CMD ["npx", "next", "start"]
+\`\`\`
+container นี้จะเกิดอะไรขึ้นตอน start?`,
     options: [
-      'next start',
-      'node server.js',
-      'npm run dev',
-      'next export',
+      'start ปกติที่ port 3000',
+      'sh: next: not found — next CLI ไม่เคยถูก copy เข้า runner stage เลย',
+      'fallback ไปเป็น static export อัตโนมัติ',
+      'ทำงานได้ แต่แค่ใน development mode เท่านั้น',
     ],
     answer: 1,
+    explain: 'output: standalone รวมมาแค่สิ่งที่ server.js เองต้องการ next CLI และ node_modules ส่วนใหญ่ถูก exclude ดังนั้น npx next start จึงพังทันทีด้วย "next: not found" CMD ที่ถูกต้องคือ ["node", "server.js"]',
   },
   {
-    q: 'ทำไม self-hosting หลาย instance ถึงต้องมี shared cache handler',
+    q: 'ความต่างระหว่าง cacheHandler กับ cacheHandlers คืออะไร',
     options: [
-      'เพื่อลดขนาด Docker image',
-      'เพื่อให้ revalidateTag และ ISR ตรงกันทุก instance',
-      'เพื่อเปิดใช้ Edge runtime',
-      'เพื่ออ่านค่า NEXT_PUBLIC_ ตอน runtime',
+      'ไม่มีความต่าง เป็นชื่อ alias ของกันและกัน',
+      'cacheHandler config full-route/ISR cache แบบเดิม; cacheHandlers (พหูพจน์) config backend ของ \'use cache\' / \'use cache: remote\'',
+      'cacheHandlers ถูก deprecate ให้ใช้ cacheHandler แทน',
+      'cacheHandler ใช้ได้แค่ development, cacheHandlers ใช้ได้แค่ production',
     ],
     answer: 1,
+    explain: 'cacheHandler (เอกพจน์) คือ override แบบเก่าสำหรับ full-route/ISR cache ตอน self-host cacheHandlers (พหูพจน์, object ที่มี key default/remote) เริ่มมีใน v16.0.0 เพื่อ config directive ตระกูล \'use cache\' โดยเฉพาะ — คนละระบบกัน',
   },
   {
-    q: 'ข้อดีหลักของการ deploy บน Vercel คืออะไร',
+    q: 'ทำไม standalone server.js ถึงไม่จำเป็นต้อง set HOSTNAME=0.0.0.0 ใน Dockerfile เป๊ะ ๆ',
     options: [
-      'ต้องเขียน Dockerfile เอง',
-      'build, CDN และ runtime แบบ zero-config',
-      'ปิด caching เป็น default',
-      'รองรับแค่ Edge runtime',
+      'ไม่ set แล้วพังเสมอ',
+      'server.js default hostname เป็น 0.0.0.0 อยู่แล้วถ้า env var ไม่ถูก set',
+      'HOSTNAME สำคัญแค่กับ Edge runtime เท่านั้น',
+      'Docker set ให้อัตโนมัติไม่ว่า Dockerfile จะเขียนยังไง',
     ],
     answer: 1,
+    explain: 'อ่าน server.js ที่ generate มาเจอ `const hostname = process.env.HOSTNAME || \'0.0.0.0\'` — default เป็น 0.0.0.0 อยู่แล้ว การ pin มันชัดเจนก็ยังเป็น practice ที่ดีในฐานะการ์ดกันไม่ให้อะไรอื่นมา set ตัวแปรนี้ แต่มันไม่ได้แก้ default ที่พังอยู่แต่อย่างใด',
+  },
+  {
+    q: 'ทำไม deployment หลาย instance ถึงต้อง set NEXT_SERVER_ACTIONS_ENCRYPTION_KEY ชัดเจน',
+    options: [
+      'ถ้าไม่มีจะเรียก Server Action ไม่ได้เลย',
+      'แต่ละ instance จะสร้าง key สุ่มของตัวเองตอน build ทำให้ action ที่ encrypt โดย instance หนึ่ง decrypt ด้วยอีกตัวไม่ได้',
+      'จำเป็นเฉพาะตอนใช้ Edge runtime เท่านั้น',
+      'มันแทนที่ความจำเป็นของ session cookie ได้',
+    ],
+    answer: 1,
+    explain: 'default แล้วแต่ละ build จะได้ key ของตัวเอง พอมีหลาย instance ที่ build แยกกัน (หรือ rebuild ตอน rolling deploy) key ที่ไม่ตรงกันทำให้ instance ที่รับ request decrypt action ไม่ได้ เกิด error "Failed to find Server Action"',
+  },
+  {
+    q: 'Node.js version ขั้นต่ำที่ Next.js 16 รองรับคือเวอร์ชันไหน',
+    options: [
+      '16.14.0',
+      '18.17.0',
+      '20.9',
+      '22.0.0',
+    ],
+    answer: 2,
+    explain: 'Next.js 16 ระบุ 20.9 เป็น Node.js version ขั้นต่ำ — สำคัญทั้งตอน self-host ตรง ๆ และตอนเลือก Docker base image',
   },
 ];
 

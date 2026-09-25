@@ -1,6 +1,6 @@
 ---
 title: Authentication Patterns
-description: Sessions and cookies, optimistic checks in proxy versus real authorization in a Data Access Layer, and why proxy alone is not enough.
+description: Authentication versus authorization, sessions and cookie attributes, stateless versus database sessions, forbidden()/unauthorized(), and why proxy alone is not enough.
 sidebar:
   order: 2
 ---
@@ -9,10 +9,20 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
 Do a lightweight optimistic check in proxy to redirect obviously-unauthed requests, but do the REAL authorization close to the data — in a Data Access Layer that verifies the session before returning anything.
+
+## Authentication vs authorization
+
+These two words get used interchangeably, but they answer different questions:
+
+- **Authentication (authn)**: *who is this?* Verifying the user is who they claim to be — a password check, a valid session cookie, a verified token.
+- **Authorization (authz)**: *what can they do?* Given a known, authenticated identity, deciding whether they can access this route, this record, or perform this mutation.
+
+A request can be authenticated (a valid session exists) and still be unauthorized (that user just isn't an admin). Keeping the two separate matters for where the check lives: authentication commonly happens once per request (resolve the session), while authorization happens per-resource, right before you touch the data that resource guards.
 
 ## Sessions and cookies
 
@@ -30,9 +40,86 @@ export async function getSession() {
 }
 ```
 
+### Cookie attributes, and why each one matters
+
+Setting a session cookie is not just `cookies().set('session', value)` — every option in the table below closes off a real attack surface. `cookies().set(name, value, options)` is only callable from a Server Function or Route Handler (HTTP forbids setting cookies once streaming has started).
+
+| Option | Type | What it protects against |
+|---|---|---|
+| `httpOnly` | `boolean` | Blocks client-side JavaScript (`document.cookie`) from reading the cookie — stops session theft via an XSS payload |
+| `secure` | `boolean` | Cookie is only sent over HTTPS — stops it leaking on a plain-HTTP connection |
+| `sameSite` | `boolean \| 'lax' \| 'strict' \| 'none'` | Controls whether the cookie is sent on cross-site requests — the main defense against CSRF |
+| `path` | `string`, default `'/'` | Scopes the cookie to a URL path within the domain |
+| `expires` / `maxAge` | `Date` / `number` | Bounds how long a stolen cookie stays valid |
+| `domain` | `string` | Which domain the cookie is available on |
+| `partitioned` | `boolean` | Opts into [CHIPS](https://github.com/privacycg/CHIPS) partitioned storage for third-party contexts |
+
+```ts
+// app/lib/session.ts — set a session cookie with the recommended attributes
+import 'server-only'
+import { cookies } from 'next/headers'
+import { encrypt } from '@/app/lib/crypto'
+
+export async function createSession(userId: string) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const session = await encrypt({ userId, expiresAt })
+  const cookieStore = await cookies()
+
+  cookieStore.set('session', session, {
+    httpOnly: true,
+    secure: true,
+    expires: expiresAt,
+    sameSite: 'lax',
+    path: '/',
+  })
+}
+```
+
+## Stateless vs database sessions
+
+There are two shapes a session can take, and the trade-off is simplicity versus control:
+
+| | Stateless session | Database session |
+|---|---|---|
+| **Where the data lives** | Encrypted/signed directly in the cookie | A row in your database; the cookie only holds the session ID |
+| **Reading a session** | Decrypt the cookie — no I/O | Look up the session ID — one extra query (or a cache in front of it) |
+| **Revoking a session early** | Hard — the cookie is self-contained and valid until it expires | Easy — delete the row and the session is dead immediately |
+| **Tracking active sessions / "log out everywhere"** | Not possible without extra bookkeeping | Natural — query all rows for a user |
+| **Good for** | Simple apps, low session-management overhead | Apps that need revocation, device tracking, or session auditing |
+
+```ts
+// app/lib/session.ts — stateless: the whole session lives in the signed cookie
+import 'server-only'
+import { SignJWT, jwtVerify } from 'jose'
+
+const encodedKey = new TextEncoder().encode(process.env.SESSION_SECRET)
+
+export async function encrypt(payload: { userId: string; expiresAt: Date }) {
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(encodedKey)
+}
+```
+
+```ts
+// app/lib/session.ts — database: the cookie only carries an opaque session id
+import { cookies } from 'next/headers'
+import { db } from '@/app/lib/db'
+
+export async function createSession(userId: string) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const [{ id }] = await db.insert(sessions).values({ userId, expiresAt }).returning({ id: sessions.id })
+
+  const cookieStore = await cookies()
+  cookieStore.set('session', id, { httpOnly: true, secure: true, expires: expiresAt, sameSite: 'lax', path: '/' })
+}
+```
+
 ## Optimistic check in proxy
 
-Proxy (`proxy.ts`) is the right place for a cheap, optimistic gate: if there is clearly no session, redirect before rendering. This is fast, but it only redirects — it must not be your only line of defense.
+Proxy (`proxy.ts`) is the right place for a cheap, optimistic gate: if there is clearly no session, redirect before rendering. This is fast, but it only redirects — it must not be your only line of defense. Because proxy runs on every route, including [prefetched routes](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/), only read the session from the cookie here — never do a database lookup in proxy.
 
 ```ts
 // proxy.ts — optimistic redirect only
@@ -73,19 +160,136 @@ export const verifySession = cache(async () => {
 
 Then every page, Server Action, or route handler that touches protected data calls `verifySession()` first. For real projects, libraries like NextAuth (Auth.js), Clerk, or Better Auth handle sessions, providers, and tokens for you — but the DAL pattern for authorization still applies on top of them.
 
+## forbidden() and unauthorized()
+
+Beyond a plain `redirect('/login')`, Next.js has two purpose-built functions for authorization failures — and as of 16.3.6 **both are still experimental**, gated behind `experimental.authInterrupts` in `next.config.ts`:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    authInterrupts: true,
+  },
+}
+
+export default nextConfig
+```
+
+- **`unauthorized()`** — throws, renders the nearest `unauthorized.tsx`, and returns a real `401`. Use it for "you are not signed in."
+- **`forbidden()`** — throws, renders the nearest `forbidden.tsx`, and returns a real `403`. Use it for "you're signed in, but this isn't yours."
+
+```ts
+// app/admin/page.tsx
+import { forbidden } from 'next/navigation'
+
+async function verifySession() {
+  // Real apps call the DAL from the previous section; inlined here so the
+  // snippet has no cross-file dependency.
+  return { role: 'user' as string }
+}
+
+export default async function AdminPage() {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    forbidden()
+  }
+  return <div>Admin Dashboard</div>
+}
+```
+
+```tsx
+// app/admin/forbidden.tsx — rendered in place of the page when forbidden() throws
+export default function Forbidden() {
+  return <h1>403 - Forbidden</h1>
+}
+```
+
+Proving both halves of this in the probe: calling `forbidden()` with the flag **off** fails the build outright —
+
+```text
+Error: `forbidden()` is experimental and only allowed to be enabled when `experimental.authInterrupts` is enabled.
+```
+
+— and with the flag **on**, the same route returns the real status code with the custom UI:
+
+```text
+HTTP 403
+<title>403: This page could not be accessed.</title>
+<meta name="robots" content="noindex"/>
+<h1>403 - Forbidden</h1>
+```
+
+Both functions throw (their TypeScript return type is `never`), which is exactly why a `try/catch` around the call is a real bug, not just a style nit: it swallows the throw, and no `forbidden`/`unauthorized` UI ever renders. If the call sits behind a promise that is never `await`ed, the same thing happens — the rejection has nothing to catch it.
+
+## Mental Model
+
+Think of authentication as the passport check at the border — it only asks "does this person exist and are they who they say they are," and it happens once. Authorization is the security guard *inside* the building who checks per-door whether this already-verified person is allowed through *this specific* door. Proxy is the greeter at the front entrance doing a glance at the passport photo; the DAL is the guard at every door who actually checks the badge against the access list before it opens.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Stateless session | No database round-trip to read | Cannot be revoked early without extra state |
+| Database session | Instant revocation, "log out everywhere" | An extra lookup (or cache) on every session read |
+| Optimistic check in proxy | Fast, centralized, redirects obvious cases early | Not authoritative — can be bypassed or skipped by matcher/prefetch |
+| `verifySession()` in a DAL | The one place that's actually authoritative | Must be called explicitly everywhere protected data is touched |
+| `forbidden()` / `unauthorized()` | Real HTTP status + dedicated UI, one throw | Still experimental — needs `authInterrupts`, and a stray `try/catch` silently swallows it |
+
+## Common Misconceptions
+
+- **Authentication and authorization are the same check.** Authentication confirms identity; authorization decides what that identity can do. A logged-in user can still be unauthorized for a specific resource.
+- **A stateless (JWT-style) session can be revoked by just "deleting" it.** It can't — the cookie is self-contained and stays valid until it expires, unless you add a server-side blocklist (which brings back the database round-trip you were avoiding).
+- **`forbidden()` and `unauthorized()` are stable, general-purpose APIs.** As of 16.3.6 they are still experimental and require `experimental.authInterrupts: true` — omitting the flag fails the build with an explicit error, not a silent fallback.
+- **Wrapping `forbidden()`/`unauthorized()` in `try/catch` is just defensive code.** Both work by throwing; a surrounding `try/catch` swallows the interrupt and no forbidden/unauthorized UI ever renders.
+- **A proxy-level redirect is authorization.** It's an optimistic hint at best — proxy can be skipped by a matcher gap, doesn't re-run on client navigations the way a layout might assume, and (per CVE-2025-29927) has historically been bypassable outright.
+
 <Mermaid title="Optimistic gate in proxy, real check in the DAL" code={diagramAuthEn} />
 
 export const diagramAuthEn = `
 graph TD
-  A["Request"] --> B["proxy: optimistic redirect"]
+  A["Request"] --> B["proxy: optimistic redirect (authn only)"]
   B --> C["Page / Server Action"]
   C --> D["verifySession() in DAL"]
   D -->|no session| E["redirect to /login"]
-  D -->|valid| F["Return protected data"]
+  D -->|valid, wrong role| F["forbidden()"]
+  D -->|valid| G["Return protected data"]
 `;
 
+## Reading AI-generated code
+
+When a generated snippet handles auth, check for these before trusting it:
+
+- Does it use `forbidden()` / `unauthorized()` without `experimental.authInterrupts: true` in `next.config.ts`? That fails the build with an explicit error in 16.3.6 — not a silent no-op.
+- Is `forbidden()`/`unauthorized()`/`redirect()` ever wrapped in a `try/catch`? All three work by throwing — a surrounding `try/catch` silently swallows the interrupt.
+- Does `cookies().set('session', value)` skip the options object entirely? A cookie with no `httpOnly`/`secure`/`sameSite` is readable by any injected script and sendable cross-site.
+- Does the code treat a proxy-level redirect as the authorization check, with no corresponding `verifySession()` call in the DAL, page, Server Action, or Route Handler that actually touches the data?
+- Does it confuse "logged in" with "allowed"? A check like `if (session) return data` skips authorization entirely — it only confirms authentication.
+- For a stateless (JWT) session, does the code assume a "delete session" function exists server-side? Revocation isn't possible without a database session or a blocklist.
+
+<SpotTheBug code={`// app/admin/page.tsx
+import { verifySession } from '@/app/lib/dal'
+import { forbidden } from 'next/navigation'
+
+export default async function AdminPage() {
+  const session = await verifySession()
+
+  try {
+    if (session.role !== 'admin') {
+      forbidden()
+    }
+  } catch {
+    // ignore and keep rendering
+  }
+
+  return <AdminDashboard />
+}`}>
+`forbidden()` works by throwing — its return type is `never`. Wrapping it in `try/catch` catches that throw and swallows it, so the `catch` block's comment ("ignore and keep rendering") is exactly what happens: a non-admin user falls through to `<AdminDashboard />` anyway. The fix is to never wrap `forbidden()`/`unauthorized()`/`redirect()` in a `try/catch` — if something around the call truly needs one, use `unstable_rethrow` inside the `catch` to let the interrupt continue propagating.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Use proxy for a fast optimistic redirect, but put the authoritative authorization check in a Data Access Layer that verifies the session right before returning data.
+Use proxy for a fast optimistic redirect, but put the authoritative authorization check in a Data Access Layer that verifies the session right before returning data — and never let a `try/catch` sit around `forbidden()`, `unauthorized()`, or `redirect()`.
 </Callout>
 
 export const quizAuthEn = [
@@ -98,36 +302,80 @@ export const quizAuthEn = [
       'useCookie() hook',
     ],
     answer: 1,
+    explain: 'cookies() from next/headers reads the incoming request cookies on the server, in Server Components, Server Functions, and Route Handlers.',
   },
   {
-    q: 'What should proxy do for auth?',
+    q: 'What is the key difference between authentication and authorization?',
     options: [
-      'Run the full authorization check',
-      'A lightweight optimistic redirect',
-      'Query the database for permissions',
-      'Nothing — auth cannot use proxy',
+      'They are two names for the same check',
+      'Authentication verifies identity; authorization decides what that identity can access',
+      'Authorization always runs first, then authentication',
+      'Authentication only applies to API routes',
     ],
     answer: 1,
+    explain: 'Authentication answers "who is this?" — authorization answers "what can they do?" A user can be authenticated and still unauthorized for a specific resource.',
   },
   {
-    q: 'Why is proxy alone not sufficient for authorization?',
+    q: `\`\`\`ts
+// next.config.ts
+const nextConfig = {}
+\`\`\`
+\`\`\`ts
+// app/admin/page.tsx
+import { forbidden } from 'next/navigation'
+forbidden()
+\`\`\`
+What happens when this route is built in Next.js 16.3.6?`,
     options: [
-      'It cannot read cookies',
-      'Its matcher can skip paths, layouts do not re-run every navigation, and it can be bypassed',
-      'It only runs in development',
-      'It cannot redirect requests',
+      'It builds fine and returns a 403',
+      'The build fails: forbidden() requires experimental.authInterrupts to be enabled',
+      'It silently falls back to a 404 page',
+      'It only fails in development, not in production builds',
     ],
     answer: 1,
+    explain: 'As of 16.3.6, forbidden() and unauthorized() are still experimental and require experimental.authInterrupts: true in next.config.ts. Without it, next build fails with an explicit error.',
   },
   {
-    q: 'Where does the authoritative authorization check belong?',
+    q: 'Why is a database session easier to revoke than a stateless (JWT-style) session?',
     options: [
-      'In a Data Access Layer close to the data',
-      'Only in proxy',
-      'In the browser before fetching',
-      'In the root layout only',
+      'Database sessions are encrypted and JWTs are not',
+      'Deleting the session row invalidates it immediately; a stateless cookie stays valid until it expires',
+      'Stateless sessions cannot be read on the server',
+      'There is no difference — both revoke the same way',
     ],
-    answer: 0,
+    answer: 1,
+    explain: 'A database session is just a row plus an opaque cookie ID — delete the row and access ends. A stateless session is self-contained in the cookie and remains valid until its expiry, since there is no server-side record to delete.',
+  },
+  {
+    q: `\`\`\`ts
+export async function AdminPage() {
+  const session = await verifySession()
+  try {
+    if (session.role !== 'admin') forbidden()
+  } catch {}
+  return <Dashboard />
+}
+\`\`\`
+What is wrong with this code?`,
+    options: [
+      'Nothing — try/catch is good defensive practice here',
+      'forbidden() throws to render the 403 UI; the try/catch swallows it, so non-admins still see the Dashboard',
+      'forbidden() must be awaited, and this code forgets to',
+      'verifySession() cannot be called inside a try/catch',
+    ],
+    answer: 1,
+    explain: 'forbidden() (like redirect() and unauthorized()) works by throwing. A try/catch around it catches that throw, so execution falls through to return <Dashboard /> regardless of role — exactly the access-control bug it was meant to prevent.',
+  },
+  {
+    q: 'Which cookie option is the primary defense against CSRF?',
+    options: [
+      'httpOnly',
+      'secure',
+      'sameSite',
+      'path',
+    ],
+    answer: 2,
+    explain: 'sameSite controls whether the cookie is sent along with cross-site requests, which is the main lever against CSRF. httpOnly blocks client-side JS reads (XSS defense), and secure requires HTTPS.',
   },
 ];
 

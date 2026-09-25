@@ -1,6 +1,6 @@
 ---
 title: Environment และ Configuration
-description: env var เป็น server-only เป็น default ส่วน NEXT_PUBLIC_ ถูก inline เข้า client bundle ลำดับการโหลด .env และของสำคัญใน next.config.ts
+description: env var เป็น server-only เป็น default ส่วน NEXT_PUBLIC_ ถูก inline เข้า client bundle เฉพาะตอนเข้าถึงแบบ static literal เท่านั้น ลำดับการโหลด .env, build-time vs runtime config และของสำคัญใน next.config.ts
 sidebar:
   order: 3
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
-env var เป็น server-only เป็น default มีแค่ตัวที่ขึ้นต้นด้วย `NEXT_PUBLIC_` เท่านั้นที่ถูก inline เข้า client bundle เพราะฉะนั้น secret ห้ามมี prefix นั้นเด็ดขาด
+env var เป็น server-only เป็น default มีแค่ตัวที่ขึ้นต้นด้วย `NEXT_PUBLIC_` เท่านั้นที่ถูก inline เข้า client bundle — และ inline ก็ต่อเมื่อเข้าถึงแบบ static literal `process.env.NEXT_PUBLIC_X` เท่านั้น เพราะฉะนั้น secret ห้ามมี prefix นั้นเด็ดขาด และการเข้าถึงแบบ dynamic จะไม่มีทางไปถึง browser
 
 ## Server-only เทียบกับ NEXT_PUBLIC_
 
@@ -32,6 +33,38 @@ NEXT_PUBLIC_ANALYTICS_ID="abcdefghijk"             # safe to expose
 
 เพราะค่า `NEXT_PUBLIC_` ถูกฝังตอน build การเปลี่ยนค่าแปลว่าต้อง rebuild ใหม่ ไม่ได้อ่านตอน runtime บน browser
 
+## NEXT_PUBLIC_ ต้องเป็น static literal — พิสูจน์แล้ว
+
+Next.js inline ตัวแปร `NEXT_PUBLIC_` ด้วยการแทนที่ข้อความตรง ๆ ตอน build: มันมองหา source pattern ที่ตรงเป๊ะ ๆ คือ `process.env.NEXT_PUBLIC_X` แล้วแทนด้วยค่าจริง การ lookup แบบ dynamic — `process.env[someVariable]` — ไม่ match pattern นั้น เลยไม่ถูกแทนที่ และบน browser `process.env` ก็ไม่มีอยู่จริงอยู่แล้วนอกจากนี้
+
+พิสูจน์ทั้งสองแบบใน probe ด้วย Client Component:
+
+```ts
+// app/page.tsx — 'use client', both variants read the same variable
+'use client'
+import { useEffect } from 'react'
+
+function readEnv(name: string) {
+  return process.env[name] // dynamic — the key is a runtime argument
+}
+
+export default function Page() {
+  useEffect(() => {
+    console.log('STATIC', process.env.NEXT_PUBLIC_ANALYTICS_ID)
+    console.log('DYNAMIC', readEnv('NEXT_PUBLIC_ANALYTICS_ID'))
+  }, [])
+  return <div>env inlining probe</div>
+}
+```
+
+หลัง `next build` grep chunk ฝั่ง client ที่ generate มาดูทั้งสอง call site เห็นตัว static ถูกแทนที่ด้วยค่าจริงจาก `.env.local` เลย ส่วนตัว dynamic ยังเป็น property read สด ๆ (และบน browser คือค่าว่างเปล่า):
+
+```text
+console.log("STATIC","abcdefghijk123"),console.log("DYNAMIC",i.default.env.NEXT_PUBLIC_ANALYTICS_ID)
+```
+
+`i.default.env.NEXT_PUBLIC_ANALYTICS_ID` คือ property access บน `process` shim ฝั่ง client ตอน runtime ไม่ใช่ literal — และ shim นั้นมีอยู่ก็เพื่อให้ reference ที่ *ตรวจจับได้แบบ static* เท่านั้น resolve ได้ ส่วน key ที่คำนวณตอน runtime ไม่เคยถูกตรวจจับ มันเลย resolve เป็น `undefined` บน browser การห่อ access เดียวกันนี้ไว้ใน helper function ที่รับ key เป็น parameter ก็เพียงพอที่จะทำให้การแทนที่ล้มเหลว ถึงแม้ helper จะถูกเรียกด้วย string literal เดิมทุกครั้งก็ตาม
+
 ## ไฟล์ .env และลำดับการโหลด
 
 Next.js โหลดไฟล์ `.env` หลายตัวและตัวที่ match ก่อนชนะ สำหรับ production ลำดับคือ `.env.production.local` แล้ว `.env.local` แล้ว `.env.production` แล้ว `.env` เก็บ secret ไว้ใน `.env.local` (gitignore) แล้ว commit เฉพาะ default ที่ปลอดภัย
@@ -42,6 +75,38 @@ Next.js โหลดไฟล์ `.env` หลายตัวและตัว�
 .env.development      # loaded during next dev
 .env.production       # loaded during next build / next start
 ```
+
+## Env var ใน proxy และ instrumentation
+
+`proxy.ts` กับ `instrumentation.ts` เป็นแค่ Node.js module ธรรมดาที่รันฝั่ง server ดังนั้นมันอ่าน `process.env` เหมือน Server Component ทั่วไป ไม่มี case พิเศษ และตัวแปร `NEXT_PUBLIC_` ก็ใช้ได้ที่นี่เหมือนกัน (แค่ไม่เคยถูก inline เข้า client bundle สำหรับไฟล์พวกนี้ เพราะมันไม่ได้ถูกส่งไป browser)
+
+```ts
+// instrumentation.ts — env vars are available in register() as-is
+export function register() {
+  console.log('runtime:', process.env.NEXT_RUNTIME) // 'nodejs' or 'edge'
+}
+```
+
+พิสูจน์ใน probe: start standalone server แล้ว log ออกมาว่า `INSTRUMENTATION_REGISTER_CALLED nodejs` — `register()` รันครั้งเดียวต่อ server instance ก่อนที่มันจะเริ่มรับ traffic โดยที่ `process.env` ฝั่ง server เต็มตัวถูก populate ไว้แล้ว
+
+## Build-time vs Runtime config
+
+ค่า `NEXT_PUBLIC_` ถูก freeze ทันทีที่ `next build` รัน การ promote build เดียวกันข้าม environment (หรือ Docker image เดียวกันข้าม stage) แปลว่าค่าพวกนั้นติดไปกับ image ไม่ใช่ติดกับ environment ที่มันไปลง สำหรับค่าที่ต้องอ่านใหม่ทุก request ให้อ่านตัวแปร **server-only** ข้างใน component ที่ opt-in dynamic rendering แล้ว — เรียก `connection()` (หรืออ่าน `cookies()`/`headers()`) จะบังคับแบบนั้น:
+
+```ts
+// app/page.tsx — read a server env var at request time, not at build time
+import { connection } from 'next/server'
+
+export default async function Page() {
+  await connection()
+  // cookies, headers, and other request-time APIs also opt into
+  // dynamic rendering, so this is evaluated per request, not baked in
+  const value = process.env.MY_VALUE
+  return <div>{value}</div>
+}
+```
+
+นี่คือเหตุผลตรง ๆ ว่าทำไม Docker image เดียวที่ใช้ `output: 'standalone'` ถึง promote ผ่าน staging กับ production ได้โดยไม่ต้องแก้อะไร: env var แบบ server-only ถูกอ่านสด ๆ จาก environment ของ container ตอน runtime ส่วนตัวที่มี `NEXT_PUBLIC_` เท่านั้นที่ถูกล็อกไว้ตั้งแต่ build ที่สร้าง image นั้น
 
 ## ของสำคัญใน next.config.ts
 
@@ -76,17 +141,68 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-<Mermaid title="env var แต่ละแบบอ่านได้จากที่ไหน" code={diagramEnvTh} />
+## Mental Model
+
+นึกภาพ `next build` เป็นแท่นพิมพ์ ไม่ใช่เครื่องถ่ายเอกสาร อะไรก็ตามที่ mark ด้วย `NEXT_PUBLIC_` และเข้าถึงแบบ literal จะถูกเรียงพิมพ์ลงหน้ากระดาษตรง ๆ — หมึกถาวร เปลี่ยนไม่ได้หลังพิมพ์เสร็จ ส่วนที่เหลือคือช่องว่างที่รอเติมตอนมี request จริง อ่านจาก environment ที่ container นั้นอาศัยอยู่ ณ ตอนนั้น การ lookup แบบ dynamic (`process.env[key]`) คือช่องว่างที่แท่นพิมพ์ไม่รู้ว่าต้องเรียงพิมพ์ — มันไม่ใช่ secret รั่ว มันแค่ไม่เคยถูกเติมให้คนอ่าน (browser) เท่านั้นเอง
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| เข้าถึง `NEXT_PUBLIC_` แบบ static literal | ค่าไปถึง browser ได้ ไม่มี cost lookup ตอน runtime | ถูก freeze ตอน build — เปลี่ยนค่าต้อง rebuild |
+| เข้าถึง `process.env[key]` แบบ dynamic | ดูยืดหยุ่น อ่านเหมือน object lookup ธรรมดา | ไม่เคยถูก inline ให้ client — เป็น `undefined` แบบเงียบ ๆ บน browser |
+| อ่าน server-only var หลัง `connection()` | สดใหม่ทุก request, image เดียว promote ข้าม environment ได้ | route ถูก opt-in dynamic rendering — ไม่ใช่ static shell อีกต่อไป |
+| `.env.local` สำหรับ secret | ไม่ถูก commit, override `.env` ในเครื่องได้ | ต้อง provision แยกในทุก environment (CI, container) เอง |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **`process.env.NEXT_PUBLIC_X` แบบไหนก็ปลอดภัยเหมือนกันหมด** — มันปลอดภัยจากการเป็น *secret รั่ว* แค่นั้น แต่การ inline เกิดเฉพาะ form แบบ static เป๊ะ ๆ ตัวแปรเดียวกันที่เข้าถึงแบบ dynamic จะคืนค่า `undefined` แบบเงียบ ๆ บน browser แทน
+- **`process.env[key]` กับ `process.env.KEY` ทำงานเหมือนกันหลัง bundle เสร็จ** — พิสูจน์แล้วว่าไม่จริง `next build` แทนที่เฉพาะ form ที่เป็น literal-property เท่านั้น form แบบ bracket (หรือ indirection ผ่าน helper function ใด ๆ) มองไม่เห็นโดยตัวแทนที่นี้เลย
+- **เปลี่ยนค่า `NEXT_PUBLIC_` ใน `.env.local` แล้ว restart `next start` จะได้ค่าใหม่** — ไม่จริง ค่า `NEXT_PUBLIC_` ถูก inline ตอน `next build` ไม่ใช่อ่านตอน `next start` ต้อง rebuild ใหม่เท่านั้น
+- **server-only env var ที่อ่านใน page จะเป็น "runtime" และสดเสมอโดยอัตโนมัติ** — สดก็ต่อเมื่อ route นั้น opt-in dynamic rendering (ผ่าน `connection()`, `cookies()`, `headers()` หรือคล้ายกัน) เท่านั้น route ที่ static เต็มตัวจะ evaluate การอ่านนั้นแค่ครั้งเดียวตอน build/prerender
+
+<Mermaid title="env var แต่ละแบบอ่านได้จากที่ไหน และตอนไหน" code={diagramEnvTh} />
 
 export const diagramEnvTh = `
 graph TD
   A["process.env.SECRET"] --> B["Server only"]
-  C["process.env.NEXT_PUBLIC_ID"] --> B
+  C["process.env.NEXT_PUBLIC_ID (literal)"] --> B
   C --> D["Inlined into client bundle at build time"]
+  E["process.env[dynamicKey]"] --> B
+  E -.->|never inlined| F["undefined in the browser"]
 `;
 
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาแตะ env var หรือ config ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- Client Component (หรืออะไรก็ตามที่ถูกส่งไป browser) เข้าถึง `process.env` ผ่านตัวแปร, key ที่คำนวณมา หรือ helper function แทนที่จะเป็น literal `process.env.NEXT_PUBLIC_X` ตรง ๆ หรือเปล่า? แบบนั้นจะไม่ถูก inline และคืนค่า `undefined` แบบเงียบ ๆ ตอน runtime
+- มีตัวแปรที่*ไม่มี* prefix `NEXT_PUBLIC_` ถูกส่งเข้า Client Component เป็น prop หรือแทรกเข้าไปใน JS ฝั่ง client หรือเปล่า? นั่นคือ secret รั่วผ่านประตูอีกบาน — กฎเรื่อง prefix ป้องกันแค่การเข้าถึง `process.env` โดยตรงเท่านั้น
+- โค้ดสมมติว่าเปลี่ยน `.env.local` แล้ว restart `next start` (โดยไม่ rebuild) จะได้ค่า `NEXT_PUBLIC_` ใหม่หรือเปล่า? ไม่ได้ — ค่าพวกนั้นถูก inline ตอน `next build`
+- page อ่าน server-only env var แล้วสมมติว่ามันสดทุก request โดยไม่มี request-time API (`connection()`, `cookies()`, `headers()`) บังคับ dynamic rendering เลยหรือเปล่า? route ที่ static จะฝังการอ่านนั้นไว้แค่ครั้งเดียว
+- `next.config.ts` อ้างอิง `process.env` สำหรับค่าที่ควรต่างกันในแต่ละ deployment ของ image เดียวกัน (เช่น self-host ด้วย `output: 'standalone'`) หรือเปล่า? ค่าใน config ก็ถูก evaluate ตอน build เหมือนกัน เว้นแต่จะ defer ไว้ชัดเจน
+
+<SpotTheBug code={`// app/analytics.tsx
+'use client'
+
+const PUBLIC_KEYS = {
+  analytics: 'NEXT_PUBLIC_ANALYTICS_ID',
+  region: 'NEXT_PUBLIC_REGION',
+}
+
+function getPublicEnv(name: keyof typeof PUBLIC_KEYS) {
+  return process.env[PUBLIC_KEYS[name]]
+}
+
+export function Analytics() {
+  const id = getPublicEnv('analytics')
+  return <span data-analytics-id={id} />
+}`}>
+`getPublicEnv` อ่าน `process.env[PUBLIC_KEYS[name]]` — bracket access ผ่าน indirection สองชั้น ถึงแม้ `PUBLIC_KEYS.analytics` จะเป็น string literal `'NEXT_PUBLIC_ANALYTICS_ID'` ตลอด แต่การแทนที่ตอน build ของ Next.js match แค่ source text ที่ตรงเป๊ะ ๆ คือ `process.env.NEXT_PUBLIC_ANALYTICS_ID` มันไม่เห็น pattern นี้เลย ดังนั้นไม่มีอะไรถูก inline — `data-analytics-id` จะ render เป็น `undefined` ให้ผู้ใช้ทุกคน โดยไม่มี build error หรือ warning ใด ๆ ทั้งสิ้น ทางแก้คือ reference ตัวแปร `NEXT_PUBLIC_` แต่ละตัวตรง ๆ แบบ literal ที่ทุก call site ในโค้ดฝั่ง client ที่ต้องการมัน
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-มีแค่ var `NEXT_PUBLIC_` เท่านั้นที่ไปถึง browser และถูกฝังตอน build เก็บ secret ทุกตัวไว้แบบไม่มี prefix และไว้ใน `.env.local`
+มีแค่ var `NEXT_PUBLIC_` เท่านั้นที่ไปถึง browser และไปถึงก็ต่อเมื่อเข้าถึงแบบ literal `process.env.NEXT_PUBLIC_X` ตรง ๆ เท่านั้น — indirection แบบไหนก็ทำให้การแทนที่ตอน build ล้มเหลว เก็บ secret ทุกตัวไว้แบบไม่มี prefix ไว้ใน `.env.local` และห้ามส่ง public var ผ่าน computed key ในโค้ดฝั่ง client เด็ดขาด
 </Callout>
 
 export const quizEnvTh = [
@@ -99,16 +215,34 @@ export const quizEnvTh = [
       'ไม่มีที่ไหนเลยจนกว่าจะ rebuild',
     ],
     answer: 1,
+    explain: 'default แล้ว env var ใช้ได้แค่ในฝั่ง server ของ Node.js เท่านั้น — ไม่ถูกส่งไป browser เลยเว้นแต่จะใส่ prefix NEXT_PUBLIC_ ให้ชัดเจน',
+  },
+  {
+    q: `\`\`\`ts
+'use client'
+const key = 'NEXT_PUBLIC_ANALYTICS_ID'
+const id = process.env[key]
+\`\`\`
+\`id\` จะได้ค่าอะไรบน browser หลัง \`next build\` ปกติ?`,
+    options: [
+      'ค่าจาก .env.local เหมือน form แบบ literal',
+      'undefined — form แบบ bracket-access ไม่เคยถูก inline',
+      'build error เพราะเข้าถึง env แบบ dynamic ทำไม่ได้',
+      'string literal "NEXT_PUBLIC_ANALYTICS_ID" ตรง ๆ',
+    ],
+    answer: 1,
+    explain: 'การแทนที่ตอน build ของ Next.js match แค่ source pattern ที่เป็น literal process.env.NEXT_PUBLIC_X เท่านั้น bracket access ผ่านตัวแปรมันมองไม่เห็น เลยปล่อย reference ไว้แบบเดิม ซึ่ง resolve เป็น undefined บน browser ที่ไม่มี process.env อยู่จริงอยู่แล้ว',
   },
   {
     q: 'prefix NEXT_PUBLIC_ ทำอะไร',
     options: [
       'เข้ารหัสค่า',
-      'inline ค่าเข้า client bundle ตอน build',
+      'inline ค่าเข้า client bundle ตอน build เมื่อเข้าถึงแบบ literal',
       'ทำให้อ่านค่าตอน runtime บน browser',
       'mark ว่าเป็นค่าบังคับ',
     ],
     answer: 1,
+    explain: 'prefix บอก Next.js ให้แทนที่ reference แบบ literal ที่ตรงเป๊ะ process.env.NEXT_PUBLIC_X ด้วยค่าจาก environment ที่ใช้ตอน next build',
   },
   {
     q: 'secret จริงควรเก็บไว้ในไฟล์ไหน',
@@ -119,6 +253,25 @@ export const quizEnvTh = [
       'package.json',
     ],
     answer: 1,
+    explain: '.env.local ถูก gitignore ไว้เป็น default ใน create-next-app และ override .env ในเครื่อง ทำให้เป็นที่ที่เหมาะกับ secret จริงที่ห้าม commit',
+  },
+  {
+    q: `\`\`\`ts
+// app/page.tsx
+export default async function Page() {
+  const value = process.env.MY_VALUE
+  return <div>{value}</div>
+}
+\`\`\`
+route นี้ไม่มี dynamic API เลยและ static เต็มตัว \`process.env.MY_VALUE\` ถูก evaluate จริง ๆ ตอนไหน?`,
+    options: [
+      'สดใหม่ทุก request ที่เข้ามา',
+      'ครั้งเดียวตอน build/prerender — ค่าเดิมถูกส่งให้ทุก request จนกว่าจะ build ใหม่',
+      'ไม่เคยเลย — env var แบบ server-only คืน undefined เสมอ',
+      'แค่ครั้งแรกที่ container start เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'ถ้าไม่มี request-time API อย่าง connection(), cookies() หรือ headers() มา opt-in dynamic rendering page จะถูก prerender แค่ครั้งเดียว และ env var ที่อ่านตอน render นั้นก็ถูกฝังเข้า static output ไปเลย',
   },
   {
     q: 'key ไหนใน next.config.ts ที่อนุญาต image host ภายนอก',
@@ -129,6 +282,7 @@ export const quizEnvTh = [
       'rewrites',
     ],
     answer: 0,
+    explain: 'images.remotePatterns คือ allowlist ที่ next/image เช็กก่อนจะ optimize รูปจาก domain ภายนอก',
   },
 ];
 

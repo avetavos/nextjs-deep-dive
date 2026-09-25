@@ -1,6 +1,6 @@
 ---
 title: Environment and Configuration
-description: Server-only env vars versus NEXT_PUBLIC_ vars inlined into the client bundle, .env load order, and the essentials of next.config.ts.
+description: Server-only env vars versus NEXT_PUBLIC_ vars inlined into the client bundle as a static literal only, .env load order, build-time versus runtime config, and the essentials of next.config.ts.
 sidebar:
   order: 3
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
-Environment variables are server-only by default, and only those prefixed with `NEXT_PUBLIC_` are inlined into the client bundle — so a secret must never carry that prefix.
+Environment variables are server-only by default, and only those prefixed with `NEXT_PUBLIC_` are inlined into the client bundle — and only when the access is a static, literal `process.env.NEXT_PUBLIC_X`, so a secret must never carry that prefix and a dynamic lookup never reaches the browser.
 
 ## Server-only versus NEXT_PUBLIC_
 
@@ -32,6 +33,38 @@ NEXT_PUBLIC_ANALYTICS_ID="abcdefghijk"             # safe to expose
 
 Because `NEXT_PUBLIC_` values are baked in at build time, changing one means you must rebuild — it is not read at runtime in the browser.
 
+## NEXT_PUBLIC_ must be a static literal — proven
+
+Next.js inlines `NEXT_PUBLIC_` variables with a plain text substitution during the build: it looks for the exact source pattern `process.env.NEXT_PUBLIC_X` and replaces it with the literal value. A dynamic lookup — `process.env[someVariable]` — doesn't match that pattern, so it is never replaced, and in the browser `process.env` doesn't otherwise exist.
+
+Proving both sides in the probe with a Client Component:
+
+```ts
+// app/page.tsx — 'use client', both variants read the same variable
+'use client'
+import { useEffect } from 'react'
+
+function readEnv(name: string) {
+  return process.env[name] // dynamic — the key is a runtime argument
+}
+
+export default function Page() {
+  useEffect(() => {
+    console.log('STATIC', process.env.NEXT_PUBLIC_ANALYTICS_ID)
+    console.log('DYNAMIC', readEnv('NEXT_PUBLIC_ANALYTICS_ID'))
+  }, [])
+  return <div>env inlining probe</div>
+}
+```
+
+After `next build`, grepping the emitted client chunk for both call sites shows the static access literally replaced with the value from `.env.local`, while the dynamic one is still a live (and in the browser, empty) property read:
+
+```text
+console.log("STATIC","abcdefghijk123"),console.log("DYNAMIC",i.default.env.NEXT_PUBLIC_ANALYTICS_ID)
+```
+
+`i.default.env.NEXT_PUBLIC_ANALYTICS_ID` is a property access on the client-side `process` shim at runtime, not a literal — and that shim only exists so the *statically detected* references resolve; a key computed at runtime was never detected, so it resolves to `undefined` in the browser. Wrapping the same access in a helper function that takes the key as a parameter is enough to defeat the substitution, even though the helper is always called with the same literal string.
+
 ## .env files and load order
 
 Next.js loads several `.env` files and the first match wins. For production the order is `.env.production.local`, then `.env.local`, then `.env.production`, then `.env`. Keep secrets in `.env.local` (gitignored) and commit only safe defaults.
@@ -42,6 +75,38 @@ Next.js loads several `.env` files and the first match wins. For production the 
 .env.development      # loaded during next dev
 .env.production       # loaded during next build / next start
 ```
+
+## Env vars in proxy and instrumentation
+
+`proxy.ts` and `instrumentation.ts` are both plain Node.js modules that run on the server, so they read `process.env` the same way any Server Component does — no special casing, and `NEXT_PUBLIC_` variables work there too (they're just never inlined into a client bundle for these files, since neither ships to the browser).
+
+```ts
+// instrumentation.ts — env vars are available in register() as-is
+export function register() {
+  console.log('runtime:', process.env.NEXT_RUNTIME) // 'nodejs' or 'edge'
+}
+```
+
+Proven in the probe: starting the standalone server logs `INSTRUMENTATION_REGISTER_CALLED nodejs` — `register()` runs once per server instance, before it accepts traffic, with the full server-side `process.env` already populated.
+
+## Build-time vs runtime config
+
+`NEXT_PUBLIC_` values are frozen the moment `next build` runs — promoting the same build across environments (or the same Docker image across stages) means those values travel with the image, not with the environment it lands in. For a value that must be read fresh on every request, read a **server-only** variable inside a component that has opted into dynamic rendering — calling `connection()` (or reading `cookies()`/`headers()`) forces that:
+
+```ts
+// app/page.tsx — read a server env var at request time, not at build time
+import { connection } from 'next/server'
+
+export default async function Page() {
+  await connection()
+  // cookies, headers, and other request-time APIs also opt into
+  // dynamic rendering, so this is evaluated per request, not baked in
+  const value = process.env.MY_VALUE
+  return <div>{value}</div>
+}
+```
+
+This is exactly why a single Docker image with `output: 'standalone'` can be promoted through staging and production unchanged: server-only env vars are read fresh from the container's environment at runtime, while only the `NEXT_PUBLIC_` ones are locked in at the build that produced the image.
 
 ## next.config.ts essentials
 
@@ -76,17 +141,68 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-<Mermaid title="Where each env var can be read" code={diagramEnvEn} />
+## Mental Model
+
+Think of `next build` as a printing press, not a photocopier. Anything marked `NEXT_PUBLIC_` and accessed as a literal gets typeset directly into the page — permanent ink, unchangeable after the run. Everything else is a blank you fill in at request time, read from whatever environment the container currently lives in. A dynamic lookup (`process.env[key]`) is a blank the press doesn't know to typeset — it isn't a secret leak, it's just never filled in for the reader (the browser).
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `NEXT_PUBLIC_` static literal access | Value ships to the browser, zero runtime lookup cost | Frozen at build time — a value change needs a rebuild |
+| Dynamic `process.env[key]` access | Looks flexible, reads like a normal object lookup | Never inlined for the client — silently `undefined` in the browser |
+| Server-only var read behind `connection()` | Fresh per request, one image promotable across environments | Opts the route into dynamic rendering — no longer a static shell |
+| `.env.local` for secrets | Never committed, overrides `.env` locally | Must be provisioned separately in every environment (CI, containers) |
+
+## Common Misconceptions
+
+- **Any `process.env.NEXT_PUBLIC_X` reference is automatically safe to reason about.** It's safe from being a *secret leak* by omission — but the inlining only happens for the exact static form; the same variable accessed dynamically silently returns `undefined` in the browser instead of the value.
+- **`process.env[key]` and `process.env.KEY` behave identically once bundled.** Proven false: `next build` only replaces the literal-property form with the value. The bracket form (or any indirection through a helper function) is invisible to that substitution.
+- **Changing a `NEXT_PUBLIC_` value in `.env.local` and restarting `next start` picks up the new value.** It doesn't — `NEXT_PUBLIC_` values are inlined during `next build`, not read at `next start`. A rebuild is required.
+- **A server-only env var read in a page is automatically "runtime" and always fresh.** Only if the route has opted into dynamic rendering (via `connection()`, `cookies()`, `headers()`, or similar) — a fully static route still evaluates that read once, at build/prerender time.
+
+<Mermaid title="Where each env var can be read, and when" code={diagramEnvEn} />
 
 export const diagramEnvEn = `
 graph TD
   A["process.env.SECRET"] --> B["Server only"]
-  C["process.env.NEXT_PUBLIC_ID"] --> B
+  C["process.env.NEXT_PUBLIC_ID (literal)"] --> B
   C --> D["Inlined into client bundle at build time"]
+  E["process.env[dynamicKey]"] --> B
+  E -.->|never inlined| F["undefined in the browser"]
 `;
 
+## Reading AI-generated code
+
+When a generated snippet touches env vars or config, check for these before trusting it:
+
+- Does a Client Component (or anything shipped to the browser) access `process.env` through a variable, a computed key, or a helper function instead of the literal `process.env.NEXT_PUBLIC_X`? That access will not be inlined and silently returns `undefined` at runtime.
+- Does any variable *without* the `NEXT_PUBLIC_` prefix get passed into a Client Component as a prop, or interpolated into client-facing JS? That's a secret leak through a different door — the prefix rule only protects `process.env` access itself.
+- Does the code assume changing `.env.local` and restarting `next start` (without rebuilding) picks up a new `NEXT_PUBLIC_` value? It won't — those are inlined at `next build`.
+- Does a page read a server-only env var and assume it's always fresh per request, without any request-time API (`connection()`, `cookies()`, `headers()`) forcing dynamic rendering? A static route bakes that read in once.
+- Does `next.config.ts` reference `process.env` for something that should vary per deployment of the same image (like `output: 'standalone'` self-hosting)? Config values are evaluated at build time too, unless explicitly deferred.
+
+<SpotTheBug code={`// app/analytics.tsx
+'use client'
+
+const PUBLIC_KEYS = {
+  analytics: 'NEXT_PUBLIC_ANALYTICS_ID',
+  region: 'NEXT_PUBLIC_REGION',
+}
+
+function getPublicEnv(name: keyof typeof PUBLIC_KEYS) {
+  return process.env[PUBLIC_KEYS[name]]
+}
+
+export function Analytics() {
+  const id = getPublicEnv('analytics')
+  return <span data-analytics-id={id} />
+}`}>
+`getPublicEnv` reads `process.env[PUBLIC_KEYS[name]]` — a bracket access through two levels of indirection. Even though `PUBLIC_KEYS.analytics` is always the literal string `'NEXT_PUBLIC_ANALYTICS_ID'`, Next.js's build-time substitution only matches the exact source text `process.env.NEXT_PUBLIC_ANALYTICS_ID`. It never sees that pattern here, so nothing gets inlined — `data-analytics-id` renders as `undefined` for every visitor, with no build error or warning. The fix is to reference each `NEXT_PUBLIC_` variable directly, as a literal, at every call site that needs it in client code.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Only `NEXT_PUBLIC_` vars reach the browser and they are baked in at build time — keep every secret unprefixed and in `.env.local`.
+Only `NEXT_PUBLIC_` vars reach the browser, and only when accessed as the exact literal `process.env.NEXT_PUBLIC_X` — any indirection defeats the build-time substitution, so keep every secret unprefixed, in `.env.local`, and never route a public var through a computed key in client code.
 </Callout>
 
 export const quizEnvEn = [
@@ -99,16 +215,34 @@ export const quizEnvEn = [
       'Nowhere until rebuilt',
     ],
     answer: 1,
+    explain: 'By default, environment variables are only available in the Node.js server environment — never sent to the browser unless explicitly prefixed with NEXT_PUBLIC_.',
+  },
+  {
+    q: `\`\`\`ts
+'use client'
+const key = 'NEXT_PUBLIC_ANALYTICS_ID'
+const id = process.env[key]
+\`\`\`
+What does \`id\` evaluate to in the browser, after a normal \`next build\`?`,
+    options: [
+      "The value from .env.local, same as the literal form",
+      'undefined — the bracket-access form is never inlined',
+      'A build error, because dynamic env access is disallowed',
+      'The literal string "NEXT_PUBLIC_ANALYTICS_ID"',
+    ],
+    answer: 1,
+    explain: "Next.js's build-time substitution only matches the literal source pattern process.env.NEXT_PUBLIC_X. A bracket access through a variable is invisible to it, so the reference is left as-is and resolves to undefined in the browser, where process.env doesn't otherwise exist.",
   },
   {
     q: 'What does the NEXT_PUBLIC_ prefix do?',
     options: [
       'Encrypts the value',
-      'Inlines the value into the client bundle at build time',
+      'Inlines the value into the client bundle at build time, when accessed as a literal',
       'Makes it read at runtime in the browser',
       'Marks it as required',
     ],
     answer: 1,
+    explain: 'The prefix tells Next.js to replace the exact literal reference process.env.NEXT_PUBLIC_X with the value from the environment used during next build.',
   },
   {
     q: 'Which file should hold real secrets?',
@@ -119,6 +253,25 @@ export const quizEnvEn = [
       'package.json',
     ],
     answer: 1,
+    explain: '.env.local is gitignored by default in create-next-app and overrides .env locally, making it the right place for real secrets that must never be committed.',
+  },
+  {
+    q: `\`\`\`ts
+// app/page.tsx
+export default async function Page() {
+  const value = process.env.MY_VALUE
+  return <div>{value}</div>
+}
+\`\`\`
+This route has no dynamic APIs and is fully static. When is \`process.env.MY_VALUE\` actually evaluated?`,
+    options: [
+      'Fresh, on every incoming request',
+      'Once, at build/prerender time — the same value ships for every request until the next build',
+      'Never — it always returns undefined for server-only vars',
+      'Only the first time the container starts',
+    ],
+    answer: 1,
+    explain: 'Without a request-time API like connection(), cookies(), or headers() to opt the route into dynamic rendering, a page is prerendered once, and every env var read during that render is baked into the static output.',
   },
   {
     q: 'Which next.config.ts key allows external image hosts?',
@@ -129,6 +282,7 @@ export const quizEnvEn = [
       'rewrites',
     ],
     answer: 0,
+    explain: 'images.remotePatterns is the allowlist next/image checks before optimizing an image from an external domain.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: Deployment and Self-Hosting
-description: Deploying to Vercel versus self-hosting, output standalone for a minimal Docker image, how ISR and revalidateTag work across instances, and a go-live checklist.
+description: Deploying to Vercel versus self-hosting, a real multi-stage Dockerfile with output standalone, cacheHandlers versus cacheHandler, instrumentation.ts, the Node.js version floor, multi-instance encryption keys, and a go-live checklist.
 sidebar:
   order: 4
 ---
@@ -9,14 +9,15 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
-You can deploy to Vercel with zero config or self-host a Node server behind a CDN — but once you run more than one instance, caching and ISR need a shared cache handler so every instance agrees.
+You can deploy to Vercel with zero config or self-host a Node server behind a CDN — but once you run more than one instance, tag-based caching and Server Actions need coordination (a shared cache handler, a fixed encryption key) so every instance agrees.
 
 ## Vercel versus self-hosting
 
-Vercel detects a Next.js app and wires up builds, the CDN, image optimization, and the server runtime with no configuration. Self-hosting gives you full control: you build the app and run `next start` (a long-lived Node server) yourself, usually behind a CDN that caches static assets.
+Vercel detects a Next.js app and wires up builds, the CDN, image optimization, and the server runtime with no configuration. Self-hosting gives you full control: you build the app and run `next start` (a long-lived Node server) yourself, usually behind a CDN or reverse proxy (nginx or similar) that caches static assets and shields the Next.js process from malformed requests and rate-limit concerns.
 
 ```bash
 # Self-hosting: build once, then run a long-lived Node server
@@ -24,9 +25,11 @@ next build
 next start -p 3000
 ```
 
-## A minimal Docker image with output standalone
+Minimum Node.js version for Next.js 16: **20.9**. Anything older is unsupported, whether you self-host directly or build the base image for a container.
 
-Set `output: 'standalone'` and Next.js traces exactly which files the server needs and copies them into `.next/standalone`. You get a tiny image that ships without `node_modules`.
+## A full multi-stage Dockerfile — built and run
+
+`output: 'standalone'` makes Next.js trace exactly which files the server needs and copy them into `.next/standalone` — a tiny image that ships without the full `node_modules`.
 
 ```ts
 // next.config.ts
@@ -39,34 +42,142 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
+A production Dockerfile splits into three stages — `deps` installs packages once, `builder` compiles, `runner` ships only the traced output as a non-root user:
+
 ```dockerfile
-# Minimal runtime image — copy only the traced standalone output
-FROM node:20-alpine
+# Dockerfile
+# syntax=docker/dockerfile:1
+FROM node:20-alpine AS deps
 WORKDIR /app
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
-# standalone ships its own server.js — do NOT use "next start" here
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 CMD ["node", "server.js"]
 ```
 
+Built and run for real in the probe (`docker build` then `docker run -p 3412:3000`):
+
+```text
+#16 4.993 Route (app)
+#16 4.993 ┌ ○ /
+#16 4.993 ├ ○ /_not-found
+#16 4.993 └ ƒ /boom
+#20 writing image sha256:ec357758ea09b2b7e8316a98fb4ea19e3e4290da28400f99be1de5ca06bf6196 done
+```
+
+```text
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3412/
+200
+$ docker exec nextdd-probe-run whoami
+nextjs
+```
+
+`USER nextjs` is not decorative — `whoami` inside the running container confirms the process is uid 1001, not root. Note the runner stage's `CMD` is `node server.js`, never `next start` or `npx next`: the standalone output ships its own minimal `server.js` and does not include the `next` CLI or the rest of `node_modules`.
+
+### HOSTNAME=0.0.0.0: already the default, worth pinning anyway
+
+The standalone `server.js` itself already defaults to `0.0.0.0` when `HOSTNAME` isn't set — grepping the generated file confirms it:
+
+```text
+const hostname = process.env.HOSTNAME || '0.0.0.0'
+```
+
+Setting `ENV HOSTNAME=0.0.0.0` explicitly in the Dockerfile doesn't change that default — it guards against something else overriding it. Since `HOSTNAME` is a generic-sounding name, some orchestration layers or shells populate it with something other than an IP (a container ID, a pod name); pinning it in the image removes that class of surprise instead of relying on an inherited value.
+
 ## Caching and ISR across instances
 
-ISR, the full-route cache, and `revalidateTag` all write to a cache. On a single instance the default filesystem cache is fine. Run multiple instances and each has its own local cache — so `revalidateTag` on one pod leaves the others stale. The fix is a shared cache handler (backed by Redis or similar) that every instance reads and writes.
+The full-route cache and ISR write to Next.js's server cache; on a single self-hosted `next start` instance the default filesystem cache is fine. Run multiple instances and each has its own local cache and its own local view of which tags were revalidated — so `revalidateTag` on one instance leaves the others stale until they independently notice.
+
+### cacheHandler vs cacheHandlers — two different knobs
+
+These two config keys are easy to confuse because they sound like plurals of each other, but they configure different caching systems:
+
+| Key | Configures | Introduced |
+|---|---|---|
+| `cacheHandler` (singular) | The legacy full-route / ISR cache — the one behind `revalidatePath`, `revalidateTag`, and static regeneration | Pre-16, the original self-hosting cache override |
+| `cacheHandlers` (plural, an object) | Backends for the `'use cache'` directive family — `default` for `'use cache'`, `remote` for `'use cache: remote'`, plus any named custom handler | `v16.0.0` |
 
 ```ts
-// next.config.ts — shared cache for multi-instance self-hosting
+// next.config.ts — legacy full-route/ISR cache, shared across instances
+module.exports = {
+  cacheHandler: require.resolve('./cache-handler.js'),
+  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+}
+```
+
+```ts
+// next.config.ts — backends for 'use cache' / 'use cache: remote'
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  cacheHandler: require.resolve('./cache-handler.js'),
-  cacheMaxMemorySize: 0, // disable the in-memory cache; use the shared handler
+  cacheHandlers: {
+    default: require.resolve('./cache-handlers/default-handler.js'),
+    remote: require.resolve('./cache-handlers/remote-handler.js'),
+  },
 }
 
 export default nextConfig
 ```
 
-With a shared handler, `updateTag('products')` or `revalidateTag('products', 'max')` in a Server Action invalidates the entry for every instance at once. Routes run on the Node.js runtime; the per-route `runtime = 'edge'` segment config is deprecated in Next.js 16, so remove it rather than plan around it.
+If your project still uses route segment config and `revalidateTag`/`revalidatePath` (no `'use cache'` anywhere yet), you only need `cacheHandler`. Once you adopt `'use cache'`, backends for it are configured separately through `cacheHandlers` — setting one does not configure the other. Either way, tag invalidation across instances also needs the handler's `refreshTags()` implemented to sync from shared storage (Redis or similar) before each request, since the default in-memory handler only tracks tags locally.
+
+## instrumentation.ts: register() and onRequestError, proven
+
+`instrumentation.ts` at the project root runs once when a new server instance starts, before it accepts traffic, and can also observe every server-side error through `onRequestError`.
+
+```ts
+// instrumentation.ts
+export function register() {
+  console.log('runtime:', process.env.NEXT_RUNTIME) // 'nodejs' or 'edge'
+}
+
+export async function onRequestError(err: unknown, request: any, context: any) {
+  const message = err instanceof Error ? err.message : String(err)
+  // ship this to your observability provider instead of console.log
+  console.log('request error:', message, context.routerKind, context.routeType)
+}
+```
+
+Proven end to end in the probe: a route forced dynamic (`export const dynamic = 'force-dynamic'`) that throws, hit with `curl`, produces this real server log —
+
+```text
+✓ Ready in 0ms
+INSTRUMENTATION_REGISTER_CALLED nodejs
+⨯ Error: probe-boom-error
+    at <unknown> (.next/server/chunks/ssr/[root-of-the-server]__0v8669b._.js:1:225) {
+  digest: '3670713050'
+}
+ON_REQUEST_ERROR_CALLED probe-boom-error App Router render
+```
+
+— confirming `register()` ran with `NEXT_RUNTIME=nodejs` before the first request, and `onRequestError` fired with the thrown error's message and `context.routeType` (`'render'` for a Server Component, also `'route'`, `'action'`, or `'proxy'` depending on where the error happened).
+
+## Server Actions across multiple instances
+
+Next.js encrypts Server Action closure variables before sending them to the client, using a build-time key. If your build produces a different key per instance (the default), an action encrypted by instance A cannot be decrypted by instance B, and the client gets a "Failed to find Server Action" error whenever a rolling deploy or a load balancer routes a follow-up request to a different instance.
+
+```bash
+NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=your-generated-key next build
+```
+
+Set this once and reuse it for every instance's build (a base64-encoded 16, 24, or 32-byte AES key — Next.js generates a 32-byte one by default when the variable is absent). The security side of this — what "encrypted" does and doesn't protect — belongs to Server Actions themselves; see [Server Actions Security and Patterns](/nextjs/en/server-actions-and-mutations/security-and-patterns/) for that half of the picture. This lesson's half is purely operational: without a shared key, a correct, secure Server Action still breaks the moment you run more than one instance.
 
 ## Go-live checklist
 
@@ -74,24 +185,75 @@ This is the last stop, so pull the whole course together before you ship:
 
 - Keep data fetching in Server Components; only mark a leaf `'use client'` when it truly needs interactivity.
 - Choose the rendering mode per route deliberately — static, dynamic, or ISR — and confirm each behaves as expected in a production build.
-- Understand your caching layers (request memoization, Data Cache, full-route cache) and wire a shared cache handler before scaling past one instance.
-- Mutate through Server Actions and call `updateTag` / `revalidateTag` / `revalidatePath` so caches stay correct after writes.
+- Understand your caching layers (request memoization, Data Cache, full-route cache) and wire a shared `cacheHandler` (and `cacheHandlers` if you use `'use cache'`) before scaling past one instance.
+- Mutate through Server Actions and call `updateTag` / `revalidateTag` / `revalidatePath` so caches stay correct after writes — and set `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` before running more than one instance.
 - Gate protected routes with an optimistic proxy redirect AND a Data Access Layer check.
-- Keep secrets unprefixed in `.env.local`; expose only `NEXT_PUBLIC_` values.
+- Keep secrets unprefixed in `.env.local`; expose only `NEXT_PUBLIC_` values, and only as a static literal.
+- Wire `instrumentation.ts`'s `onRequestError` to a real observability provider before the first incident, not after.
 
-<Mermaid title="Multi-instance self-hosting shares one cache" code={diagramDeployEn} />
+## Mental Model
+
+Treat every self-hosted instance as disposable and interchangeable, the way a load balancer treats it — any request can land on any instance, at any moment, including mid-rollout. Everything that must survive a request landing on a *different* instance than the one before it — the cache, the Server Action decryption key, the session — has to live in something shared (Redis, a fixed env var, a signed cookie), never in that one instance's memory or its one build's random key.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Vercel | Zero-config CDN, image optimization, runtime | Less control over the underlying infrastructure |
+| Self-hosting with `output: 'standalone'` | Small image, full infrastructure control | You own the reverse proxy, TLS, and process supervision |
+| Single self-hosted instance | Default filesystem cache just works | No redundancy — one process, one point of failure |
+| Multiple self-hosted instances | Redundancy, horizontal scaling | Needs a shared `cacheHandler`/`cacheHandlers` and a fixed `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, or caches go stale and actions start failing |
+| Pinning `HOSTNAME=0.0.0.0` explicitly | Removes ambiguity about what the default resolves to | One more line to maintain, even though it matches the built-in default today |
+
+## Common Misconceptions
+
+- **The standalone runner stage can just run `next start` or `npx next`.** It can't — `output: 'standalone'` traces only what `server.js` itself needs; the `next` CLI and most of `node_modules` are deliberately left out. Proven: `CMD ["npx", "next", "start"]` in a standalone runner fails immediately with `sh: next: not found`.
+- **`cacheHandler` and `cacheHandlers` configure the same cache.** They don't — `cacheHandler` (singular) is the legacy full-route/ISR cache override; `cacheHandlers` (plural, an object) configures backends for the `'use cache'` directive family, introduced in `v16.0.0`. Setting one has no effect on the other.
+- **`HOSTNAME=0.0.0.0` is required or the container won't be reachable.** The standalone `server.js` already defaults to `0.0.0.0` — proven by reading the generated file. Pinning it explicitly is still good practice, since it forecloses anything else quietly overriding that default, but it isn't fixing an actual gap in the default behavior.
+- **`forbidden()`/`unauthorized()` and Server Actions security are "deployment" concerns to solve here.** The operational half (a shared encryption key so multi-instance deploys don't break) lives in this lesson; the security half (what the encryption does and doesn't protect against) belongs to [authentication](/nextjs/en/production-and-ecosystem/authentication-patterns/) and [Server Actions security](/nextjs/en/server-actions-and-mutations/security-and-patterns/).
+
+<Mermaid title="Multi-instance self-hosting needs shared cache and a shared key" code={diagramDeployEn} />
 
 export const diagramDeployEn = `
 graph TD
-  A["CDN"] --> B["Instance 1 (next start)"]
-  A --> C["Instance 2 (next start)"]
-  B --> D["Shared cache handler (Redis)"]
+  A["CDN / reverse proxy"] --> B["Instance 1 (node server.js)"]
+  A --> C["Instance 2 (node server.js)"]
+  B --> D["Shared cacheHandler / cacheHandlers (Redis)"]
   C --> D
   D --> E["revalidateTag invalidates all instances"]
+  B --> F["Same NEXT_SERVER_ACTIONS_ENCRYPTION_KEY"]
+  C --> F
 `;
 
+## Reading AI-generated code
+
+When a generated Dockerfile or deployment config shows up, check for these before trusting it:
+
+- Does the runner stage `CMD` run `next start` or `npx next` instead of `node server.js`? With `output: 'standalone'`, that fails at container start — the `next` binary isn't there.
+- Does the Dockerfile end up running as root (no `USER` directive)? Confirm with `docker exec <container> whoami` — it should print a non-root name, not `root`.
+- Does the config set `cacheHandler` when the project actually uses `'use cache'` (or vice versa)? They're separate systems; setting the wrong one silently leaves the other on its default.
+- Is there a multi-instance deployment (replicas, a load balancer, Kubernetes) with no `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` pinned? Each instance gets its own random key by default, so Server Actions intermittently fail depending on which instance handles the follow-up request.
+- Does `instrumentation.ts` exist but only log to `console` inside `onRequestError`? That's invisible the moment the container's stdout isn't being collected anywhere — it needs to ship to a real destination.
+- Is the base image's Node.js version below 20.9? That's below the documented minimum for Next.js 16, whether or not the build happens to still succeed today.
+
+<SpotTheBug lang="dockerfile" code={`FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+CMD ["npx", "next", "start"]`}>
+The runner stage only copies `.next/standalone`, `.next/static`, and `public` — by design, that's everything `output: 'standalone'` traces as necessary to run `node server.js`. It deliberately does not include the `next` CLI or the rest of `node_modules`. Running this exact Dockerfile produces `sh: next: not found` the moment the container starts, because `npx next start` needs the full `next` package that was never copied in. The fix is `CMD ["node", "server.js"]` — the standalone output already ships its own server entry point.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Vercel is zero-config; self-hosting works too, but the moment you run more than one instance you need a shared cache handler or ISR and `revalidateTag` go stale.
+Vercel is zero-config; self-hosting works too, with a Dockerfile that ends in `node server.js` as a non-root user — but the moment you run more than one instance, you need a shared `cacheHandler`/`cacheHandlers` and a fixed `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, or caches and Server Actions both start failing unpredictably.
 </Callout>
 
 export const quizDeployEn = [
@@ -99,41 +261,74 @@ export const quizDeployEn = [
     q: 'What does output: standalone produce?',
     options: [
       'A static HTML export',
-      'A traced minimal server bundle without node_modules',
+      'A traced minimal server bundle without node_modules or the next CLI',
       'An Edge-only deployment',
       'A serverless function per route',
     ],
     answer: 1,
+    explain: 'output: standalone traces exactly which files server.js needs and copies them into .next/standalone — deliberately excluding the full node_modules and the next CLI binary.',
   },
   {
-    q: 'How do you start a standalone build?',
+    q: `\`\`\`dockerfile
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+CMD ["npx", "next", "start"]
+\`\`\`
+What happens when this container starts?`,
     options: [
-      'next start',
-      'node server.js',
-      'npm run dev',
-      'next export',
+      'It starts normally on port 3000',
+      'sh: next: not found — the next CLI was never copied into the runner stage',
+      'It falls back to a static export automatically',
+      'It works, but only in development mode',
     ],
     answer: 1,
+    explain: 'output: standalone only includes what server.js itself needs. The next CLI and most of node_modules are excluded, so npx next start fails immediately with "next: not found". The correct CMD is ["node", "server.js"].',
   },
   {
-    q: 'Why does multi-instance self-hosting need a shared cache handler?',
+    q: 'What is the difference between cacheHandler and cacheHandlers?',
     options: [
-      'To reduce the Docker image size',
-      'So revalidateTag and ISR stay consistent across instances',
-      'To enable the Edge runtime',
-      'To read NEXT_PUBLIC_ vars at runtime',
+      'There is no difference, they are aliases',
+      'cacheHandler configures the legacy full-route/ISR cache; cacheHandlers (plural) configures backends for \'use cache\' / \'use cache: remote\'',
+      'cacheHandlers is deprecated in favor of cacheHandler',
+      'cacheHandler is only for development, cacheHandlers only for production',
     ],
     answer: 1,
+    explain: 'cacheHandler (singular) is the older self-hosting override for the full-route/ISR cache. cacheHandlers (plural, an object with default/remote keys) was introduced in v16.0.0 specifically for the \'use cache\' directive family — they configure different systems.',
   },
   {
-    q: 'What is the main advantage of deploying to Vercel?',
+    q: 'Why does the standalone server.js not strictly need HOSTNAME=0.0.0.0 set in the Dockerfile?',
     options: [
-      'It requires a custom Dockerfile',
-      'Zero-config builds, CDN, and runtimes',
-      'It disables caching by default',
-      'It only supports the Edge runtime',
+      'It always fails without it',
+      'server.js already defaults hostname to 0.0.0.0 when the env var is unset',
+      'HOSTNAME only matters for the Edge runtime',
+      'Docker sets it automatically regardless of the Dockerfile',
     ],
     answer: 1,
+    explain: 'Reading the generated server.js shows `const hostname = process.env.HOSTNAME || \'0.0.0.0\'` — the default is already 0.0.0.0. Pinning it explicitly is still good practice as a guard against something else setting the variable, but it is not fixing a broken default.',
+  },
+  {
+    q: 'Why does a multi-instance deployment need NEXT_SERVER_ACTIONS_ENCRYPTION_KEY set explicitly?',
+    options: [
+      'Without it, Server Actions cannot be called at all',
+      'Each instance otherwise generates its own random key at build time, so an action encrypted by one instance can\'t be decrypted by another',
+      'It is required only when using the Edge runtime',
+      'It replaces the need for a session cookie',
+    ],
+    answer: 1,
+    explain: 'By default, a unique key is generated per build. With multiple instances built independently (or rebuilt on rolling deploys), a mismatched key means the receiving instance can\'t decrypt the action, producing "Failed to find Server Action" errors.',
+  },
+  {
+    q: 'Minimum supported Node.js version for Next.js 16?',
+    options: [
+      '16.14.0',
+      '18.17.0',
+      '20.9',
+      '22.0.0',
+    ],
+    answer: 2,
+    explain: 'Next.js 16 documents 20.9 as the minimum Node.js version — relevant both for self-hosting directly and for choosing a Docker base image.',
   },
 ];
 
