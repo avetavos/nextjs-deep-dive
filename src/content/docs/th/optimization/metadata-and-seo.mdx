@@ -35,7 +35,7 @@ export default function AboutPage() {
 
 ## metadata แบบ dynamic และ title template
 
-เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน function นี้รับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง
+เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน function นี้รับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง ตั้งแต่ 15.2 ผลลัพธ์ของมันถูก **stream** — สำหรับ browser ทั่วไป Next.js ส่งหน้าไปก่อนโดยไม่รอ `generateMetadata` แล้วต่อ tag ที่ได้เข้าไปใน `<body>` เมื่อ resolve เสร็จ ส่วน HTML-limited bot ที่รัน JavaScript ไม่ได้ (Twitterbot, Slackbot, Bingbot — list default ของ `htmlLimitedBots`) จะถูก block และได้ tag ใน `<head>` ส่วน `metadata` แบบ static ลง `<head>` เสมอ
 
 ```tsx
 // app/blog/[slug]/page.tsx
@@ -93,15 +93,16 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
 เพราะทุกอย่างเป็น data หรือเป็นไฟล์ จึงไม่มี `<head>` ให้คอย sync ด้วยมือ — template merge ทั้ง parent และ child และ tag ที่ซ้ำกันก็ไม่มีทางเพี้ยนออกจากกัน
 
-<Mermaid title="How the Metadata API builds the head" code={diagramMetaTh} />
+<Mermaid title="Metadata API สร้าง head ยังไง" code={diagramMetaTh} />
 
 export const diagramMetaTh = `flowchart TD
   A["metadata object"] --> M[Merge parent + child]
   B["generateMetadata(params)"] --> M
   C["opengraph-image / sitemap / robots files"] --> M
-  M --> Head["Server-rendered head tags"]`;
+  M --> Static["static metadata: tags in head"]
+  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 อธิบาย head เป็น data ด้วย `metadata` หรือ `generateMetadata` เพิ่ม file-based route อย่าง `opengraph-image` และ `sitemap` แล้ว Next.js render tag ที่ถูกต้องและ merge แล้วบน server โดยไม่ต้องแตะ `<head>` เอง
 </Callout>
 

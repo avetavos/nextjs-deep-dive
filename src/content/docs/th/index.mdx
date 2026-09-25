@@ -49,7 +49,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     component ใน App Router เป็น Server Components โดย default ส่วน `"use client"` คือเส้นแบ่ง boundary ที่ลามไปถึงทุกอย่างที่ถูก import ต่อจากจุดนั้น คอร์สนี้สอนว่าเส้นนั้นอยู่ตรงไหนและทำไมถึงสำคัญ ไม่ใช่แค่ syntax
   </Card>
   <Card title="พฤติกรรมปัจจุบัน ที่ verify แล้ว" icon="random">
-    เขียนตามพฤติกรรมปัจจุบันของ Next.js และตรวจสอบกับ official docs ผ่าน context7 — รวมถึงการเปลี่ยนแปลงใหญ่ที่ tutorial ส่วนใหญ่พลาด คือ `fetch` และ GET Route Handlers ไม่ถูก cache โดย default อีกต่อไป และการ cache ตอนนี้ต้อง opt-in ผ่าน `use cache` / `cacheComponents`
+    เขียนตามพฤติกรรมปัจจุบันของ Next.js และตรวจสอบกับ official docs ผ่าน context7 — รวมถึงการเปลี่ยนแปลงใหญ่ที่ tutorial ส่วนใหญ่พลาด คือ `fetch` และ GET Route Handlers ไม่ถูก cache โดย default อีกต่อไป และการ cache ตอนนี้ต้อง opt-in ผ่าน `use cache` / `cacheComponents` ตรวจสอบกับ Next.js 16.3.x และ React 19.x (Node.js 20.9+) เมื่อ 2026-09-25
   </Card>
   <Card title="cache 4 ชั้น ไม่ใช่ชั้นเดียว" icon="approve-check">
     Request Memoization, Data Cache, Full Route Cache และ Router Cache ฝั่ง client แต่ละอันอยู่คนละชั้น มี lifetime และวิธี invalidate ต่างกัน — เป็นส่วนที่คนเข้าใจผิดมากที่สุดใน Next.js สอนทีละชั้น

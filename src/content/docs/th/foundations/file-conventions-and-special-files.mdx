@@ -95,7 +95,7 @@ export default function RootLayout({
 
 มีสองกฎที่ตามมาจากทั้งหมดนี้ กฎแรก โฟลเดอร์ที่**ไม่มี** `page.tsx` (หรือ `route.ts`) จะ route ไม่ได้ — คุณ nest โฟลเดอร์เพื่อจัดระเบียบไฟล์ล้วน ๆ ได้ และจะไม่ตอบสนองต่อ URL เลย กฎที่สอง `error.tsx` ต้องขึ้นต้นด้วย `"use client"` เพราะ error boundary พึ่งพา React ฝั่ง client
 
-<Mermaid title="How special files map onto a route segment" code={diagramFileConventions} />
+<Mermaid title="special file แต่ละไฟล์ map กับ route segment ยังไง" code={diagramFileConventions} />
 
 export const diagramFileConventions = `flowchart LR
   Folder[dashboard folder] --> Layout[layout wraps and persists]
@@ -104,7 +104,7 @@ export const diagramFileConventions = `flowchart LR
   Layout --> Page[page is the routable UI]
   Page --> URL[/dashboard is reachable]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 โฟลเดอร์สร้าง segment ชื่อไฟล์ที่จองไว้ให้พฤติกรรม `page` (หรือ `route`) คือสิ่งที่ทำให้ segment เข้าถึงได้ และ root layout คือที่เดียวที่ `<html>` และ `<body>` อยู่
 </Callout>
 

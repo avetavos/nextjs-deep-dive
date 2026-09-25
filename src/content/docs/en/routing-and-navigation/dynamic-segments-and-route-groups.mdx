@@ -68,6 +68,8 @@ export function generateStaticParams() {
 }
 ```
 
+With `cacheComponents` enabled, `generateStaticParams` must return at least one param — an empty array is a build error.
+
 ## Route groups and private folders
 
 A folder in parentheses like `(marketing)` is a route group: it organizes files and can hold its own shared layout, but its name is stripped from the URL. A folder with a leading underscore like `_components` is a private folder that opts out of routing entirely.

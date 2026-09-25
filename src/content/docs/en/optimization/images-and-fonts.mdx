@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## next/image resizes, converts, and lazy-loads
 
-`Image` is a drop-in replacement for `<img>` that optimizes on demand. It generates a resized version per device, serves modern formats like WebP or AVIF when the browser supports them, and lazy-loads anything below the fold automatically.
+`Image` is a drop-in replacement for `<img>` that optimizes on demand. It generates a resized version per device, serves WebP when the browser supports it (AVIF too, if you add it to `images.formats`), and lazy-loads anything below the fold automatically.
 
 When you import a local file, Next.js reads its intrinsic dimensions at build time, so `width` and `height` are filled in for you.
 

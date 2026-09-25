@@ -40,6 +40,8 @@ If you hit an issue and need the old bundler, you can opt back into webpack per 
 }
 ```
 
+A `next.config` that has a custom `webpack()` function and no `turbopack` key makes the default `next build` **fail** rather than silently ignore it — pass `--webpack` to keep webpack, or `--turbopack` to ignore the webpack config.
+
 ## What Turbopack speeds up
 
 The core idea is incremental compilation. Turbopack builds a dependency graph and only recomputes the parts affected by a change, so cold starts are faster and Hot Module Replacement stays near-instant even as the app grows. When you save a file, it recompiles just that module and its dependents rather than the whole route.
@@ -64,16 +66,16 @@ export default nextConfig
 
 ## Build caching
 
-Turbopack can persist its work to disk so a later `dev` start or `build` reuses earlier compilation instead of starting cold. This filesystem cache is stable for development and still experimental for production builds, so treat the build-side flag as opt-in.
+Turbopack can persist its work to disk so a later `dev` start or `build` reuses earlier compilation instead of starting cold. Both caches are **on by default** (dev since 16.1, build since 16.3) even though the options still live under `experimental`; the build cache lives in `.next/cache/turbopack`, so it only helps when your CI restores `.next/cache` between builds — set the option to `false` to opt out.
 
 ```ts
-// next.config.ts — persistent filesystem cache
+// next.config.ts — both caches are on by default; opt out per command
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   experimental: {
-    turbopackFileSystemCacheForDev: true,
-    turbopackFileSystemCacheForBuild: true,
+    turbopackFileSystemCacheForDev: true, // default: true (16.1+)
+    turbopackFileSystemCacheForBuild: false, // default: true (16.3+); false if CI never restores .next/cache
   },
 }
 
@@ -90,7 +92,7 @@ export const diagramTurboEn = `flowchart LR
   Cache --> HMR`;
 
 <Callout title="The one-line takeaway">
-Turbopack is the Rust-based, incremental, now-default bundler for `next dev` and `next build` — faster cold starts and HMR, `--webpack` to opt out, and a filesystem cache that is stable in dev and experimental in build.
+Turbopack is the Rust-based, incremental, now-default bundler for `next dev` and `next build` — faster cold starts and HMR, `--webpack` to opt out, and a filesystem cache that is on by default for both dev and build.
 </Callout>
 
 export const quizTurboEn = [

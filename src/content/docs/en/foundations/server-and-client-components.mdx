@@ -70,7 +70,7 @@ export default function Page() {
 }
 ```
 
-One constraint makes this work: **props crossing the boundary must be serializable.** You can pass strings, numbers, plain objects, arrays, and JSX, but not functions, class instances, or Dates as raw props — they cannot survive the trip from server to client.
+One constraint makes this work: **props crossing the boundary must be serializable.** You can pass strings, numbers, Dates, plain objects, arrays, and JSX, but not functions (other than Server Actions) or class instances as raw props — they cannot survive the trip from server to client.
 
 <Mermaid title="Where the client boundary sits" code={diagramBoundary} />
 

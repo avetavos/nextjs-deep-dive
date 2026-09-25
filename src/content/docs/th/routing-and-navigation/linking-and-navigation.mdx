@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 `<Link>` จัดการ navigation ส่วนใหญ่ด้วย client-side transition และ prefetch อัตโนมัติ ส่วน `useRouter` และ helper จาก `next/navigation` ครอบคลุม navigation แบบ programmatic และฝั่ง server
 
-## Link and automatic prefetching
+## Link และการ prefetch อัตโนมัติ
 
 `<Link>` navigate ฝั่ง client โดยไม่ reload หน้าใหม่ทั้งหน้า `<Link>` ตัวใดที่เลื่อนเข้ามาใน viewport จะถูก prefetch อัตโนมัติ ทำให้ปลายทางมักพร้อมก่อนที่ผู้ใช้จะคลิก
 
@@ -34,7 +34,7 @@ export default function Nav() {
 
 route ที่ prefetch แล้วจะเข้าไปอยู่ใน client Router Cache การ navigate จึงอาจถูก serve ทันทีจาก RSC payload ที่ cache ไว้แทนที่จะยิง request ใหม่ เรื่อง Router Cache เต็ม ๆ อยู่ใน module Data Fetching
 
-## Programmatic navigation with useRouter
+## navigation แบบ programmatic ด้วย useRouter
 
 สำหรับ navigation ที่ trigger ด้วย logic เช่นหลัง submit form หลัง timeout หรือหลังเช็ค auth ให้ใช้ `useRouter` จาก `next/navigation` ใน Client Component
 
@@ -55,7 +55,7 @@ export default function SaveButton() {
 
 `router.push` เพิ่ม history entry, `router.replace` แทนที่ entry ปัจจุบัน, `router.back` ย้อนกลับ, ส่วน `router.refresh` refetch route ปัจจุบันจาก server โดยยังเก็บ client state ไว้
 
-## Reading the current route
+## อ่าน route ปัจจุบัน
 
 Client Component อ่าน navigation state ด้วย hook จาก `next/navigation` ได้แก่ `usePathname`, `useSearchParams` และ `useParams`
 
@@ -72,7 +72,7 @@ export default function Debug() {
 }
 ```
 
-## Server-side redirect and notFound
+## redirect และ notFound ฝั่ง server
 
 ใน Server Component, route handler และ Server Action เรา navigate ด้วยการ throw ผ่าน `redirect()` หรือ `notFound()` จาก `next/navigation`
 
@@ -104,7 +104,7 @@ graph TD
   SERVER --> S["redirect() / notFound()"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 หยิบ `<Link>` ก่อนสำหรับ client navigation ที่ prefetch แล้ว, `useRouter` สำหรับการย้ายแบบ programmatic, และ `redirect()` / `notFound()` บน server
 </Callout>
 

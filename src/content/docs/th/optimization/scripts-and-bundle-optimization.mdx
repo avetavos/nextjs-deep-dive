@@ -72,10 +72,17 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-จะดูว่าจริง ๆ มีอะไรอยู่ใน bundle ให้ครอบ config ด้วย `@next/bundle-analyzer` แล้วสั่ง build โดยเซ็ต flag ไว้
+จะดูว่าจริง ๆ มีอะไรอยู่ใน bundle ให้รัน Turbopack bundle analyzer (Next.js 16.1+ ยังติดป้าย experimental) มันวิเคราะห์ production build โดยไม่สร้าง build จริง แล้วเปิด treemap แบบ interactive พร้อม import chain เต็ม ๆ ของทุก module ส่วน `--output` เขียนไฟล์ static ลง `.next/diagnostics/analyze` แทนการเปิด server
+
+```bash
+npx next experimental-analyze            # interactive UI on http://localhost:4000
+npx next experimental-analyze --output   # write .next/diagnostics/analyze for sharing/diffing
+```
+
+plugin `@next/bundle-analyzer` ตัวเก่าใช้ได้กับ webpack เท่านั้น ภายใต้ Turbopack build ที่เป็น default มัน exit 0 แต่พิมพ์ `The Next Bundle Analyzer is not compatible with Turbopack builds, no report will be generated.` — ดังนั้นถ้ายังใช้อยู่ ให้ build ด้วย `--webpack`
 
 ```js
-// next.config.js — run: ANALYZE=true next build
+// next.config.js — webpack only: run ANALYZE=true next build --webpack
 const withBundleAnalyzer = require('@next/bundle-analyzer')({
   enabled: process.env.ANALYZE === 'true',
 })
@@ -87,7 +94,7 @@ module.exports = withBundleAnalyzer({})
 
 ชัยชนะเรื่อง bundle ที่ใหญ่ที่สุดคือการไม่ส่งโค้ดเลย ทุกอย่างที่ import ผ่านเส้น `"use client"` กลายเป็น client JavaScript ดังนั้นดัน `"use client"` ลงไปให้ลึกที่สุดเท่าที่ทำได้ — เก็บงานที่ใช้ data หนักไว้ใน Server Component แล้ว mark เฉพาะใบ interactive เล็ก ๆ ให้เป็น client
 
-<Mermaid title="Where client JavaScript comes from" code={diagramBundleTh} />
+<Mermaid title="client JavaScript มาจากไหน" code={diagramBundleTh} />
 
 export const diagramBundleTh = `flowchart TD
   Page["Server Component (0 KB client JS)"] --> Leaf["'use client' leaf"]
@@ -96,7 +103,7 @@ export const diagramBundleTh = `flowchart TD
   Split -->|loads on demand| JS
   Page --> Script["next/script (strategy-timed)"]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 จับจังหวะ third-party script ด้วย strategy ของ `next/script`, แยกโค้ด client ที่หนักด้วย `next/dynamic`, ตัด barrel import ด้วย `optimizePackageImports` และดัน `"use client"` ให้ต่ำ ต้นไม้ส่วนใหญ่จึงส่ง JavaScript เป็นศูนย์
 </Callout>
 

@@ -54,7 +54,7 @@ export default function Layout({
 
 ## The default.tsx fallback
 
-When you navigate to a route that a slot does not define, Next.js renders that slot's `default.tsx` instead. Without it a hard navigation to an unmatched slot throws, so add one that returns `null` or calls `notFound()`.
+When you navigate to a route that a slot does not define, Next.js renders that slot's `default.tsx` instead. Without it a hard navigation (full page load) to an unmatched slot renders a 404, so add one that returns `null` or calls `notFound()`.
 
 ```tsx
 // app/dashboard/@team/default.tsx
@@ -120,7 +120,7 @@ export const quizParallelEn = [
     q: 'Why add default.tsx to a parallel route slot?',
     options: [
       'To set the default export of the page',
-      'To render a fallback when the slot has no match, avoiding a throw',
+      'To render a fallback when the slot has no match, instead of a 404',
       'To make the slot a Client Component',
       'To prefetch the slot automatically',
     ],

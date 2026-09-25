@@ -30,6 +30,6 @@ import Callout from '../../../../components/Callout.astro';
 
 แต่ละบทเริ่มด้วยไอเดียหลักในหนึ่งประโยค แสดง TypeScript/React และ CLI command จริง มีไดอะแกรมของกลไกที่เกี่ยวข้อง และปิดท้ายด้วย takeaway หนึ่งบรรทัดพร้อม quiz สั้น ๆ อ่านเรียงจากบนลงล่าง — module หลัง ๆ จะอ้างอิงคำศัพท์เรื่อง Server/Client boundary และ caching จากบทแรก ๆ เหล่านี้
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 App Router ของ Next.js เป็นแบบ **server-first** — component รันบน server เว้นแต่จะมี boundary `"use client"` บอกเป็นอย่างอื่น — และ caching ของตัวเองเป็นแบบ **แบ่งชั้นและ opt-in** ตั้งแต่ v15 ไม่ใช่อัตโนมัติ คอร์สนี้สอนว่าโค้ดรันที่ไหน, caching 4 ชั้น, rendering กับ streaming ทำงานยังไง และ mutation ไหลผ่าน Server Actions ยังไง ทั้งหมดอิงพฤติกรรมปัจจุบันของ Next.js — เริ่มจาก App Router เอง
 </Callout>

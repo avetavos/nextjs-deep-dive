@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 parallel routes ให้ layout เดียว render หลาย slot อิสระพร้อมกัน ส่วน intercepting routes ให้ route หนึ่ง render ภายใน layout ปัจจุบันแทนที่จะเปิดเป็นหน้าของตัวเอง
 
-## Parallel routes with named slots
+## parallel route ด้วย named slot
 
 folder ที่ขึ้นต้นด้วย `@` อย่าง `@team` หรือ `@analytics` คือ named slot layout ใน folder เดียวกันรับแต่ละ slot มาเป็น prop และ render พร้อมกันได้ โดยแต่ละตัวมี loading และ error state อิสระของตัวเอง
 
@@ -52,9 +52,9 @@ export default function Layout({
 }
 ```
 
-## The default.tsx fallback
+## fallback ด้วย default.tsx
 
-เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีไฟล์นี้ การ navigate ตรงไปยัง slot ที่ไม่ match จะ throw จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
+เมื่อ navigate ไป route ที่ slot ไม่ได้ define ไว้ Next.js จะ render `default.tsx` ของ slot นั้นแทน ถ้าไม่มีไฟล์นี้ hard navigation (โหลดหน้าเต็ม) ไปยัง slot ที่ไม่ match จะ render เป็น 404 จึงควรใส่ตัวที่ return `null` หรือเรียก `notFound()`
 
 ```tsx
 // app/dashboard/@team/default.tsx
@@ -63,7 +63,7 @@ export default function Default() {
 }
 ```
 
-## Intercepting routes
+## intercepting route
 
 intercepting route convention render route ภายใน layout ปัจจุบันโดยที่ URL ยัง update prefix จับตาม segment level `(.)` สำหรับ level เดียวกัน `(..)` สำหรับขึ้นไปหนึ่ง level และ `(...)` จาก app root use case คลาสสิกคือ photo modal คลิกรูปใน feed แล้วรูปเปิดเป็น modal ทับ feed แต่การเข้า URL นั้นตรง ๆ จะ render หน้าเต็ม
 
@@ -101,7 +101,7 @@ graph TD
   DIRECT["visit /photo/42 directly"] --> FULL["full photo page"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 named `@slots` render หลายหน้าใน layout เดียวพร้อมกัน ส่วน `(.)` `(..)` `(...)` intercept render route ภายใน layout ปัจจุบันโดยที่ URL ยังเปลี่ยน
 </Callout>
 
@@ -120,7 +120,7 @@ export const quizParallelTh = [
     q: 'ทำไมต้องใส่ default.tsx ให้ parallel route slot',
     options: [
       'เพื่อตั้ง default export ของ page',
-      'เพื่อ render fallback ตอน slot ไม่มี match เลี่ยงการ throw',
+      'เพื่อ render fallback ตอน slot ไม่มี match แทนที่จะเป็น 404',
       'เพื่อทำให้ slot เป็น Client Component',
       'เพื่อ prefetch slot อัตโนมัติ',
     ],

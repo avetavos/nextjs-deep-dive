@@ -81,7 +81,7 @@ my-app/
   tsconfig.json      # TypeScript configuration
 ```
 
-<Mermaid title="From scaffold to a running dev server" code={diagramToolchain} />
+<Mermaid title="จาก scaffold ไปถึง dev server ที่รันอยู่" code={diagramToolchain} />
 
 export const diagramToolchain = `flowchart LR
   Create[create-next-app] --> Tree[app/ structure]
@@ -90,7 +90,7 @@ export const diagramToolchain = `flowchart LR
   Turbo --> Browser[Live app in the browser]
   Config[next.config.ts] --> Turbo`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 scaffold ด้วย `create-next-app` รันด้วย `next dev` ปล่อยให้ Turbopack bundle โดย default และมองชื่อไฟล์ที่จองไว้ใต้ `app/` กับ `next.config.ts` เป็น convention ที่คุณอ่าน ไม่ใช่โค้ดที่คุณคิดขึ้นเอง
 </Callout>
 

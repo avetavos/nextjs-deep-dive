@@ -38,7 +38,7 @@ export default function DashboardPage() {
 }
 ```
 
-## The required root layout
+## root layout ที่ต้องมี
 
 ทุกแอป App Router ต้องมี root layout หนึ่งตัว เป็น layout เดียวที่ render tag `<html>` และ `<body>` และต้อง render `children` เสมอ
 
@@ -57,7 +57,7 @@ export default function RootLayout({
 }
 ```
 
-## Nested layouts persist and compose
+## nested layout persist และ compose
 
 `layout.tsx` ห่อ segment ของตัวเองและ descendant ทั้งหมด nested layout compose จากนอกเข้าใน root ห่อ dashboard ห่อ settings จุดสำคัญคือ layout จะ persist ข้ามการ navigate เมื่อย้ายระหว่าง route พี่น้องกัน layout ที่ใช้ร่วมจะไม่ re-render ทำให้ state และตำแหน่ง scroll ถูกเก็บไว้
 
@@ -77,7 +77,7 @@ export default function DashboardLayout({
 }
 ```
 
-## loading.tsx and error.tsx
+## loading.tsx และ error.tsx
 
 ใส่ `loading.tsx` แล้ว Next.js จะห่อ segment ด้วย Suspense boundary ให้อัตโนมัติ fallback จะโชว์ทันทีระหว่างที่งานฝั่ง server ยัง stream เข้ามา
 
@@ -109,7 +109,7 @@ export default function Error({
 }
 ```
 
-<Mermaid title="Nested layouts compose และ persist" code={diagramPagesTh} />
+<Mermaid title="nested layout compose และ persist ต่อกัน" code={diagramPagesTh} />
 
 export const diagramPagesTh = `
 graph TD
@@ -118,7 +118,7 @@ graph TD
   D --> S["settings/page.tsx"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 folder คือ segment, `page.tsx` ทำให้ segment นั้น routable, ส่วน `layout.tsx` ห่อ subtree ของตัวเองและอยู่รอดข้ามการ navigate โดยไม่ re-render
 </Callout>
 

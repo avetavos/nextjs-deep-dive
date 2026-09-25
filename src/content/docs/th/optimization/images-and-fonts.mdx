@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## next/image resize, แปลง format และ lazy-load
 
-`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request โดยสร้าง version ที่ resize ตามอุปกรณ์ ส่ง format ใหม่อย่าง WebP หรือ AVIF เมื่อ browser รองรับ และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
+`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request โดยสร้าง version ที่ resize ตามอุปกรณ์ ส่ง WebP เมื่อ browser รองรับ (และ AVIF ด้วย ถ้าคุณเพิ่มเข้าไปใน `images.formats`) และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
 
 เมื่อคุณ import ไฟล์ในเครื่อง Next.js อ่านขนาดจริงตอน build ดังนั้น `width` กับ `height` จึงถูกเติมให้เอง
 
@@ -100,7 +100,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 ```
 
-<Mermaid title="From source asset to a stable, fast page" code={diagramImgTh} />
+<Mermaid title="จาก asset ต้นทางไปถึงหน้าที่นิ่งและเร็ว" code={diagramImgTh} />
 
 export const diagramImgTh = `flowchart LR
   Src[Source asset] --> Build[Build step]
@@ -108,7 +108,7 @@ export const diagramImgTh = `flowchart LR
   Opt --> Reserve["width + height reserve space"]
   Reserve --> Page["No layout shift, fast LCP"]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 `next/image` ต้องมี `width`/`height` (หรือ `fill`) เพื่อจองพื้นที่และใส่ `priority` ให้ image ที่เป็น LCP ส่วน `next/font` self-host font ตอน build ทุกอย่างจึงไม่ขยับและไม่มีอะไรยิงไป Google
 </Callout>
 

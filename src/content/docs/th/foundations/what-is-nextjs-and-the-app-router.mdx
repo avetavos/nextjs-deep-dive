@@ -73,7 +73,7 @@ my-app/
 
 จากจุดนี้ `npm run dev` จะสตาร์ท development server แล้วคุณก็กำลังมอง App Router app ที่รันจริงอยู่
 
-<Mermaid title="How a request flows through the App Router" code={diagramFramework} />
+<Mermaid title="request ไหลผ่าน App Router ยังไง" code={diagramFramework} />
 
 export const diagramFramework = `flowchart LR
   Req[Browser request] --> Router[App Router]
@@ -83,7 +83,7 @@ export const diagramFramework = `flowchart LR
   HTML --> Page[Interactive page]
   Bundle --> Page`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 Next.js คือ framework ที่ครอบ React ไว้ จัดการ routing, rendering, data และ bundling — และ App Router คือโมเดลปัจจุบันของตัวเองที่สร้างบน Server Component ส่วน Pages Router เก็บไว้เพื่อการ migrate เท่านั้น
 </Callout>
 

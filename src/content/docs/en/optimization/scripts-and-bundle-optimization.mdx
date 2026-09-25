@@ -72,10 +72,17 @@ const nextConfig: NextConfig = {
 export default nextConfig
 ```
 
-To see what is actually in your bundle, wrap the config with `@next/bundle-analyzer` and run a build with the flag set.
+To see what is actually in your bundle, run the Turbopack bundle analyzer (Next.js 16.1+, still marked experimental). It analyzes a production build without producing one and opens an interactive treemap with the full import chain for every module; `--output` writes static files to `.next/diagnostics/analyze` instead of starting the server.
+
+```bash
+npx next experimental-analyze            # interactive UI on http://localhost:4000
+npx next experimental-analyze --output   # write .next/diagnostics/analyze for sharing/diffing
+```
+
+The older `@next/bundle-analyzer` plugin only works with webpack. Under the default Turbopack build it exits 0 but prints `The Next Bundle Analyzer is not compatible with Turbopack builds, no report will be generated.` — so if you still use it, build with `--webpack`.
 
 ```js
-// next.config.js — run: ANALYZE=true next build
+// next.config.js — webpack only: run ANALYZE=true next build --webpack
 const withBundleAnalyzer = require('@next/bundle-analyzer')({
   enabled: process.env.ANALYZE === 'true',
 })

@@ -40,6 +40,8 @@ Turbopack คือ bundler ของ Next.js ที่เขียนด้ว�
 }
 ```
 
+`next.config` ที่มีฟังก์ชัน `webpack()` แบบ custom แต่ไม่มี key `turbopack` จะทำให้ `next build` แบบ default **fail** แทนที่จะเงียบ ๆ ข้ามไป — ใส่ `--webpack` เพื่อใช้ webpack ต่อ หรือ `--turbopack` เพื่อให้ข้าม webpack config ไป
+
 ## Turbopack เร่งอะไรบ้าง
 
 แก่นคือ incremental compilation Turbopack สร้าง dependency graph แล้วคำนวณใหม่เฉพาะส่วนที่ได้รับผลจากการเปลี่ยนแปลง cold start จึงเร็วขึ้นและ Hot Module Replacement ยังเกือบทันทีแม้แอปจะโตขึ้น เมื่อคุณ save ไฟล์ Turbopack จะ recompile เฉพาะ module นั้นกับตัวที่ขึ้นกับ module นั้น ไม่ใช่ทั้ง route
@@ -64,23 +66,23 @@ export default nextConfig
 
 ## build caching
 
-Turbopack เก็บงานลง disk ได้ การ start `dev` หรือ `build` ครั้งถัดไปจึงใช้ผล compile เดิมซ้ำแทนที่จะเริ่มจากศูนย์ filesystem cache นี้นิ่งแล้วสำหรับ development แต่ยัง experimental สำหรับ production build จึงควรถือว่า flag ฝั่ง build เป็นแบบ opt-in
+Turbopack เก็บงานลง disk ได้ การ start `dev` หรือ `build` ครั้งถัดไปจึงใช้ผล compile เดิมซ้ำแทนที่จะเริ่มจากศูนย์ cache ทั้งสองตัว**เปิดโดย default** (dev ตั้งแต่ 16.1, build ตั้งแต่ 16.3) แม้ option จะยังอยู่ใต้ `experimental` ก็ตาม cache ฝั่ง build อยู่ที่ `.next/cache/turbopack` จึงช่วยได้ก็ต่อเมื่อ CI ของคุณ restore `.next/cache` ระหว่าง build — เซ็ต option เป็น `false` เพื่อ opt out
 
 ```ts
-// next.config.ts — persistent filesystem cache
+// next.config.ts — both caches are on by default; opt out per command
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   experimental: {
-    turbopackFileSystemCacheForDev: true,
-    turbopackFileSystemCacheForBuild: true,
+    turbopackFileSystemCacheForDev: true, // default: true (16.1+)
+    turbopackFileSystemCacheForBuild: false, // default: true (16.3+); false if CI never restores .next/cache
   },
 }
 
 export default nextConfig
 ```
 
-<Mermaid title="Incremental compilation reuses unchanged work" code={diagramTurboTh} />
+<Mermaid title="incremental compilation ใช้งานที่ไม่เปลี่ยนซ้ำ" code={diagramTurboTh} />
 
 export const diagramTurboTh = `flowchart LR
   Save[Save a file] --> Graph[Dependency graph]
@@ -89,8 +91,8 @@ export const diagramTurboTh = `flowchart LR
   Changed --> HMR[Fast HMR / build]
   Cache --> HMR`;
 
-<Callout title="The one-line takeaway">
-Turbopack คือ bundler ที่เขียนด้วย Rust ทำงาน incremental และเป็น default แล้วของ `next dev` และ `next build` — cold start และ HMR เร็วขึ้น ใช้ `--webpack` เพื่อ opt out และมี filesystem cache ที่นิ่งใน dev แต่ยัง experimental ใน build
+<Callout title="สรุปหนึ่งบรรทัด">
+Turbopack คือ bundler ที่เขียนด้วย Rust ทำงาน incremental และเป็น default แล้วของ `next dev` และ `next build` — cold start และ HMR เร็วขึ้น ใช้ `--webpack` เพื่อ opt out และมี filesystem cache ที่เปิดโดย default ทั้ง dev และ build
 </Callout>
 
 export const quizTurboTh = [

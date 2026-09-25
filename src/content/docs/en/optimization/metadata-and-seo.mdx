@@ -35,7 +35,7 @@ export default function AboutPage() {
 
 ## Dynamic metadata and title templates
 
-When the tags depend on data — a blog post, a product — export `generateMetadata` instead. It receives the route `params`, runs on the server, and returns the same `Metadata` shape. Fetches here are deduplicated against the ones in your page, so you do not pay twice.
+When the tags depend on data — a blog post, a product — export `generateMetadata` instead. It receives the route `params`, runs on the server, and returns the same `Metadata` shape. Fetches here are deduplicated against the ones in your page, so you do not pay twice. Since 15.2 its output is **streamed**: for regular browsers Next.js sends the page without waiting for `generateMetadata` and appends the resulting tags to the `<body>` once it resolves; for HTML-limited bots that cannot run JavaScript (Twitterbot, Slackbot, Bingbot — the default `htmlLimitedBots` list) it blocks and places them in `<head>`. Static `metadata` always lands in `<head>`.
 
 ```tsx
 // app/blog/[slug]/page.tsx
@@ -99,7 +99,8 @@ export const diagramMetaEn = `flowchart TD
   A["metadata object"] --> M[Merge parent + child]
   B["generateMetadata(params)"] --> M
   C["opengraph-image / sitemap / robots files"] --> M
-  M --> Head["Server-rendered head tags"]`;
+  M --> Static["static metadata: tags in head"]
+  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]`;
 
 <Callout title="The one-line takeaway">
 Describe the head as data with `metadata` or `generateMetadata`, add file-based routes like `opengraph-image` and `sitemap`, and Next.js renders correct, merged tags on the server — no manual `<head>`.

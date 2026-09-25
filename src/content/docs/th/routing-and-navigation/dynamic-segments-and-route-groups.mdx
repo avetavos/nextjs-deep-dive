@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 folder ที่อยู่ใน bracket เปลี่ยนส่วนของ URL ให้เป็น param ที่เราอ่านจาก Promise ส่วน folder ในวงเล็บและที่ขึ้นต้นด้วย underscore จัดโครงสร้าง file tree ใหม่โดยไม่แตะ URL
 
-## Dynamic segments read from a Promise
+## dynamic segment อ่านค่าจาก Promise
 
 folder ชื่อ `[id]` จับ URL ส่วนหนึ่งมาเป็น param ใน Next.js ปัจจุบัน `params` เป็น Promise เราจึงต้อง `await` ก่อนใช้ `searchParams` ก็เป็นแบบเดียวกัน
 
@@ -33,7 +33,7 @@ export default async function Post({
 }
 ```
 
-## Catch-all and optional catch-all
+## catch-all และ optional catch-all
 
 ใช้ `[...slug]` จับหลาย segment มาเป็น array ใช้ `[[...slug]]` เพื่อทำให้ segment เป็น optional เพื่อให้ route แม่ match ได้ด้วยแม้ไม่มี segment ต่อท้าย
 
@@ -57,7 +57,7 @@ export default async function Docs({
 }
 ```
 
-## generateStaticParams prerenders dynamic routes
+## generateStaticParams prerender dynamic route
 
 ใช้ `export generateStaticParams` เพื่อบอก Next.js ว่าจะ prerender param ค่าไหนบ้างตอน build แต่ละ object ที่ return จะกลายเป็นหนึ่ง page ที่ generate แบบ static
 
@@ -68,7 +68,9 @@ export function generateStaticParams() {
 }
 ```
 
-## Route groups and private folders
+ถ้าเปิด `cacheComponents` ไว้ `generateStaticParams` ต้อง return param อย่างน้อยหนึ่งตัว — การ return array ว่างจะเป็น build error
+
+## route group และ private folder
 
 folder ในวงเล็บอย่าง `(marketing)` คือ route group ใช้จัดระเบียบไฟล์และถือ shared layout ของตัวเองได้ แต่ชื่อโฟลเดอร์จะถูกตัดออกจาก URL ส่วน folder ที่ขึ้นต้นด้วย underscore อย่าง `_components` เป็น private folder ที่ opt out จาก routing ทั้งหมด
 
@@ -93,7 +95,7 @@ graph TD
   D["_components private"] --> U4["not routable"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 bracket จับ URL param ที่เรา `await` จาก Promise, วงเล็บ group โดยไม่แตะ URL, ส่วน underscore นำหน้าทำให้ folder opt out จาก routing
 </Callout>
 

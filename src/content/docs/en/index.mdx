@@ -49,7 +49,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     App Router components are Server Components by default; `"use client"` marks a boundary that spreads to everything imported past it. This course teaches where that boundary is and why it matters, not just the syntax.
   </Card>
   <Card title="Current behavior, verified" icon="random">
-    Written against current Next.js and checked against the official docs via context7 — including the big shift most tutorials miss: `fetch` and GET Route Handlers are no longer cached by default, and caching is now opt-in via `use cache` / `cacheComponents`.
+    Written against current Next.js and checked against the official docs via context7 — including the big shift most tutorials miss: `fetch` and GET Route Handlers are no longer cached by default, and caching is now opt-in via `use cache` / `cacheComponents`. Verified against Next.js 16.3.x and React 19.x (Node.js 20.9+) on 2026-09-25.
   </Card>
   <Card title="Four caches, not one" icon="approve-check">
     Request Memoization, the Data Cache, the Full Route Cache, and the client Router Cache each live at a different layer with different lifetimes and invalidation — the single most misunderstood part of Next.js, taught layer by layer.
