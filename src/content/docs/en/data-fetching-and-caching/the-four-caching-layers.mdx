@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
 These four layers are the **previous** model, with `cacheComponents` off. With `cacheComponents: true` (the `use cache` lesson) the `export const dynamic = 'force-static'` shown below fails the build (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`) and the Data Cache is replaced by `'use cache'` scopes; the `fetch` options and `experimental.staleTimes` shown here are still accepted, but `cacheLife` is the recommended way to set lifetimes there.
@@ -45,9 +46,13 @@ await fetch('https://api.example.com/config', { cache: 'force-cache' })
 // Opt in with a 60-second lifetime
 await fetch('https://api.example.com/feed', { next: { revalidate: 60 } })
 
-// Opt in and tag for on-demand invalidation
-await fetch('https://api.example.com/cart', { next: { tags: ['cart'] } })
+// Opt in AND tag for on-demand invalidation — the tag alone opts into nothing
+await fetch('https://api.example.com/cart', {
+  next: { revalidate: 60, tags: ['cart'] },
+})
 ```
+
+`next.tags` by itself does not opt a fetch into the Data Cache — the bundled docs for `fetch` are explicit that "caching is opt-in," and only `cache: 'force-cache'` or a `next.revalidate` number do that. Proven in the probe: a dynamic route fetching a request-counter endpoint with only `next: { tags: [...] }` (no `cache`, no `revalidate`) returned a fresh, incrementing count on every one of three separate requests — nothing was ever cached, so the tag had nothing to invalidate. Pair a tag with `cache: 'force-cache'` or `next.revalidate` whenever you actually want `revalidateTag` to do something.
 
 ## Client-side: the Client Cache
 
@@ -82,6 +87,45 @@ flowchart TD
   F -->|miss| G["Origin: API or database"]
 `;
 
+## Mental Model
+
+A request falls through the four layers top to bottom, like the diagram above: Client Cache first (does the browser already have this route?), then the Full Route Cache (did the server already render this?), then, only if both miss, the render actually runs — and *inside* that render, Request Memoization and the Data Cache work together so the render's own data fetching is cheap. Each layer exists to let the request skip as much of the next one as possible.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| Data Cache opt-in by default (v15+) | No stale data by surprise — every fetch is fresh unless you ask otherwise | Migrating from v14 code means every `fetch` that relied on default caching silently becomes a live request |
+| `next: { revalidate: N }` per fetch | Fine-grained control per call | Easy to forget on one fetch and get inconsistent freshness across a page |
+| `next: { tags: [...] }` | Precise on-demand invalidation later | Only useful if you also call `revalidateTag` somewhere — a tag nobody revalidates is dead weight |
+| Full Route Cache | Skips rendering entirely for a static route | Only helps routes that *can* be static — one request-time API anywhere in the tree opts the route out |
+
+## Common Misconceptions
+
+- **"Next.js caches everything automatically."** True in Next.js 14, false since 15. A plain `fetch` with no options writes nothing to the Data Cache and hits the origin on every request.
+- **"A plain, uncached fetch makes the route dynamic."** It does not — a fetch reached before any request-time API still runs once at build and the route stays static. Only `cache: 'no-store'` (or `revalidate: 0`) — or a genuine request-time API like `cookies()` — makes it dynamic.
+- **"The Client Cache is the same thing as the Data Cache."** They are different layers with different lifetimes: the Data Cache lives on the server across requests, the Client Cache lives in the browser's memory and is invalidated by `router.refresh()`, a page reload, or a server-triggered revalidation.
+- **"Request Memoization and the Data Cache are the same layer with two names."** They are not — Request Memoization dies with the render pass; the Data Cache is what persists a fetch result across requests and deploys.
+
+## Reading AI-generated code
+
+When a generated snippet fetches data and relies on caching behavior, check for these before trusting it:
+
+- Does a comment or assumption say "Next.js caches this automatically"? That was true in 13/14 and is false in 15/16 — verify which options are actually passed to `fetch`.
+- Does the code assume a plain, option-less `fetch` re-fetches fresh data on every request? On a route with no request-time API, it is the opposite: fetched once at build, then frozen in the static HTML until the next deploy.
+- Is `next: { tags: [...] }` used **without** `cache: 'force-cache'` or a `next.revalidate` number alongside it? Tags alone opt a fetch into nothing — there is no cache entry for `revalidateTag` to invalidate.
+- Are `next: { tags: [...] }` used anywhere without a matching `revalidateTag` call in the codebase? A tag nobody revalidates never gets invalidated.
+- Does the code assume an uncached `fetch` makes its route dynamic? It does not, by itself — only `cache: 'no-store'`, `revalidate: 0`, or a request-time API does that.
+
+<SpotTheBug code={`export default async function PricePage() {
+  // No cache option — Next.js re-fetches fresh data on every request, right?
+  const res = await fetch('https://api.example.com/live-price')
+  const price = await res.json()
+  return <p>\${price.value}</p>
+}`}>
+The opposite is true — this page has no request-time API anywhere in it (no `cookies()`, no `headers()`, no dynamic segment), so under the "auto no cache" default the fetch runs **once at `next build`** and the resulting HTML is served statically for every request afterward, frozen until the next deploy. Proven in the probe: a page like this one, pointed at a request-counter endpoint, baked a single count into the static HTML at build time, and three separate `next start` requests all returned that exact same frozen number — the endpoint was never hit again. A "live price" page needs an explicit `cache: 'no-store'` (refetch every request) or a short `next: { revalidate: 5 }` (a few seconds of staleness); leaving the options off is the one choice that guarantees it never updates.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
 Four caches, four jobs — Request Memoization (per render), Data Cache (per data fetch), Full Route Cache (per rendered route), Client Cache (in the browser) — and since v15 the Data Cache is **opt-in** because `fetch` is uncached by default.
 </Callout>
@@ -91,6 +135,7 @@ export const fclQuizEn = [
     q: 'Since which version is fetch uncached by default in Next.js?',
     options: ['Next.js 12', 'Next.js 13', 'Next.js 14', 'Next.js 15'],
     answer: 3,
+    explain: 'Next.js 14 and earlier defaulted fetch to cache: force-cache. Since Next.js 15, a plain fetch writes nothing to the Data Cache unless you opt in.',
   },
   {
     q: 'Which of the four layers lives in the browser?',
@@ -101,6 +146,7 @@ export const fclQuizEn = [
       'The Client Cache (formerly Router Cache)',
     ],
     answer: 3,
+    explain: 'The Client Cache holds RSC payloads of visited and prefetched routes in the browser\'s memory, so back/forward navigation is instant.',
   },
   {
     q: 'Which layer dedupes identical fetch calls within a single render?',
@@ -111,6 +157,7 @@ export const fclQuizEn = [
       'The Client Cache (formerly Router Cache)',
     ],
     answer: 0,
+    explain: 'Request Memoization is the only layer scoped to a single render pass — it dedupes identical calls during that render and is discarded once it finishes.',
   },
   {
     q: 'What does revalidateTag invalidate?',
@@ -121,6 +168,29 @@ export const fclQuizEn = [
       'Nothing until the next deploy',
     ],
     answer: 1,
+    explain: 'revalidateTag marks every Data Cache entry carrying that tag as stale, and because a route\'s rendered output depends on that data, the dependent Full Route Cache entries are invalidated too.',
+  },
+  {
+    q: '```tsx\nexport default async function PricePage() {\n  // No cache option — Next.js re-fetches fresh data on every request, right?\n  const res = await fetch(\'https://api.example.com/live-price\')\n  const price = await res.json()\n  return <p>{price.value}</p>\n}\n```\nThis route has no cookies(), headers(), or dynamic segment anywhere in it. In Next.js 16, what actually happens after `next build`?',
+    options: [
+      'The fetch runs fresh on every request, exactly as the comment assumes',
+      'The fetch runs once at build time, and that same frozen result is served on every request until the next deploy',
+      'It throws a build error for missing a cache option',
+      'The Client Cache serves it fresh on every navigation',
+    ],
+    answer: 1,
+    explain: 'With no request-time API anywhere on the route, the "auto no cache" default fetches once during next build and the route is prerendered static — proven in the probe by baking a request-counter\'s value into the static HTML and getting that identical frozen number back on three separate next start requests.',
+  },
+  {
+    q: '```tsx\nawait fetch(\'https://api.example.com/feed\', { next: { tags: [\'feed\'] } })\n```\nOn a dynamic route (one using cookies() elsewhere), and with no `cache` or `next.revalidate` option, what does this fetch actually do on each request?',
+    options: [
+      'It is cached indefinitely because a tag was provided',
+      'It re-fetches live from the origin every request — tags alone do not opt a fetch into the Data Cache',
+      'It reuses the Client Cache instead of the Data Cache',
+      'It fails to build because a tag requires a cache option',
+    ],
+    answer: 1,
+    explain: 'The bundled docs are explicit that caching is opt-in via cache: \'force-cache\' or next.revalidate — a tag by itself does not cache anything. Proven in the probe: a dynamic route tagging a request-counter fetch with only next.tags returned a fresh, incrementing count on every one of three requests.',
   },
 ];
 

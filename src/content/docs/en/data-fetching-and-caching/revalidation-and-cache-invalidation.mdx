@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
 The `fetch` options and `export const revalidate` here belong to the **previous** model, with `cacheComponents` off. Under `cacheComponents: true` the `revalidate` export fails the build (`Route segment config "revalidate" is not compatible with nextConfig.cacheComponents`) and its replacement is `cacheLife('hours')` inside a `'use cache'` scope; `revalidateTag`, `revalidatePath`, and `updateTag` work the same in both models.
@@ -75,6 +76,63 @@ export async function updateProfile() {
 }
 ```
 
+### `revalidatePath('/', 'layout')`: the blast radius
+
+`revalidatePath` takes a `type` parameter, `'page'` or `'layout'`. Passing `'/'` with `'layout'` is the largest single revalidation call in the API: the bundled docs describe it as purging the Client Cache **and** invalidating all cached data for revalidation on the next visit — the root layout wraps the entire app, so its blast radius is every route beneath it. Reach for it only for something that genuinely touches everything (a full content reindex, a locale switch), never as a reflex "just to be safe" call after an ordinary mutation.
+
+```tsx
+'use server'
+import { revalidatePath } from 'next/cache'
+
+export async function purgeEverything() {
+  // Invalidates the root layout — every page in the app revalidates on next visit,
+  // and the Client Cache is purged immediately. The largest revalidatePath call there is.
+  revalidatePath('/', 'layout')
+}
+```
+
+## On-demand revalidation from a Route Handler with a secret
+
+A Server Action's revalidation is triggered by the user's own mutation, but content that changes *outside* your app — a CMS edit, a webhook from a payment provider — needs a Route Handler that anyone on the internet can technically call. Without a check, that Route Handler is an open invalidation endpoint. The standard fix, straight from the docs' on-demand revalidation pattern, is a shared secret passed as a query parameter and compared against a server-only environment variable before doing anything:
+
+```ts
+// app/api/revalidate/route.ts
+import { revalidateTag } from 'next/cache'
+import { NextRequest, NextResponse } from 'next/server'
+
+// Called by a CMS webhook: /api/revalidate?secret=...&tag=posts
+export async function POST(request: NextRequest) {
+  const secret = request.nextUrl.searchParams.get('secret')
+  if (secret !== process.env.REVALIDATE_SECRET) {
+    return NextResponse.json({ message: 'Invalid secret' }, { status: 401 })
+  }
+
+  const tag = request.nextUrl.searchParams.get('tag')
+  if (!tag) {
+    return NextResponse.json({ message: 'Missing tag' }, { status: 400 })
+  }
+
+  revalidateTag(tag, 'max')
+  return NextResponse.json({ revalidated: true, tag, now: Date.now() })
+}
+```
+
+The CMS (or any other webhook sender) is configured with the URL plus the secret; `REVALIDATE_SECRET` lives only in the server's environment, never in a `NEXT_PUBLIC_` variable, so it never reaches the client bundle. Anyone calling the endpoint without the right secret gets a `401` and nothing revalidates.
+
+## Does the `x-nextjs-cache` header still exist in Next.js 16?
+
+Yes — checked with `curl -I` against a `next start` server in this course's probe, on a fully static App Router route, in both caching models:
+
+```text
+HTTP/1.1 200 OK
+x-nextjs-cache: HIT
+x-nextjs-prerender: 1
+x-nextjs-stale-time: 300
+Cache-Control: s-maxage=31536000
+```
+
+`x-nextjs-cache` (values `HIT` / `MISS` / `STALE` / `REVALIDATED`, documented for the older Pages Router ISR flow) is still sent on a prerendered App Router route in Next.js 16.3.6 — it did not get removed. It now sits alongside two newer headers: `x-nextjs-prerender` (marks the response as a prerendered/static one) and `x-nextjs-stale-time` (the Client Cache's `stale` window in seconds, `300` here matching the `default` `cacheLife` profile). All three showed up identically whether `cacheComponents` was on or off.
+
 ## How it maps onto the caching layers
 
 Revalidation touches three of the four layers. It drops the matching entries from the **Data Cache**, and because a route's rendered output depends on that data, it also marks the affected **Full Route Cache** entries stale. The next request re-runs the render with fresh data and repopulates both. The browser-side **Client Cache** is invalidated too: called from a Server Action, `revalidateTag` / `revalidatePath` / `updateTag` purge it immediately; called from a Route Handler, the client picks up the change on its next navigation. Only Request Memoization is untouched — it lives and dies inside a single render.
@@ -90,6 +148,49 @@ flowchart LR
   B --> F["Client Cache: purged when called from a Server Action"]
 `;
 
+## Mental Model
+
+Every revalidation call answers the same question — "which cached entries are now wrong?" — with a different granularity. `revalidateTag` answers it in terms of *what data* (every entry carrying that tag, wherever it lives). `revalidatePath` answers it in terms of *what route* (everything cached for that path, regardless of tags). Time-based `revalidate` answers it in terms of *how long* (a clock, not an event). None of them delete data immediately by default — `revalidateTag`/`revalidatePath` mark it stale and refresh in the background; only `updateTag` (Server Actions only) expires it right away for a read-your-own-write.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| `revalidateTag(tag, 'max')` | Precise — only entries carrying that exact tag are touched | Requires the fetch to have been tagged in the first place; a forgotten tag is invisible to this call |
+| `revalidatePath('/blog/1')` | Works without knowing any tags | Only revalidates that literal path — a sibling page using the same underlying data stays stale until its own path (or the shared tag) is revalidated |
+| `revalidatePath('/', 'layout')` | One call, whole app fresh | The biggest hammer available — purges the Client Cache and marks every route for revalidation, which is wasteful for an ordinary single-record mutation |
+| Secret-gated Route Handler | Lets an external system (CMS, webhook) trigger revalidation safely | Adds an operational surface: the secret must be provisioned, kept out of `NEXT_PUBLIC_`, and rotated if it leaks |
+
+## Common Misconceptions
+
+- **"revalidateTag deletes the cached data immediately."** It does not (by design) — it marks entries stale and serves the old value while a background refresh runs, for up to the `cacheLife` profile passed as the second argument. Only `updateTag` expires immediately, and only from a Server Action.
+- **"revalidatePath('/blog/1') also revalidates /blog/2 if they share a fetch tag."** It does not — `revalidatePath` only touches the literal path (or the page/layout pattern given), never other paths that happen to use the same tagged data. That is exactly what tag-based revalidation is for.
+- **"revalidatePath('/', 'layout') is a safe default to sprinkle after any mutation."** It works, but it is the single largest revalidation call available — it purges the Client Cache and marks the entire app for revalidation. Reach for the narrowest call that is actually correct.
+- **"A revalidation Route Handler without a secret check is fine because the URL is obscure."** An obscure URL is not authorization — anyone who finds or guesses it can trigger revalidation (or, worse, a denial-of-service via repeated cache purges) with no secret in place.
+
+## Reading AI-generated code
+
+When a generated snippet revalidates cached data, check for these before trusting it:
+
+- Does `revalidateTag` get exactly two arguments? A one-argument call is a TypeScript error in Next.js 16 (`revalidateTag` requires a `cacheLife` profile as the second argument) — a generated snippet written against older docs or training data commonly omits it.
+- Is a revalidation Route Handler missing a secret check? Any Route Handler that calls `revalidateTag`/`revalidatePath` needs to verify a caller-supplied secret against a server-only environment variable before doing anything.
+- Is `revalidatePath('/', 'layout')` used for an ordinary single-record mutation? That is the largest possible blast radius — reach for a tag or a specific path instead unless the change genuinely affects the whole app.
+- Does the code call `updateTag` from a Route Handler? `updateTag` only works inside Server Actions — a Route Handler needs `revalidateTag` instead.
+
+<SpotTheBug code={`'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function createPost(formData: FormData) {
+  await fetch('https://api.example.com/posts', {
+    method: 'POST',
+    body: JSON.stringify({ title: formData.get('title') }),
+  })
+  revalidateTag('posts')
+}`}>
+`revalidateTag` is called with only one argument. Since Next.js 16 it requires a second argument — a `cacheLife` profile describing how long stale data may still be served while the refresh runs. Proven in the probe: `tsc --noEmit` on this exact call reports `error TS2554: Expected 2 arguments, but got 1.` — a real compile error, not a lint warning. The fix is `revalidateTag('posts', 'max')` (or another named profile), which compiles cleanly.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
 Time-based `revalidate` sets a staleness clock; on-demand `revalidateTag(tag, 'max')` / `updateTag` / `revalidatePath` invalidate on an event — both clear the **Data Cache**, the dependent **Full Route Cache**, and the browser's **Client Cache**, so tag your fetches to revalidate precisely.
 </Callout>
@@ -104,6 +205,7 @@ export const rciQuizEn = [
       'useEffect and setInterval',
     ],
     answer: 1,
+    explain: 'Time-based revalidation is set either per fetch call (next: { revalidate: N }) or for a whole route segment (export const revalidate). revalidateTag/revalidatePath are the on-demand, event-driven alternative.',
   },
   {
     q: 'Where may you call revalidateTag?',
@@ -114,6 +216,7 @@ export const rciQuizEn = [
       'In a useEffect on the client',
     ],
     answer: 1,
+    explain: 'revalidateTag only works in server environments — a Server Action or a Route Handler. It cannot run in a Client Component or a browser-side useEffect.',
   },
   {
     q: 'How does revalidatePath differ from revalidateTag?',
@@ -124,6 +227,7 @@ export const rciQuizEn = [
       'revalidateTag clears the browser-side Client Cache only',
     ],
     answer: 0,
+    explain: 'revalidatePath invalidates everything cached for one specific route (page or layout); revalidateTag invalidates every cached entry carrying a given tag, wherever it was fetched from.',
   },
   {
     q: 'What must a fetch have before revalidateTag can invalidate it?',
@@ -134,6 +238,29 @@ export const rciQuizEn = [
       'A useEffect wrapper',
     ],
     answer: 1,
+    explain: 'revalidateTag only reaches Data Cache entries that were tagged with next: { tags: [...] } at fetch time (or cacheTag() under Cache Components). An untagged entry is invisible to it.',
+  },
+  {
+    q: '```tsx\n\'use server\'\nimport { revalidateTag } from \'next/cache\'\n\nexport async function createPost(formData: FormData) {\n  await fetch(\'https://api.example.com/posts\', {\n    method: \'POST\',\n    body: JSON.stringify({ title: formData.get(\'title\') }),\n  })\n  revalidateTag(\'posts\')\n}\n```\nDoes this compile in Next.js 16?',
+    options: [
+      'Yes, and it revalidates the "posts" tag with the default profile',
+      "No — TS2554: Expected 2 arguments, but got 1",
+      'Yes, but it silently does nothing until a profile is added',
+      'No — revalidateTag cannot be called from a Server Action',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe with tsc --noEmit: revalidateTag now requires a cacheLife profile as its second argument. revalidateTag(\'posts\', \'max\') compiles cleanly; revalidateTag(\'posts\') alone does not.',
+  },
+  {
+    q: '```tsx\n\'use server\'\nimport { revalidatePath } from \'next/cache\'\n\nexport async function tweakOneComment() {\n  await updateComment()\n  revalidatePath(\'/\', \'layout\')\n}\n```\nA single comment was edited. What is the actual blast radius of this revalidatePath call?',
+    options: [
+      "Just the comment's own page — the smallest possible scope",
+      'Only the /comments route and its children',
+      "The entire app — every route revalidates on next visit, and the browser's Client Cache is purged immediately",
+      'Nothing, because layout paths require a dynamic segment',
+    ],
+    answer: 2,
+    explain: 'The bundled docs describe revalidatePath(\'/\', \'layout\') as purging the Client Cache and invalidating all cached data for revalidation on the next visit — the largest single revalidation call available, appropriate for a full reindex, not a one-comment edit.',
   },
 ];
 

@@ -51,7 +51,7 @@ const DOCS_EN = path.join(REPO_ROOT, 'src/content/docs/en');
 // Packages lessons `import` that `create-next-app`'s default scaffold does not
 // ship (found via: grep -rho "from '[^']*'" src/content/docs/en | sort | uniq -c).
 // Documented in README.md's Harness section too.
-const EXTRA_PACKAGES = ['zod'];
+const EXTRA_PACKAGES = ['zod', 'jose'];
 
 const FENCE_LANGS = new Set(['tsx', 'ts', 'js', 'mjs']);
 const PATH_RE = /^\/\/ ([\w@.\-[\]()/]+\.(tsx|ts|js|mjs))$/;

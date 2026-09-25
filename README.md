@@ -62,5 +62,5 @@ doesn't, then cleans up.
 few packages that scaffold doesn't ship; the harness installs them into the
 probe automatically (see `EXTRA_PACKAGES` in `tools/verify-snippets.mjs`):
 
-- `zod` — form/action validation examples in `server-actions-and-mutations` and
+- `zod`, `jose` — form/action validation examples in `server-actions-and-mutations` and
   `data-fetching-and-caching`.

@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -20,6 +21,16 @@ Server Component เป็น `async` function จึง `await` `fetch` หร�
 
 ```tsx
 // app/products/page.tsx
+function ProductList({ products }: { products: { id: string; name: string }[] }) {
+  return (
+    <ul>
+      {products.map((p) => (
+        <li key={p.id}>{p.name}</li>
+      ))}
+    </ul>
+  )
+}
+
 export default async function ProductsPage() {
   // Runs on the server — the API key and response stay server-side
   const res = await fetch('https://api.example.com/products')
@@ -30,9 +41,33 @@ export default async function ProductsPage() {
 
 เพราะ code รันบน server เราจึงคุย database หรือ ORM ได้ตรง ๆ ไม่ต้องมี API route คั่นกลาง
 
+```ts
+// lib/db.ts
+export const db = {
+  user: {
+    findMany: async () => [] as { id: string; name: string }[],
+    findUnique: async (_args: { where: { id: string } }) =>
+      null as { id: string; name: string } | null,
+  },
+  post: {
+    findMany: async () => [] as { id: string; title: string }[],
+  },
+}
+```
+
 ```tsx
 // app/users/page.tsx
 import { db } from '@/lib/db'
+
+function UserList({ users }: { users: { id: string; name: string }[] }) {
+  return (
+    <ul>
+      {users.map((u) => (
+        <li key={u.id}>{u.name}</li>
+      ))}
+    </ul>
+  )
+}
 
 export default async function UsersPage() {
   // Query the database straight from the Server Component
@@ -47,6 +82,25 @@ export default async function UsersPage() {
 
 ```tsx
 // app/dashboard/page.tsx
+function Profile({
+  user,
+  posts,
+}: {
+  user: { id: string; name: string } | null
+  posts: { id: string; title: string }[]
+}) {
+  return (
+    <div>
+      <p>{user?.name}</p>
+      <ul>
+        {posts.map((p) => (
+          <li key={p.id}>{p.title}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 async function getUser(id: string) {
   const res = await fetch(`https://api.example.com/users/${id}`)
   return res.json()
@@ -68,7 +122,7 @@ export default async function Dashboard() {
 
 ภายใน render pass เดียว Next.js ทำ memoize `fetch` ที่เหมือนกันให้อัตโนมัติ เรียก URL เดิมจากสาม component แต่ network เห็นแค่ request เดียว ส่วนงานที่ไม่ใช่ `fetch` เช่น query database ให้ห่อด้วย `cache()` ของ React เพื่อ dedupe แบบ per-request เหมือนกัน
 
-```tsx
+```ts
 // lib/user.ts
 import { cache } from 'react'
 import { db } from '@/lib/db'
@@ -78,6 +132,124 @@ export const getUser = cache(async (id: string) => {
   return db.user.findUnique({ where: { id } })
 })
 ```
+
+### ขอบเขตคือ render pass เดียว ไม่มากไปกว่านั้น
+
+สองเรื่องเกี่ยวกับ Request Memoization ที่คนที่เคยเข้าใจว่า "Next.js cache fetch ให้" มักเข้าใจผิด ทั้งสองข้อไม่จริง:
+
+1. มันไม่ persist ข้าม request — มันถูกจำกัดขอบเขตแค่ render pass เดียว แล้วถูกทิ้งทันทีที่ render นั้นจบ การเก็บ data ข้าม request คือหน้าที่ของ Data Cache (บทถัดไป) ไม่ใช่บทนี้
+2. มันไม่ทำงานใน Route Handler เพราะ Route Handler ไม่ใช่ส่วนหนึ่งของ React component tree เอกสารที่ bundle มากับ probe ของ `fetch` พูดตรง ๆ ว่า "Memoization does not apply in Route Handlers, since they are not part of the React component tree"
+
+เพื่อพิสูจน์ทั้งสองข้อ ห่อ fake ORM call ด้วย `cache()` แล้ว log ทุกครั้งที่มันรันจริง:
+
+```ts
+// lib/counter.ts
+import { cache } from 'react'
+
+export const getUser = cache(async (id: string) => {
+  const token = Math.random().toString(36).slice(2, 8)
+  console.log(`[getUser] executing for id=${id} — fresh call, token=${token}`)
+  return { id, token }
+})
+```
+
+```tsx
+// app/memo-demo/page.tsx
+import { getUser } from '@/lib/counter'
+
+export const dynamic = 'force-dynamic'
+
+async function Widget({ label }: { label: string }) {
+  const user = await getUser('1')
+  return (
+    <p>
+      {label}: token {user.token}
+    </p>
+  )
+}
+
+export default async function MemoDemoPage() {
+  // Two separate Server Components calling the same cache()-wrapped
+  // function with the same argument, in the same render pass.
+  return (
+    <div>
+      <Widget label="A" />
+      <Widget label="B" />
+    </div>
+  )
+}
+```
+
+```ts
+// app/api/memo-demo/route.ts
+import { getUser } from '@/lib/counter'
+
+export const dynamic = 'force-dynamic'
+
+export async function GET() {
+  const user = await getUser('1')
+  return Response.json(user)
+}
+```
+
+Build ด้วย `next build && next start` แล้วยิง 3 ครั้ง — หน้าเพจสองครั้ง แล้วค่อย Route Handler หนึ่งครั้ง — server log จะโชว์การรันจริงแค่ครั้งเดียวต่อ request แม้ว่าหน้าเพจจะ render `Widget` สองตัวที่เรียก `getUser('1')` ทั้งคู่:
+
+```text
+[getUser] executing for id=1 — fresh call, token=jhr7n2
+[getUser] executing for id=1 — fresh call, token=dacca3
+[getUser] executing for id=1 — fresh call, token=fv739g
+```
+
+`Widget` สองตัวของ request แรกใช้การรันเดียวกัน (`jhr7n2`) — นั่นคือ dedupe request ที่สองไปหน้าเพจเดิมได้ token ใหม่เอี่ยม (`dacca3`) — ขอบเขตจาก render แรกหายไปแล้ว Route Handler ก็ได้ token ของตัวเอง (`fv739g`) — มันไม่เคยแชร์อะไรกับ render ของหน้าเพจเลย ตรงตามที่เอกสารบอกไว้เป๊ะ
+
+## ส่ง Promise ให้ `use()` ใน Client Component
+
+Server Component สามารถเริ่ม fetch แล้วส่ง **Promise ที่ยังไม่ resolve** ตรง ๆ ให้ Client Component แทนที่จะ `await` ก่อน Client Component จะแกะมันด้วย `use()` ของ React และ `<Suspense>` ที่ห่ออยู่จะโชว์ fallback จนกว่าจะ resolve วิธีนี้ stream static shell ออกไปทันที และปล่อยให้ data ที่ช้ามาทีหลัง โดยไม่ต้องมี `useEffect` fetch ฝั่ง client
+
+```tsx
+// app/comments/comments.tsx
+'use client'
+import { use } from 'react'
+
+export function Comments({
+  commentsPromise,
+}: {
+  commentsPromise: Promise<{ id: string; text: string }[]>
+}) {
+  // Unwraps the Promise on the client — suspends until it resolves
+  const comments = use(commentsPromise)
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>{c.text}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/comments/page.tsx
+import { Suspense } from 'react'
+import { Comments } from './comments'
+
+async function getComments() {
+  const res = await fetch('https://api.example.com/comments')
+  return res.json()
+}
+
+export default function CommentsPage() {
+  // Don't await — pass the Promise straight down, unresolved
+  const commentsPromise = getComments()
+  return (
+    <Suspense fallback={<p>Loading comments…</p>}>
+      <Comments commentsPromise={commentsPromise} />
+    </Suspense>
+  )
+}
+```
+
+นี่คือคนละเครื่องมือกับ client-side data library อย่าง SWR หรือ TanStack Query: `use(promise)` แกะค่าที่ *server เริ่ม fetch ไว้แล้ว* ครั้งเดียว สำหรับ render นี้ ส่วน SWR/TanStack รันทั้งหมดใน browser และมี client-side cache, revalidation, refetch-on-focus เป็นของตัวเอง ใช้พวกนั้นเมื่อ Client Component ต้อง fetch **ด้วยตัวเอง** แยกจาก render ของ Server Component (search-as-you-type, polling, mutate แล้ว refetch) — คอร์สนี้ไม่ได้สอนพวกนั้น
 
 ## จุดที่ไม่ควร fetch
 
@@ -111,8 +283,57 @@ flowchart LR
   F --> G["Render (sooner)"]
 `;
 
+## Mental Model
+
+มอง async Server Component เป็น function ที่รันครั้งเดียวต่อ request บน server โดยไม่มี "data layer" แยกออกมาต่างหาก — ตัว `await` **คือ** data layer นั่นเอง Request Memoization คือความจำระยะสั้นของ function นั้น ทุกอย่างที่มัน (และทุกอย่างที่มันเรียก) `await` ระหว่างการรันครั้งนั้นจะถูกจำไว้จนจบการรัน แล้วถูกลืม Route Handler คือ function invocation คนละตัวที่มีความจำระยะสั้นของตัวเอง มันไม่เคยสืบทอดความจำของหน้าเพจเลย
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| Fetch ตรงในตัว component | ไม่มี client round-trip ไม่ต้องจัดการ loading state | ทุก Server Component ที่ต้องการ data ต้องเป็น `async` เอง |
+| `Promise.all` สำหรับ request ที่ไม่ขึ้นต่อกัน | ไม่มี waterfall ทั้งสอง request เริ่มพร้อมกัน | ต้องสังเกตให้ออกว่า request ไม่ได้ขึ้นต่อกันจริง ๆ |
+| `React.cache()` สำหรับงานที่ไม่ใช่ `fetch` | หนึ่ง query ต่อ request ไม่ว่ากี่ component จะเรียก | dedupe แค่ตอน argument เท่ากันแบบ reference หรือเป็น primitive — object literal ที่สร้างใหม่ทุกครั้งทำให้มันพัง |
+| ส่ง Promise ให้ `use()` | stream static shell ก่อน data ที่ช้าจะมาถึง | ต้องมี `<Suspense>` boundary และ Promise ต้องถูกสร้างใน Server Component ไม่ใช่ Client Component |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Request Memoization cache data ของฉันข้าม request ได้"** — ไม่จริง มันอยู่แค่ใน render pass เดียวแล้วก็ตาย การเก็บ data ข้าม request คือหน้าที่ของ Data Cache ซึ่งเป็นบทถัดไป
+- **"ถ้าเรียก cached function จาก Route Handler มันจะใช้ผลลัพธ์ที่ cache ไว้จากหน้าเพจ"** — ไม่จริง Route Handler ไม่ใช่ส่วนหนึ่งของ React component tree จึงไม่มีทางเข้าร่วม memoization scope ของ render ของ Server Component ได้เลย
+- **"`React.cache()` dedupe ด้วยการเทียบ argument แบบ deep-equal"** — มันเทียบแบบเดียวกับ `Object.is` สอง call ที่มี object ที่โครงสร้างเหมือนกันแต่สร้างใหม่ทุกครั้งคือคนละ reference และไม่มีทาง dedupe กัน
+- **"Client Component `await` data เองได้เหมือน Server Component"** — ไม่ได้ render function ของ Client Component เป็น `async` ไม่ได้ มันต้องรับ data ที่ resolve แล้วผ่าน prop หรือแกะ Promise ด้วย `use()` เท่านั้น
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มา fetch หรือ cache data ใน Server Component ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- ทุก fetch ที่ต้องการ dedupe รันอยู่ใน render tree เดียวกันหรือเปล่า — ไม่ใช่อยู่ใน Route Handler ที่มันเรียกเข้าไปเอง?
+- ถ้า call ที่ไม่ใช่ `fetch` (ORM query, SDK call) ถูกห่อด้วย `cache()` argument ของมันเป็น primitive หรือเป็น object reference *เดียวกัน* ทุกครั้งหรือเปล่า — ไม่ใช่ object literal ที่สร้างใหม่ทุก call site?
+- Client Component พยายาม `await` data ตรง ๆ ในตัวมันหรือเปล่า? แบบนั้น compile ไม่ผ่าน — data ต้องมาเป็น prop หรือผ่าน `use()` เท่านั้น
+- component ที่ต้องการ data แบบ parallel ใช้ `Promise.all` จริงหรือเปล่า หรือแอบ `await` ทีละตัวเงียบ ๆ จนเกิด waterfall?
+- ถ้ามีการส่ง Promise ให้ Client Component ไปใช้ `use()` มี `<Suspense>` boundary ห่ออยู่หรือเปล่า? ถ้าไม่มี ทั้ง tree จะ block แทนที่จะ stream
+
+<SpotTheBug code={`import { cache } from 'react'
+import { db } from '@/lib/db'
+
+const getConfig = cache(async (opts: { locale: string }) => {
+  return db.config.forLocale(opts.locale)
+})
+
+export async function Header() {
+  const config = await getConfig({ locale: 'en' })
+  return <nav>{config.brand}</nav>
+}
+
+export async function Footer() {
+  const config = await getConfig({ locale: 'en' })
+  return <footer>{config.brand}</footer>
+}`}>
+`Header` และ `Footer` เรียก `getConfig` ด้วย object literal ที่หน้าตาเหมือนกัน — `{ locale: 'en' }` — แต่แต่ละ call site สร้าง object ใหม่ทุกครั้ง `cache()` เทียบ memoization แบบเดียวกับ `Object.is` ดังนั้น object reference สองตัวที่ต่างกันจะไม่มีทาง dedupe แม้จะมี shape กับ content เหมือนกัน — `getConfig` จึงรันสองครั้งใน render นี้แทนที่จะเป็นครั้งเดียว พิสูจน์แล้วในโพรบ: สอง call ด้วย `{ locale: 'en' }` object ใหม่ log การรันแยกกันสองครั้ง ในขณะที่สอง call ด้วย primitive string `'en'` log แค่ครั้งเดียว ทางแก้คือ key cached function ด้วย primitive (`getConfig(locale: string)`) หรือสร้าง options object ครั้งเดียวแล้วส่ง reference เดียวกันไปทั้งสอง call site
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-fetch **ตรงจุดที่ render** async Server Component `await` data ได้ตรง ๆ และ `Promise.all` บวก Request Memoization ทำให้เร็วและไม่เกิด waterfall
+fetch **ตรงจุดที่ render** async Server Component `await` data ได้ตรง ๆ และ `Promise.all` บวก Request Memoization ทำให้เร็วและไม่เกิด waterfall — แต่ memoization นั้นถูกจำกัดขอบเขตแค่ render pass เดียวและไม่มีทางเข้าไปถึง Route Handler ได้
 </Callout>
 
 export const sfcQuizTh = [
@@ -125,6 +346,7 @@ export const sfcQuizTh = [
       'ผ่าน data library ฝั่ง client เท่านั้น',
     ],
     answer: 1,
+    explain: 'async Server Component รันบน server จึง await fetch หรือ query database ตรง ๆ ในตัวมันได้เลย ไม่ต้องมี useEffect ไม่ต้องมี loading state ไม่ต้องยิงจาก client',
   },
   {
     q: 'ทำไมต้องห่อสอง fetch ที่ไม่ขึ้นต่อกันด้วย Promise.all?',
@@ -135,6 +357,7 @@ export const sfcQuizTh = [
       'เพื่อบังคับให้รันทีละตัว',
     ],
     answer: 2,
+    explain: 'ถ้า await fetch แรกแล้วค่อย await ตัวถัดไป ตัวที่สองเริ่มไม่ได้จนกว่าตัวแรกจะเสร็จ Promise.all เริ่มทั้งคู่ทันที render จึงเสร็จเร็วเท่ากับตัวที่ช้ากว่าเท่านั้น',
   },
   {
     q: 'cache() ของ React ให้อะไรกับ query database?',
@@ -145,6 +368,7 @@ export const sfcQuizTh = [
       'cache ฝั่ง client ใน browser',
     ],
     answer: 1,
+    explain: 'cache() dedupe แค่ภายใน render pass เดียว — scope เดียวกับที่ fetch memoization ใช้ มันไม่เก็บอะไรข้าม request เลย นั่นคือหน้าที่ของ Data Cache',
   },
   {
     q: 'Client Component ต้องใช้ data จาก server ควรทำยังไง?',
@@ -155,6 +379,29 @@ export const sfcQuizTh = [
       'import ORM เข้า client bundle',
     ],
     answer: 2,
+    explain: 'render function ของ Client Component ไม่ใช่ async และ await ไม่ได้ มันเข้าถึง data ของ server ผ่าน Route Handler, Server Action หรือ Promise ที่ส่งมาจาก Server Component แล้วแกะด้วย use()',
+  },
+  {
+    q: '```ts\nconst getConfig = cache(async (opts: { locale: string }) => {\n  return db.config.forLocale(opts.locale)\n})\n\nawait getConfig({ locale: "en" })\nawait getConfig({ locale: "en" })\n```\ncall ที่สองใช้ผลลัพธ์ที่ cache ไว้จาก call แรกไหม?',
+    options: [
+      'ใช้ — cache() เทียบ argument แบบ deep เสมอ shape เดียวกันก็ dedupe ได้',
+      'ไม่ใช้ — แต่ละ call ส่ง object ที่สร้างใหม่ และ cache() เทียบแบบเดียวกับ Object.is ดังนั้น reference ที่ต่างกันจะไม่ dedupe',
+      'ใช้ แต่เฉพาะใน Route Handler เท่านั้น',
+      'ไม่ใช้ — cache() ใช้ได้กับ function ที่ไม่มี argument เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วในโพรบ: สอง call ด้วย object literal ใหม่ log การรันแยกกันสองครั้ง ในขณะที่ call เดิมสองครั้งที่แก้เป็น primitive string argument log แค่ครั้งเดียว cache() key ด้วยการเทียบ reference/value ต่อ argument ไม่ใช่ deep-equality',
+  },
+  {
+    q: '```ts\n// app/api/memo-demo/route.ts\nimport { getUser } from \'@/lib/counter\'\n\nexport async function GET() {\n  const user = await getUser(\'1\')\n  return Response.json(user)\n}\n```\nมีหน้าเพจอื่นใน app เดียวกันที่เรียก `getUser(\'1\')` ใน render ของมันไปแล้ว การยิง Route Handler นี้จะใช้ผลลัพธ์เดิมไหม?',
+    options: [
+      'ใช้ ตราบใดที่เกิดขึ้นภายใน render pass เดียวกัน',
+      'ไม่ใช้ — Route Handler ไม่ใช่ส่วนหนึ่งของ React component tree จึงไม่มีทางเข้าร่วม memoization scope ของ render ใด ๆ ได้',
+      'ใช้ เพราะ cache() เป็น module-level singleton ที่แชร์กันทั้ง server',
+      'ไม่ใช้ แต่เป็นเพราะตัวอย่างนี้ลืมใส่ cache tag เฉย ๆ',
+    ],
+    answer: 1,
+    explain: 'เอกสาร Next.js ที่ bundle มาบอกตรง ๆ ว่า "Memoization does not apply in Route Handlers, since they are not part of the React component tree" พิสูจน์แล้วในโพรบ: การยิง Route Handler log การรันสดใหม่ของตัวเองเสมอ ไม่เคยใช้ของหน้าเพจเลย',
   },
 ];
 
