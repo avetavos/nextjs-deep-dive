@@ -1,0 +1,1210 @@
+---
+title: แคตตาล็อก bug ของโค้ด AI
+description: '25 bug ที่โค้ด Next.js จาก AI สร้างขึ้นซ้ำๆ — โค้ดที่ผิด, อาการจริง (real build/tsc/browser output), และวิธีแก้'
+sidebar:
+  order: 2
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+ทุก pattern ด้านล่างถูกเขียนให้เหมือนโค้ด Next.js ที่ AI assistant เขียนออกมาจริงๆ ทุกประการ แล้วนำไป build, type-check, หรือโหลดใน browser จริง — กับ Next.js 16.3.6 และ React 19.2.8 compiler error, `tsc` diagnostic, และ output จาก browser ที่ยกมาคือของจริงที่คัดลอกมาตรงๆ ไม่ได้เขียนจากความจำ 25 pattern ถูกจัดกลุ่มตามลำดับการอ่านเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/th/reading-nextjs/)**: boundary, caching model, auth, error/redirect path, config และ env — บวกกลุ่มปิดท้ายเรื่อง rendering กับ navigation ดู **[Review Checklist](/th/reading-nextjs/review-checklist/)** ที่ตามหลังบทนี้สำหรับเวอร์ชันหน้าเดียวของคำถามทั้ง 25 ข้อเดียวกัน
+
+## Boundaries
+
+### 1. `'use client'` วางไว้สูงเกินไปในต้นไม้
+
+```tsx
+// @expect-error illustrative fragment, not a standalone file
+// app/heavy/layout.tsx
+'use client'
+// Nav, Sidebar, and Footer have no hooks — but this directive pulls all
+// three, plus everything they import, into the client bundle anyway.
+import Nav from './nav'
+import Sidebar from './sidebar'
+import Footer from './footer'
+import Counter from './counter'
+
+export default function HeavyLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <Counter />
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+`"use client"` ไม่ได้ทำเครื่องหมายแค่ component เดียว — มันทำเครื่องหมาย entry point ของทั้ง subtree ใน module graph และทุกอย่างที่ `import` ไปถึงจากจุดนั้นจะถูกส่งไปที่ browser ไม่ว่ามันจะใช้ hook สักตัวหรือไม่
+
+**อาการ — ตัวเลข bundle ที่วัดจริง** (พิสูจน์แล้วใน **[Server and Client Components](/th/foundations/server-and-client-components/)** โดยรวม chunk ที่อ้างถึงใน client-reference manifest เพราะ `next build` ไม่พิมพ์คอลัมน์ bundle-size ต่อ route แล้วตั้งแต่ v16.0.0):
+
+```text
+--- /heavy/high (directive on the layout) ---
+  chunk 3gejn2apugqil.js   8967 bytes  (route-specific: Nav + Sidebar + Footer + Counter)
+
+--- /heavy/low (directive pushed to the leaf) ---
+  chunk 1p8pi2r0mnrj-.js    287 bytes  (route-specific: Counter only)
+```
+
+**วิธีแก้:** ดัน directive ลงไปที่ leaf ที่ interactive จริงๆ เท่านั้น; `Nav`, `Sidebar`, และ `Footer` ยังคงเป็น Server Component และไม่ส่ง JavaScript ออกไปเลย:
+
+```tsx
+// app/catalog/01-boundary-too-high/counter.tsx
+'use client'
+// 'use client' pushed down to only the interactive leaf.
+import { useState } from 'react'
+
+export default function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติเลย — ไม่มี compiler error ไม่มี lint rule มีแค่ `next experimental-analyze --output` (หรือรวม `.next/static/chunks/` เทียบกับ client-reference manifest ด้วยมือ) เท่านั้นที่ทำให้ byte ส่วนเกินมองเห็นได้
+
+### 2. Prop ที่ serialize ไม่ได้ข้าม boundary Server → Client
+
+```tsx
+// @expect-error real prerender error, not a type error — see prose
+// app/catalog/02-nonserializable/page.tsx
+import ClientChild from './client-child'
+
+class Money {
+  constructor(public cents: number) {}
+}
+
+export default function Page() {
+  const total = new Money(4200)
+  return <ClientChild amount={total} />
+}
+```
+
+Prop เป็นช่องทางเดียวที่ข้าม boundary Server → Client และ prop ต้องเป็นข้อมูลที่ React serialize ได้ structural typing ของ TypeScript ยอม instance ของ `Money` ให้ตรงกับ prop type `{ cents: number }` โดยไม่มี type error เลย — โค้ดนี้ compile ผ่านสะอาดภายใต้ `tsc --noEmit` ความล้มเหลวจะปรากฏก็ต่อเมื่อ Next.js พยายาม serialize prop นี้จริงๆ สำหรับ client bundle
+
+**อาการ — `next build` output จริง** (probe: Next.js 16.3.6, Turbopack):
+
+```text
+Error occurred prerendering page "/catalog/02-nonserializable". Read more: https://nextjs.org/docs/messages/prerender-error
+Error: Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. Classes or null prototypes are not supported.
+  {amount: {cents: 4200}}
+           ^^^^^^^^^^^^^
+```
+
+**วิธีแก้:** ส่ง plain object (หรือ primitive) แทน instance ของ class:
+
+```tsx
+// app/catalog/02-nonserializable/client-child.tsx
+'use client'
+
+export default function ClientChild({ amount }: { amount: { cents: number } }) {
+  return <div>{amount.cents}</div>
+}
+```
+
+```tsx
+// app/catalog/02-nonserializable/fixed-page.tsx
+import ClientChild from './client-child'
+
+export default function Page() {
+  const total = { cents: 4200 } // plain object, not a class instance
+  return <ClientChild amount={total} />
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรเลยตอน type-check — มีแค่ `next build` จริง (หรือ `next dev` แล้วโหลดหน้า) เท่านั้นที่แสดง prerender error ข้างบน
+
+<SpotTheBug code={`// app/orders/[id]/page.tsx
+import OrderActions from './order-actions'
+
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const order = await getOrder(id)
+  const onCancel = async () => {
+    'use server'
+    await cancelOrder(id)
+  }
+  return <OrderActions order={order} onCancel={onCancel} />
+}`}>
+อันนี้ดูเผินๆ เหมือนจะโอเคเพราะ `onCancel` มี `'use server'` อยู่ข้างใน — แต่ function reference ธรรมดา (แม้จะห่อเป็น Server Action) เป็น "reference" ที่ React เข้าใจและ serialize ได้จริง ดังนั้นกรณีนี้ **ได้รับอนุญาต** จริงๆ bug pattern นี้จะกัดก็ต่อเมื่อค่านั้นเป็น object ที่ serialize ไม่ได้จริงๆ — `Date` โอเค (built-in บางตัวได้รับอนุญาต) แต่ instance ของ `class`, `Map`/`Set` ใน React รุ่นเก่า, หรือ function ธรรมดา *ที่ไม่มี* `'use server'` ไม่ได้ อ่านทุก prop ที่ข้าม boundary แล้วถามว่า: นี่คือ plain data, Server Action, หรือของที่ React's serializer ไม่รู้จักเลย?
+</SpotTheBug>
+
+### 3. `ssr: false` ส่งให้ `next/dynamic` ข้างใน Server Component
+
+```tsx
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/03-ssr-false/page.tsx
+import dynamic from 'next/dynamic'
+
+const NoSSRWidget = dynamic(() => import('./widget'), { ssr: false })
+
+export default function Page() {
+  return <NoSSRWidget />
+}
+```
+
+`ssr: false` บอก Next.js ให้ข้ามการ server-render component นั้นไปเลย — เป็นสิ่งที่สมเหตุสมผลสำหรับ widget ที่ใช้ได้แค่ใน browser (แผนที่, chart library ที่แตะ `window`) แต่มันสมเหตุสมผลแค่ข้างใน Client Component; Server Component ไม่มี client-side render pass ให้ "ข้าม" ตั้งแต่แรก
+
+**อาการ — Turbopack build output จริง:**
+
+```text
+Error: `ssr: false` is not allowed with `next/dynamic` in Server Components. Please move it into a Client Component.
+```
+
+**วิธีแก้:** ย้ายการเรียก `dynamic()` เข้าไปใน Client Component หรือถอด `ssr: false` ออกถ้า widget render บน server ได้:
+
+```tsx
+// app/catalog/03-ssr-false/widget.tsx
+'use client'
+export default function Widget() {
+  return <div>widget</div>
+}
+```
+
+```tsx
+// app/catalog/03-ssr-false/fixed-wrapper.tsx
+'use client'
+import dynamic from 'next/dynamic'
+
+const NoSSRWidget = dynamic(() => import('./widget'), { ssr: false })
+
+export default function Wrapper() {
+  return <NoSSRWidget />
+}
+```
+
+**จับได้โดย:** `next build` (และ `next dev`) ไม่ใช่ `tsc --noEmit` — นี่คือการเช็คระดับ Turbopack RSC ไม่ใช่ type error
+
+### 4. `useFormStatus` ถูกเรียกใน component เดียวกับที่ render `<form>`
+
+```tsx
+// @expect-error compiles and runs, but pending is always false — see prose
+// app/catalog/04-formstatus-same-component/page.tsx
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { save } from './actions'
+
+export default function Page() {
+  const { pending } = useFormStatus() // same component as the <form> below
+  return (
+    <form action={save}>
+      <button disabled={pending}>Save</button>
+    </form>
+  )
+}
+```
+
+`useFormStatus` อ่านสถานะจาก `<form>` ที่เป็น **parent** ที่ใกล้ที่สุด — มันถูกออกแบบมาให้เรียกจาก component ที่ nest อยู่ *ข้างใน* form ที่มันรายงานสถานะ เพื่อให้ปุ่ม submit แสดงสถานะ pending ของตัวเองได้โดยไม่ต้องให้ parent ส่ง prop ลงมา เมื่อเรียกจาก component เดียวกับที่ render `<form>` เอง จะไม่มี parent form อยู่ใน scope เลย ทำให้ `pending` เป็น `false` ตลอดช่วงชีวิตของการ submit — ไม่มี error ไม่มี warning มีแค่ปุ่มที่ไม่เคย disable ให้เห็น
+
+**วิธีแก้:** ย้ายส่วนที่อ่าน `useFormStatus` ไปเป็น child component ที่ render ข้างใน `<form>` (ตาม **[Forms and Progressive Enhancement](/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
+
+```ts
+// app/catalog/04-formstatus-same-component/actions.ts
+'use server'
+
+export async function save(formData: FormData) {
+  // ...
+}
+```
+
+```tsx
+// app/catalog/04-formstatus-same-component/submit-button.tsx
+'use client'
+import { useFormStatus } from 'react-dom'
+
+export function SubmitButton() {
+  const { pending } = useFormStatus()
+  return <button disabled={pending}>Save</button>
+}
+```
+
+```tsx
+// app/catalog/04-formstatus-same-component/fixed-page.tsx
+import { save } from './actions'
+import { SubmitButton } from './submit-button'
+
+export default function Page() {
+  return (
+    <form action={save}>
+      <SubmitButton />
+    </form>
+  )
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรเลย — ไม่มี compiler error ไม่มี lint rule ไม่มี console warning วิธีเดียวที่จะจับได้คือกด submit จริงๆ แล้วดูว่าปุ่ม disable หรือไม่
+
+### 5. `useFormState` แทนที่จะเป็น `useActionState`
+
+```tsx
+// app/catalog/05-useformstate/page.tsx
+'use client'
+
+import { useFormState } from 'react-dom'
+
+async function action(prevState: unknown, formData: FormData) {
+  return { message: 'ok' }
+}
+
+export default function Page() {
+  const [state, formAction] = useFormState(action, { message: '' })
+  return <form action={formAction}>{state.message}</form>
+}
+```
+
+`useFormState` ยังมีอยู่ใน `react-dom` 19.2.8 และยังทำงานได้ — มันเป็น function จริงที่ export และมี type ไม่ใช่ตัวที่ถูกลบไป training data ของ AI จากก่อน React 19.1 ยังหยิบมันมาใช้ตลอด มันถูก deprecate เพื่อให้ใช้ `useActionState` แทน (ย้ายจาก `react-dom` ไปที่ `react` เอง และขยายด้วยค่า return ตัวที่สามคือ `isPending`)
+
+**อาการ — React DevTools/console warning จริง** (จาก `react-dom-client.development.js` เกิดขึ้นครั้งแรกที่ hook นี้ทำงาน):
+
+```text
+ReactDOM.useFormState has been renamed to React.useActionState. Please update %s to use React.useActionState.
+```
+
+**วิธีแก้:** import `useActionState` จาก `react` ไม่ใช่ `useFormState` จาก `react-dom`:
+
+```tsx
+// app/catalog/05-useformstate/fixed-page.tsx
+'use client'
+
+import { useActionState } from 'react'
+
+async function action(prevState: unknown, formData: FormData) {
+  return { message: 'ok' }
+}
+
+export default function Page() {
+  const [state, formAction, isPending] = useActionState(action, { message: '' })
+  return <form action={formAction}>{state.message}{isPending ? ' (saving…)' : ''}</form>
+}
+```
+
+**จับได้โดย:** console warning จริงตอน development — ไม่ใช่ `tsc --noEmit` เพราะ signature ของ `useFormState` ยัง valid และถูก export อยู่
+
+### 6. `useEffect` fetch ในที่ที่ Server Component ทำได้ดีกว่า
+
+```tsx
+// app/catalog/06-useeffect-fetch/page.tsx
+'use client'
+
+import { useEffect, useState } from 'react'
+
+export default function Page() {
+  const [posts, setPosts] = useState<{ id: string; title: string }[]>([])
+  useEffect(() => {
+    fetch('/api/posts')
+      .then((r) => r.json())
+      .then(setPosts)
+  }, [])
+  return <ul>{posts.map((p) => <li key={p.id}>{p.title}</li>)}</ul>
+}
+```
+
+ไม่มีอะไรพังตอน build ที่นี่ — นี่เป็น bug ทางสถาปัตยกรรมล้วนๆ และเป็น pattern ที่พบบ่อยที่สุดของ "AI เขียน React ไม่ใช่ Next.js": data fetch ที่รันบน server ครั้งเดียว, cache, และ stream เป็น HTML ได้ กลับส่ง shell เปล่าไปก่อน แล้วค่อย fetch ฝั่ง client หลัง hydration (มี loading กะพริบทุกครั้งที่เข้า, มี client-server round trip ที่ Server Component จะข้ามไปได้เลย, และมี loading/error state ที่เขียนเองซ้ำอีกชุด)
+
+**วิธีแก้:** fetch ตรงๆ ใน Server Component; ไม่มี client-side loading state ไม่มี network waterfall เพิ่ม (ดู **[Fetching in Server Components](/th/data-fetching-and-caching/fetching-in-server-components/)**):
+
+```tsx
+// app/catalog/06-useeffect-fetch/fixed-page.tsx
+async function getPosts() {
+  const res = await fetch('https://api.example.com/posts')
+  return res.json() as Promise<{ id: string; title: string }[]>
+}
+
+export default async function Page() {
+  const posts = await getPosts()
+  return <ul>{posts.map((p) => <li key={p.id}>{p.title}</li>)}</ul>
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — นี่คือกลิ่นของการออกแบบ ไม่ใช่ error สัญญาณคือไฟล์ `'use client'` ที่มีหน้าที่แค่ fetch แล้ว render list โดยไม่มี interactivity ตรงไหนเลย
+
+### 7. `router.push` ถูกเรียกจากข้างใน Server Component
+
+```tsx
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/07-router-push/page.tsx
+import { useRouter } from 'next/navigation'
+
+export default function Page() {
+  const router = useRouter()
+  router.push('/somewhere')
+  return <div>redirecting</div>
+}
+```
+
+`useRouter` เป็น client-side hook — มันไม่มีอะไรให้เกาะบน server เพราะไม่มี client-side history stack ให้ push เข้าไป
+
+**อาการ — Turbopack build output จริง:**
+
+```text
+Error: You're importing a module that depends on `useRouter` into a React Server Component module. This API is only available in Client Components. To fix, mark the file (or its parent) with the `"use client"` directive.
+    Learn more: https://nextjs.org/docs/app/api-reference/directives/use-client
+```
+
+**วิธีแก้:** สำหรับ Server Component ที่ต้อง redirect ให้ใช้ function `redirect()` ฝั่ง server แทน client hook:
+
+```tsx
+// app/catalog/07-router-push/fixed-page.tsx
+import { redirect } from 'next/navigation'
+
+export default function Page() {
+  redirect('/somewhere')
+}
+```
+
+**จับได้โดย:** `next build` / `next dev` — การเช็ค Turbopack RSC-boundary จริง ไม่ใช่ `tsc --noEmit`
+
+## Data flow และ caching model
+
+### 8. สมมติฐานเรื่อง cache ของ `fetch` ที่ยกมาจาก Next.js 14
+
+```ts
+// app/catalog/08-fetch-cache-assumption/page.tsx
+async function getData() {
+  // Written the way Next.js 14 docs taught: fetch is cached by default.
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+```
+
+Next.js 13/14 cache ทุกการเรียก `fetch` โดยค่าเริ่มต้น (`cache: 'force-cache'` แบบไม่ต้องบอก) Next.js 15 เปลี่ยนค่าเริ่มต้นเป็นไม่ cache และ 16 ก็ยังใช้ค่าเริ่มต้นนี้ต่อ AI model ที่ train จากเอกสารและ blog เก่ายังสร้างโค้ดที่สมมติค่าเริ่มต้นเก่าอยู่ ยิง network ทุก request แบบเงียบๆ แทนที่จะตอบจาก cache
+
+**หลักฐาน — เอกสาร upgrade อย่างเป็นทางการ (bundle มากับ Next.js เวอร์ชันนี้) คำต่อคำ:**
+
+> `fetch` requests are no longer cached by default. To opt specific `fetch` requests into caching, you can pass the `cache: 'force-cache'` option.
+
+**วิธีแก้:** เลือกเข้า cache อย่างชัดเจน ต่อ fetch call หรือต่อ segment:
+
+```ts
+// app/catalog/08-fetch-cache-assumption/fixed-page.tsx
+async function getData() {
+  const res = await fetch('https://api.example.com/data', { cache: 'force-cache' })
+  return res.json()
+}
+
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error ไม่มี warning มีแค่คำอธิบายค่าเริ่มต้นปัจจุบันใน **[The Four Caching Layers](/th/data-fetching-and-caching/the-four-caching-layers/)** หรือสังเกตว่าทุก request ยิง network เท่านั้นที่เผยให้เห็น
+
+### 9. Route Segment Config ผสมกับ `cacheComponents`
+
+```ts
+// @expect-error real next build error under cacheComponents — see prose
+// app/catalog/09-segment-config-cachecomponents/page.tsx
+export const dynamic = 'force-dynamic'
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+```ts
+// app/catalog/09-segment-config-cachecomponents/next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+Route Segment Config (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, `experimental_ppr`) คือ model ที่ tutorial ก่อน 16 ทุกอันสอน `cacheComponents` คือ model ใหม่ที่ใช้ร่วมกันไม่ได้ โค้ดจาก AI ที่ train ด้วย model เก่าเป็นหลักยังเขียน export พวกนี้ลงไปใน project ที่เปิด Cache Components ไปแล้ว
+
+**อาการ — พิสูจน์แล้วใน build ของคอร์สนี้เอง** (ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**):
+
+```text
+Route segment config "dynamic" is not compatible with nextConfig.cacheComponents. Please remove it.
+```
+
+**วิธีแก้:** ลบ segment config export ทิ้ง; ภายใต้ Cache Components ทุก route เป็น dynamic โดยค่าเริ่มต้นอยู่แล้ว และส่วนที่ static/cache จริงๆ ให้ทำเครื่องหมายด้วย `'use cache'` แทน:
+
+```ts
+// app/catalog/09-segment-config-cachecomponents/fixed-page.tsx
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+**จับได้โดย:** `next build` เฉพาะเมื่อ `cacheComponents: true` ถูกตั้งไว้ — export เดียวกัน build ผ่านสบายๆ ถ้าไม่ตั้ง ซึ่งเป็นเหตุผลว่าทำไมขั้นที่ 2 ของลำดับการอ่าน (เช็ค `next.config.ts` ก่อน) ถึงสำคัญ
+
+### 10. `revalidateTag` ถูกเรียกด้วย argument เดียว
+
+```ts
+// @expect-error real tsc TS2554 error — see prose
+// app/catalog/10-revalidatetag-single-arg/actions.ts
+'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function updateArticle(articleId: string) {
+  revalidateTag(`article-${articleId}`)
+}
+```
+
+ตั้งแต่ Next.js 16, `revalidateTag` ต้องการ argument ที่สอง — ชื่อ profile ของ `cacheLife` — ที่อธิบายว่าผู้อ่านจะเห็นข้อมูลเก่าได้นานแค่ไหนระหว่างที่มันกำลัง revalidate รูปแบบ argument เดียวจากเวอร์ชันก่อนหน้าถูก deprecate และตอนนี้เป็น type error ไม่ใช่แค่พฤติกรรมที่เปลี่ยนไปเงียบๆ
+
+**อาการ — `tsc --noEmit` output จริง** (probe: Next.js 16.3.6):
+
+```text
+app/catalog/10-revalidatetag-single-arg/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.
+```
+
+**วิธีแก้:** ส่ง profile ของ `cacheLife` เป็น argument ที่สอง:
+
+```ts
+// app/catalog/10-revalidatetag-single-arg/fixed-actions.ts
+'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function updateArticle(articleId: string) {
+  revalidateTag(`article-${articleId}`, 'max')
+}
+```
+
+**จับได้โดย:** `tsc --noEmit` ตรงๆ — หนึ่งในไม่กี่ entry ในแคตตาล็อกนี้ที่ type checker เพียงอย่างเดียวจับได้
+
+### 11. `cookies()` ถูกอ่านในหน้าที่ตั้งใจให้เป็น static
+
+```ts
+// app/catalog/11-cookies-static/page.tsx
+import { cookies } from 'next/headers'
+
+export default async function Page() {
+  const cookieStore = await cookies()
+  const theme = cookieStore.get('theme')
+  return <div>theme: {theme?.value}</div>
+}
+```
+
+ไม่มีอะไร throw ที่นี่ ถ้าไม่มี Cache Components การอ่าน `cookies()` ที่ไหนก็ตามใน route จะพลิก **ทั้ง route** ให้ server-render ทุก request แบบเงียบๆ — หน้าที่ผู้เขียนสมมติ (และอาจทดสอบด้วยตาเปล่า) ว่าเป็น static จะเสียประโยชน์ของ static rendering ไปหมดอย่างเงียบๆ: ไม่มี prerender, ไม่มี CDN cache, ทำงานเต็มที่บน server ทุกครั้งที่มีคนเข้า
+
+**อาการ — ตาราง route ของ `next build` จริง** (probe, config เริ่มต้น, ไม่มี `cacheComponents`):
+
+```text
+Route (app)
+┌ ○ /
+└ ƒ /catalog/11-cookies-static
+
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+ภายใต้ `cacheComponents: true` มันจะกลายเป็น build error แข็งๆ แทน (`Next.js encountered uncached or runtime data during prerendering`) ซึ่งพิสูจน์แล้วใน **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)** — model เก่าพังแบบเงียบๆ ส่วน model ใหม่พังแบบดังๆ
+
+**วิธีแก้:** ห่อส่วนที่พึ่ง `cookies()` ด้วย `<Suspense>` เพื่อให้เฉพาะส่วนนั้น dynamic หรือ (ภายใต้ Cache Components) cache ส่วนที่เหลือของหน้าด้วย `'use cache'` แล้วปล่อยการอ่าน cookie ไว้ข้างนอก
+
+**จับได้โดย:** อ่านตาราง route ของ `next build` ด้วยตา (สัญลักษณ์ `ƒ`) — ไม่มี build error ภายใต้ model เก่า จึงไม่มีอะไรบังคับให้คุณสังเกต
+
+### 12. การเข้าถึง `params`/`searchParams` แบบ synchronous
+
+```ts
+// @expect-error real tsc TS2339 error — see prose
+// app/catalog/12-sync-params/page.tsx
+export default function Page(props: { params: Promise<{ id: string }> }) {
+  const id = props.params.id // params is a Promise, not read synchronously
+  return <div>{id}</div>
+}
+```
+
+ตั้งแต่ Next.js 15, `params` และ `searchParams` เป็น Promise — Next.js 16 ถอด compatibility shim สำหรับการเข้าถึงแบบ synchronous ทิ้งหมด training data จากยุค Next.js 13/14 ยังเขียน `params.id` ตรงๆ โดยไม่มี `await`
+
+**อาการ — `tsc --noEmit` output จริง** ที่ reproduce ใน scratch probe กับหน้า route จริง `app/**/[id]/page.tsx` ที่ type ด้วย `PageProps<'/route/[id]'>` ที่ Next.js สร้างให้เอง (จาก `next typegen`) ซึ่งจะ type `params` เป็น `Promise` ถูกต้องเสมอ:
+
+```text
+app/bug-sync-params2/[id]/page.tsx(2,27): error TS2339: Property 'id' does not exist on type 'Promise<{ id: string; }>'.
+```
+
+เขียนด้วย type `Promise<{ id: string }>` ตรงๆ (แบบข้างบน) ความผิดพลาดนี้เป็น error จริงทันที เขียนด้วย prop type ที่หลวมและไม่ใช่ Promise (`{ params: { id: string } }`) แทน — คัดลอกมาจาก training data ก่อน 15 — ความผิดพลาดแบบเดียวกันนี้ compile ผ่านสะอาดและแค่ return `undefined` เงียบๆ ตอน runtime; ไม่มีอะไรบังคับให้ type ยอมรับว่า `params` เป็น Promise นอกจาก annotation จะบอก helper `PageProps<'/route'>` ที่ Next.js สร้างเอง (จาก `next typegen`) จะถูกต้องเสมอโดยอัตโนมัติ ซึ่งเป็นเหตุผลว่าทำไมบทเรียนที่เสร็จแล้วในคอร์สนี้ถึง type ทุกหน้าด้วย helper นั้นแทนที่จะเขียน prop type เอง
+
+**วิธีแก้:** `await` promise นั้น:
+
+```ts
+// app/catalog/12-sync-params/fixed-page.tsx
+export default async function Page(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params
+  return <div>{id}</div>
+}
+```
+
+**จับได้โดย:** `tsc --noEmit` แต่เฉพาะเมื่อ `params` ถูก type เป็น `Promise` จริงๆ — prop type ที่หลวมและไม่ใช่ Promise จะทำให้การเช็คนี้เงียบไป ซึ่งเป็นเหตุผลที่ helper `PageProps` ที่สร้างขึ้นมาสำคัญในโค้ดจริง
+
+### 13. `generateStaticParams` ที่ว่างเปล่า
+
+```ts
+// @expect-error real next build error under cacheComponents — see prose
+// app/catalog/13-empty-gsp/[slug]/page.tsx
+export async function generateStaticParams() {
+  return []
+}
+
+export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  return <div>{slug}</div>
+}
+```
+
+`generateStaticParams` ที่ AI เขียนแล้ว fetch list มา map สามารถ return `[]` ได้ง่ายๆ เมื่อการเรียกต้นทางล้มเหลว, ตั้งค่าผิด, หรือยังไม่มีข้อมูลจริงๆ
+
+**อาการ — `next build` output จริง ภายใต้ `cacheComponents: true`** (ถ้าไม่มี มันจะ build ผ่านสบายๆ แล้วเสิร์ฟทั้ง segment แบบ dynamic เฉยๆ — การเช็คที่เข้มกว่านี้มีแค่ใน Cache Components เท่านั้น):
+
+```text
+Error: When using Cache Components, all `generateStaticParams` functions must return at least one result. This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.
+
+Learn more: https://nextjs.org/docs/messages/empty-generate-static-params
+```
+
+**วิธีแก้:** ป้องกันผลลัพธ์ว่างอย่างชัดเจน หรือยอมรับว่า route จะเป็น dynamic เต็มตัว:
+
+```ts
+// app/catalog/13-empty-gsp/fixed-page.tsx
+async function getAllSlugs(): Promise<string[]> {
+  const res = await fetch('https://api.example.com/slugs')
+  return res.json()
+}
+
+export async function generateStaticParams() {
+  const slugs = await getAllSlugs()
+  if (slugs.length === 0) {
+    // Explicit choice, not a build-time surprise.
+    return [{ slug: 'placeholder' }]
+  }
+  return slugs.map((slug) => ({ slug }))
+}
+```
+
+**จับได้โดย:** `next build` เฉพาะภายใต้ `cacheComponents: true`
+
+### 14. `export const runtime = 'edge'`
+
+```ts
+// app/catalog/14-runtime-edge/page.tsx
+export const runtime = 'edge'
+
+export default function Page() {
+  return <div>edge page</div>
+}
+```
+
+โค้ด Next.js ที่มีอยู่แล้ว — และ training data ของ AI จำนวนมาก — ใช้ `runtime = 'edge'` เพื่อให้ route ใช้ Edge Runtime สำหรับ cold-start latency ที่ต่ำกว่า ในเวอร์ชัน Next.js นี้ Edge Runtime เองถูก deprecate แล้ว
+
+**อาการ — `next build` output จริง:**
+
+```text
+⚠ The Edge Runtime is deprecated. You can use the "nodejs" runtime instead. Learn more: https://nextjs.org/docs/messages/edge-runtime-deprecated
+⚠ Using edge runtime on a page currently disables static generation for that page
+```
+
+**วิธีแก้:** ลบ export `runtime` ทิ้งทั้งหมดแล้วใช้ runtime เริ่มต้น `'nodejs'` (จำเป็นด้วยถ้า route อยู่ภายใต้ `proxy.ts` ซึ่งใช้ `'edge'` ไม่ได้เลย):
+
+```ts
+// app/catalog/14-runtime-edge/fixed-page.tsx
+export default function Page() {
+  return <div>edge page</div>
+}
+```
+
+**จับได้โดย:** build warning จริง — ไม่ใช่ error จึงพลาดง่ายใน CI log ที่มีข้อมูลเยอะ
+
+### 15. `getServerSideProps` ที่ก็อปมาไว้ใน App Router
+
+```ts
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/15-gssp-in-app-router/page.tsx
+export async function getServerSideProps() {
+  return { props: {} }
+}
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+`getServerSideProps` เป็นฟังก์ชัน data-fetching ของ Pages Router AI model ที่ train ด้วยข้อมูลผสมทั้งสอง router บางครั้งก็ก็อปมันมาวางในไฟล์ `app/` ตรงๆ
+
+**อาการ — Turbopack build output จริง:**
+
+```text
+Error: "getServerSideProps" is not supported in app/. Read more: https://nextjs.org/docs/app/building-your-application/data-fetching
+```
+
+**วิธีแก้:** fetch ตรงๆ ใน Server Component แบบ `await` โดยไม่มีฟังก์ชัน data-fetching ที่ export เลย:
+
+```ts
+// app/catalog/15-gssp-in-app-router/fixed-page.tsx
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+
+async function getData() {
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+```
+
+**จับได้โดย:** `next build` / `next dev` — การเช็คเฉพาะ App Router ไม่ใช่ `tsc --noEmit`
+
+## Auth ในทุก action และ route handler
+
+### 16. Server Action ที่ไม่มีการเช็ค session
+
+```ts
+// app/catalog/16-action-no-auth/actions.ts
+'use server'
+
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string) {
+  await db.post.delete({ where: { id } })
+}
+```
+
+```ts
+// lib/db.ts
+export const db = {
+  post: {
+    delete: async (_args: { where: { id: string; authorId?: string } }) => {},
+  },
+}
+```
+
+ไม่มีอะไรพังตอน build, type-check, หรือแม้แต่พังตอนคนที่เขียนมันทดสอบด้วยมือแบบไม่เป็นทางการ — กดลบโพสต์ของตัวเองก็ทำงานตามที่คาดไว้ทุกประการ bug นี้มองไม่เห็นจนกว่าจะมีใครส่ง action ID เดียวกันพร้อม `id` ที่ต่างออกไป
+
+ตามที่ยืนยันไว้ใน **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)**: Server Action compile ออกมาเป็น public POST endpoint ที่เข้าถึงได้ด้วย action ID ของมัน ไม่ขึ้นกับว่า form หรือปุ่มไหนใน UI ของคุณเรียกมัน `deletePost` ที่นี่ลบโพสต์ *ไหนก็ได้* ด้วย ID สำหรับใครก็ตามที่เข้าถึงแอปได้ — ไม่ต้อง login เลยด้วยซ้ำ ไม่ต้องพูดถึงความเป็นเจ้าของโพสต์นั้น
+
+**วิธีแก้:** ตรวจสอบสิทธิ์ผู้เรียกก่อน แล้วจำกัด mutation ให้อยู่แค่ row ของตัวเอง — รูปแบบเดียวกับ Data Access Layer แบบ `verifySession()` ที่ใช้ตลอดทั้งโมดูล Server Actions ของคอร์สนี้ (ดู **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)** สำหรับ DAL จริงเต็มรูปแบบที่ stub นี้แทนอยู่):
+
+```ts
+// app/catalog/16-action-no-auth/lib/session.ts
+export async function verifySession() {
+  // Stands in for this course's real verifySession() DAL: reads the request's
+  // own session cookie server-side — never an argument the caller supplies.
+  return { userId: 'stub-user-id' }
+}
+```
+
+```ts
+// app/catalog/16-action-no-auth/fixed-actions.ts
+'use server'
+
+import { verifySession } from './lib/session'
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string) {
+  const { userId } = await verifySession()
+  await db.post.delete({ where: { id, authorId: userId } })
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติเลย นี่คือ entry ที่ส่งผลกระทบมากที่สุดในแคตตาล็อกนี้ที่ไม่มีเครื่องมือรองรับเลยสักชนิด — ไม่มี linter ไม่มี type error ไม่มี build warning มีแค่การรีวิวด้วยมือ (ส่วน auth ของ **[Review Checklist](/th/reading-nextjs/review-checklist/)**) หรือ request `curl` ที่ไม่ได้รับอนุญาตจริงๆ เท่านั้นที่จับได้
+
+<SpotTheBug code={`// app/catalog/16b-action-checks-flag-only/actions.ts
+'use server'
+
+import { getCurrentUser } from '@/app/lib/session'
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string, isAdminUi: boolean) {
+  if (!isAdminUi) return
+  const user = await getCurrentUser()
+  await db.post.delete({ where: { id } })
+}`}>
+อันนี้ *ดูเหมือน* จะมีการเช็ค auth — แต่ `isAdminUi` เป็น boolean argument ธรรมดาที่ผู้เรียกควบคุมได้เอง ไม่ใช่ข้อเท็จจริงที่ server ยืนยันแล้ว ใครก็ตามที่เรียก action นี้ตรงๆ สามารถส่ง `true` ได้ไม่ว่าตัวเองเป็นใคร และ `getCurrentUser()` ถูกเรียกแต่ผลลัพธ์ของมันไม่เคยถูกเช็คกับอะไรเลย (ไม่มี `if (!user)` ไม่มีการกรองความเป็นเจ้าของในการลบ) การเช็คที่แท้จริงต้อง (1) ยืนยัน session ฝั่ง server โดยไม่ขึ้นกับ argument ใดๆ ที่ผู้เรียกส่งมา และ (2) ใช้ ID ของ user ที่ยืนยันแล้วใน query เอง — คือ pattern `verifySession()` + `where: { id, authorId: userId }` ในวิธีแก้ข้างบนนั่นเอง
+</SpotTheBug>
+
+## Error และ redirect path
+
+### 17. `try/catch` กลืน `redirect()` / `notFound()`
+
+```ts
+// app/catalog/17-try-catch-swallows-redirect/actions.ts
+'use server'
+
+import { notFound } from 'next/navigation'
+
+async function getPost(id: string): Promise<{ id: string } | null> {
+  return null // pretend lookup miss
+}
+
+export async function loadPost(id: string) {
+  try {
+    const post = await getPost(id)
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    console.error(err)
+    return null
+  }
+}
+```
+
+`redirect()` และ `notFound()` ทั้งคู่ **throw** error ควบคุม flow ภายในของ Next.js (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) ที่ framework ดักจับสูงขึ้นไปในต้นไม้เพื่อทำ redirect หรือ render segment `not-found` จริงๆ `catch` block ที่ไม่มีเงื่อนไขตรงไหนก็ตามระหว่างทางจะดักจับ throw นั้นเหมือน error ทั่วไป
+
+**อาการ — พิสูจน์แล้วกับ server ที่รันจริง** ใน **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)**: pattern เดียวกันข้างบน build และ deploy จริง ตอบด้วย **HTTP 200 และ body เป็น `null`** แทนที่จะเป็น 404 — `catch` block log internal error แล้ว return `null` และผู้เรียกไม่มีทางแยกแยะสิ่งนั้นจาก "โพสต์นี้เป็น null จริงๆ" ได้เลย
+
+**วิธีแก้:** เก็บ `redirect()`/`notFound()` ไว้นอก `try/catch` ใดๆ ที่ไม่ re-throw อย่างชัดเจน หรือ re-throw error ควบคุม flow ของ Next.js เองเป็นบรรทัดแรกของ `catch`:
+
+```ts
+// app/catalog/17-try-catch-swallows-redirect/fixed-actions.ts
+'use server'
+
+import { notFound } from 'next/navigation'
+import { unstable_rethrow } from 'next/navigation'
+
+async function getPost(id: string): Promise<{ id: string } | null> {
+  return null
+}
+
+export async function loadPost(id: string) {
+  try {
+    const post = await getPost(id)
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    unstable_rethrow(err) // let Next.js's own control-flow errors escape first
+    console.error(err)
+    return null
+  }
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — compile ผ่านสะอาด และดูเหมือนจะ *ระมัดระวัง* ด้วยซ้ำ มีแค่การยิงเข้า code path จริงกับ server ที่รันอยู่ (หรืออ่านโค้ดโดยรู้กฎข้อนี้) เท่านั้นที่เผยมันออกมา
+
+## Config และ environment
+
+### 18. `middleware.ts` แทนที่จะเป็น `proxy.ts`
+
+```ts
+// @expect-error real deprecation warning, not a type error — see prose
+// middleware.ts
+import { NextResponse } from 'next/server'
+
+export function middleware() {
+  return NextResponse.next()
+}
+```
+
+`middleware.ts`/export `middleware` เป็น file convention ที่ถูก deprecate แล้ว เปลี่ยนชื่อเป็น `proxy.ts`/`proxy` เพื่อให้จุดประสงค์เรื่อง network-boundary/routing ของไฟล์ชัดเจนขึ้น ทั้งสองยังใช้ได้ใน 16.3.6 แต่มี warning จริงที่พลาดไม่ได้ใน CI log ทุกครั้งที่ build
+
+**อาการ — `next build` output จริง** (probe: Next.js 16.3.6):
+
+```text
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+
+  To migrate automatically, run:
+  npx @next/codemod@canary middleware-to-proxy .
+
+  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+```
+
+ตาราง route เองยังพิมพ์ชื่อใหม่ของไฟล์เก่า: `ƒ Proxy (Middleware)`
+
+**วิธีแก้:** เปลี่ยนชื่อไฟล์และฟังก์ชันที่ export:
+
+```ts
+// app/catalog/18-middleware-to-proxy/proxy.ts
+import { NextResponse } from 'next/server'
+
+export function proxy() {
+  return NextResponse.next()
+}
+```
+
+สังเกตด้วยว่า: runtime `edge` **ไม่** รองรับข้างใน `proxy.ts` เลย — `proxy` รันบน runtime `nodejs` เสมอและกำหนดค่าไม่ได้ ต่างจาก `middleware.ts` เดิมที่เลือกใช้ edge ได้ ดู **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
+
+**จับได้โดย:** build warning จริง บวก codemod (`npx @next/codemod@canary upgrade latest` ก็ migrate เรื่องนี้ให้อัตโนมัติด้วย)
+
+### 19. `process.env.NEXT_PUBLIC_X` ถูกเข้าถึงแบบ dynamic
+
+```ts
+// app/catalog/19-dynamic-public-env/page.tsx
+'use client'
+
+function getEnvByName(name: string): string | undefined {
+  // AI-written helper: looks reasonable, reads any NEXT_PUBLIC_ var by name
+  return process.env[name]
+}
+
+export default function Page() {
+  const apiUrl = getEnvByName('NEXT_PUBLIC_API_URL')
+  return <div>{apiUrl ?? 'undefined'}</div>
+}
+```
+
+Next.js แทนที่ `process.env.NEXT_PUBLIC_X` ด้วยค่าจริงตอน build สำหรับโค้ด Client Component — แต่เฉพาะเมื่อมันจำ pattern แบบ static, literal, dot-notation (หรือ bracket ที่มี literal key) ได้ใน source *ต้นฉบับ* เท่านั้น ค่าที่กลายเป็น `'NEXT_PUBLIC_API_URL'` แค่ตอน runtime (อ่านจาก URL, prop, `window.location`, หรือเลือกแบบ dynamic จริงๆ) จะไม่ถูกแทนที่เลย เพราะ Next.js ไม่มีทางรู้ว่ามันจะเป็น string อะไรถ้าไม่รันโปรแกรมจริง
+
+**อาการ — จริงใน browser จริง** (Playwright, กับ `next start`, ตั้ง `NEXT_PUBLIC_API_URL` ไว้จริงใน `.env.local`): เวอร์ชันของ helper นี้ที่อ่านชื่อตัวแปรจาก `window.location.search` ตอน runtime render ออกมา หลัง hydration ว่า:
+
+```text
+value: undefined
+```
+
+— ทั้งที่ตัวแปรตัวเดียวกันเป๊ะ ที่อ่านแบบ `process.env.NEXT_PUBLIC_API_URL` (static literal) ที่อื่นในหน้าเดียวกัน render ค่าจริงออกมาถูกต้อง client bundle ที่ compile แล้วทำให้ความต่างนี้มองเห็นได้: การอ่านแบบ static literal compile ไปเป็นค่าที่ฝังตรงๆ; การอ่านแบบ dynamic compile ไปเป็นการ lookup property สดๆ (`t.default.env[e]`) กับ shim `process.env` ฝั่ง browser ที่ถูกเติมข้อมูลไว้แค่ key เฉพาะที่ Next.js เจอว่าถูกอ้างถึงแบบ static literal ที่ไหนสักแห่งใน bundle — ไม่เคยเป็นสำเนาเต็มของทุกตัวแปร `NEXT_PUBLIC_` ที่มีอยู่จริง
+
+**วิธีแก้:** อ้างอิงตัวแปร `NEXT_PUBLIC_` แต่ละตัวเป็น expression แบบ static, literal, dot-notation ทีละชื่อ — ห้ามผ่านตัวแปร, computed key, หรือ parameter ของ helper function เด็ดขาด:
+
+```ts
+// app/catalog/19-dynamic-public-env/fixed-page.tsx
+'use client'
+
+export default function Page() {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL // static literal — replaced at build time
+  return <div>{apiUrl ?? 'undefined'}</div>
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error ไม่มี type error มีแค่การโหลดหน้าจริงใน browser แล้วเช็คค่าที่ render ออกมาเท่านั้นที่เผยให้เห็น
+
+### 20. Secret ที่ตั้งชื่อขึ้นต้นด้วย `NEXT_PUBLIC_`
+
+```ts
+// app/catalog/20-secret-in-public-env/page.tsx
+'use client'
+
+export default function Page() {
+  return <div>{process.env.NEXT_PUBLIC_STRIPE_SECRET}</div>
+}
+```
+
+ทุกตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_` ที่ถูกอ้างถึงที่ไหนก็ตามในโค้ด Client Component จะถูกฝังเป็น plain text ลงในไฟล์ JS static ที่ส่งไปให้ browser ของผู้เข้าชมทุกคน — ตั้งใจให้เป็นแบบนี้ เพราะนี่คือกลไกทั้งหมดที่ทำให้ตัวแปร `NEXT_PUBLIC_` ใช้ฝั่ง client ได้ตั้งแต่แรก การตั้งชื่อ secret จริงด้วย prefix นี้ (มักเพราะ "มันต้องไปถึง browser สักวัน" หรือก็อปมาจากตัวแปรที่ควรเป็น server-only) จะส่งมันไปให้ใครก็ตามที่เปิด dev tools
+
+**อาการ — เจอจริงข้างใน static chunk ที่ served ให้ browser** (`.next/static/chunks/*.js`, หลัง `next build`, มี `NEXT_PUBLIC_STRIPE_SECRET=sk_live_totallyrealsecret1234` ใน `.env.local`):
+
+```js
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,81869,t=>{"use strict";t.i(47167);var e=t.i(43476);t.s(["default",0,function(){return(0,e.jsx)("div",{children:"sk_live_totallyrealsecret1234"})}])}]);
+```
+
+ค่า secret จริงนั่งอยู่ในไฟล์ แทบไม่ได้ minify นอกจากการเปลี่ยนชื่อตัวแปรตามปกติ ในไดเรกทอรีที่ served แบบ static ให้ทุก request
+
+**วิธีแก้:** ห้ามตั้งชื่อ secret จริงด้วย `NEXT_PUBLIC_` เด็ดขาด เก็บมันเป็น server-only (ตัวแปร environment ธรรมดาไม่มี prefix) แล้วอ่านมันแค่จาก Server Component, Server Action, หรือ Route Handler เท่านั้น:
+
+```ts
+// app/catalog/20-secret-in-public-env/fixed-page.tsx
+async function chargeCard() {
+  const secret = process.env.STRIPE_SECRET // server-only, never bundled for the client
+  // ... use secret in a server-only call
+}
+
+export default async function Page() {
+  await chargeCard()
+  return <div>charged</div>
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error ไม่มี warning ที่ระบุชื่อตัวแปรว่า sensitive มีแค่การ grep `.next/static/chunks/` หา secret pattern ที่รู้จัก หรือรีวิวจุดประสงค์จริงของตัวแปร `NEXT_PUBLIC_` ทุกตัวเท่านั้นที่จับได้
+
+### 21. `next/image` ที่ไม่มี `sizes`
+
+```tsx
+// app/catalog/21-image-no-sizes/page.tsx
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: '50%' }}>
+      <Image src="/banner.png" alt="Banner" fill />
+    </div>
+  )
+}
+```
+
+ถ้าไม่มี prop `sizes` browser จะสมมติว่าภาพที่ใช้ `fill` (หรือ layout แบบ responsive ใดๆ) จะ render กว้างเท่า viewport เต็ม — แม้ว่า parent element อย่าง `div` ที่กว้าง `50%` ข้างบนจะจำกัดมันไว้แค่ครึ่งเดียวก็ตาม `next/image` ยังสร้าง `srcset` ที่แคบกว่าโดยค่าเริ่มต้นถ้าไม่มี `sizes` (ปรับให้เหมาะกับภาพขนาดคงที่) ทำให้ browser มีตัวเลือกที่ดีให้เลือกน้อยลงตั้งแต่แรก
+
+**หลักฐาน — เอกสารทางการ คำต่อคำ:**
+
+> If `sizes` is missing, the browser assumes the image will be as wide as the viewport (`100vw`). This can cause unnecessarily large images to be downloaded.
+
+**วิธีแก้:** อธิบายความกว้างจริงที่ภาพ render ในแต่ละ breakpoint:
+
+```tsx
+// app/catalog/21-image-no-sizes/fixed-page.tsx
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: '50%' }}>
+      <Image src="/banner.png" alt="Banner" fill sizes="50vw" />
+    </div>
+  )
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติในเวอร์ชัน Next.js นี้ — ไม่มี lint rule บังคับ `sizes` มีแค่การวัด byte ของภาพที่ดาวน์โหลดจริง (แผง Network ของ Chrome DevTools หรือ Lighthouse) เท่านั้นที่เผยให้เห็นความสิ้นเปลือง
+
+### 22. `metadataBase` ที่หายไป
+
+```tsx
+// app/catalog/22-missing-metadatabase/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  openGraph: {
+    images: '/og-image.png',
+  },
+}
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+URL แบบ relative ใน metadata field ที่ต้องใช้ URL (Open Graph images, Twitter images, canonical/alternate links) ต้องการ `metadataBase` ที่ไหนสักแห่งในต้นไม้ layout เพื่อ resolve เทียบด้วย — ถ้าไม่มี Next.js จะ fallback ไปใช้ host ตัวอย่างแทน
+
+**อาการ — `next build` output จริง:**
+
+```text
+⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3000". See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+```
+
+Deploy แบบนี้ไปตรงๆ ทุก social share card จะลิงก์กลับไปที่ `localhost:3000` แทนที่จะเป็น domain การผลิตจริง
+
+**วิธีแก้:** ตั้ง `metadataBase` ครั้งเดียวใน root layout เพื่อให้ URL แบบ relative ของ metadata ทุก route resolve เทียบกับมัน:
+
+```tsx
+// app/catalog/22-missing-metadatabase/fixed-layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://example.com'),
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  )
+}
+```
+
+**จับได้โดย:** build warning จริง — พลาดง่ายใน CI log ที่มีข้อมูลเยอะ และหน้ายัง build กับ deploy ได้อยู่ดี
+
+## Rendering และ navigation
+
+### 23. `await` ทั้งหน้าอยู่เหนือ `<Suspense>` ใดๆ
+
+```tsx
+// app/catalog/23-await-above-suspense/page.tsx
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500))
+  return 'data'
+}
+
+export default async function Page() {
+  const data = await slow() // no Suspense at all — the whole response blocks
+  return <div>{data}</div>
+}
+```
+
+พิสูจน์แล้วใน **[Streaming and Suspense](/th/rendering/streaming-and-suspense/)**: ถ้าไม่มี `<Suspense>` boundary เลย server จะกัก response ทั้งหมดไว้จนกว่าทุก `await` ในต้นไม้จะ resolve — ผู้เข้าชมเห็นแท็บว่างเปล่าเต็ม 1.5 วินาที แล้วทุกอย่างมาพร้อมกันทีเดียว การเพิ่ม `<Suspense>` boundary ที่ห่อ *ทั้งหน้า* ก็ไม่เปลี่ยนอะไรเช่นกัน เพราะ fallback จะกลายเป็นสิ่งเดียวที่ stream เร็ว และไม่มีเนื้อหาจริงเหลืออยู่นอกมันที่จะมาถึงเร็วกว่าได้
+
+**วิธีแก้:** `await` เฉพาะข้างในส่วนที่ช้าจริงๆ ห่อด้วย `<Suspense>` ของตัวเอง ปล่อยให้ส่วนที่เหลือของหน้า stream ทันที:
+
+```tsx
+// app/catalog/23-await-above-suspense/fixed-page.tsx
+import { Suspense } from 'react'
+
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500))
+  return 'data'
+}
+
+async function SlowPart() {
+  const data = await slow()
+  return <div>{data}</div>
+}
+
+export default function Page() {
+  return (
+    <div>
+      <h1>This heading streams immediately</h1>
+      <Suspense fallback={<p>Loading…</p>}>
+        <SlowPart />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error มีแค่การวัด time-to-first-byte จริงกับ network response จริง (เริ่มจับเวลาก่อน ไม่ใช่หลัง การเรียก `fetch`/request) เท่านั้นที่เผยความต่าง
+
+### 24. `Date`/`Math.random()` ใน render → hydration mismatch
+
+```tsx
+// app/catalog/24-hydration-mismatch/page.tsx
+'use client'
+
+export default function Page() {
+  return <div>Rendered at: {Date.now()}</div>
+}
+```
+
+`Date.now()` รันครั้งหนึ่งบน server (ได้ timestamp หนึ่งค่าใน HTML แรก) แล้วรันอีกครั้งบน client ตอน hydration (ได้ timestamp ที่ต่างออกไปอีกไม่กี่มิลลิวินาทีต่อมา) — React คาดหวังว่าสอง render นี้จะตรงกันเป๊ะ
+
+**หลักฐาน — React 19 console error จริง คำต่อคำ ที่บันทึกไว้แล้วกับหน้า `next dev` จริง** ใน **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**:
+
+```text
+Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+```
+
+**วิธีแก้:** คำนวณค่าครั้งเดียวบน server แล้วส่งลงมาเป็น prop (หรือ defer ไปฝั่ง client จริงๆ ด้วย `useEffect` ถ้ามันต้องสะท้อนนาฬิกาของผู้เข้าชมเอง):
+
+```tsx
+// app/catalog/24-hydration-mismatch/fixed-page.tsx
+function Timestamp({ value }: { value: number }) {
+  return <div>Rendered at: {value}</div>
+}
+
+export default function Page() {
+  const renderedAt = Date.now() // computed once, on the server, passed down as data
+  return <Timestamp value={renderedAt} />
+}
+```
+
+**จับได้โดย:** React console error จริงตอน development — ทำให้เงียบได้แต่ไม่ได้แก้ด้วย `suppressHydrationWarning` ซึ่งซ่อน warning แค่สำหรับความต่างที่เป็น cosmetic และคาดหวังไว้จริงๆ เท่านั้น
+
+<SpotTheBug code={`// app/catalog/24b-random-in-server-component/page.tsx
+export default function Page() {
+  const id = Math.random().toString(36).slice(2)
+  return <div data-request-id={id}>Rendered</div>
+}`}>
+คำถามหลอก: อันนี้ **ไม่** hydration-mismatch `Math.random()` ใน render เป็นสาเหตุคลาสสิก — แต่เฉพาะข้างใน **Client Component** ที่ function body รันซ้ำอีกครั้งจริงๆ บน client ตอน hydration ไฟล์นี้ไม่มี directive `'use client'` เลย มันจึงเป็น Server Component: render แค่ครั้งเดียวบน server และ HTML ที่ได้ (มี `id` ตัวเดียวถูก bake ไว้แล้ว) คือสิ่งที่ส่งไปให้ browser — ไม่มีการรันซ้ำฝั่ง client ที่จะขัดแย้งกับมัน กฎจาก entry 24 จะกัดก็ต่อเมื่อโค้ดแบบเดียวกันนี้อยู่ข้างใน (หรือถูก import เข้า) Client Component เท่านั้น
+</SpotTheBug>
+
+### 25. `<a>` แทนที่จะเป็น `<Link>`
+
+```tsx
+// app/catalog/25-anchor-instead-of-link/page.tsx
+export default function Page() {
+  return (
+    <nav>
+      <a href="/about">About</a>
+    </nav>
+  )
+}
+```
+
+`<a>` ธรรมดาไปยัง route ภายในบังคับให้เกิด full page reload ทุกครั้งที่ navigate — ไม่มี client-side transition, ไม่มี prefetching, ไม่มีประโยชน์ใดๆ จาก layout-deduplication หรือ incremental-prefetch ของ App Router จาก Enhanced Routing and Navigation เลย
+
+**หลักฐาน — กฎข้อนี้เป็นหนึ่งใน recommended rule ของ `eslint-config-next` คำต่อคำจาก reference ของ ESLint plugin ที่ bundle มา:**
+
+> `@next/next/no-html-link-for-pages` — Prevent usage of `<a>` elements to navigate to internal Next.js pages.
+
+**วิธีแก้:** ใช้ `<Link>` สำหรับการ navigate ภายในทั้งหมด เก็บ `<a>` ไว้สำหรับ URL ภายนอกเท่านั้น:
+
+```tsx
+// app/catalog/25-anchor-instead-of-link/fixed-page.tsx
+import Link from 'next/link'
+
+export default function Page() {
+  return (
+    <nav>
+      <Link href="/about">About</Link>
+    </nav>
+  )
+}
+```
+
+**จับได้โดย:** rule set `recommended` (และ `core-web-vitals`) ของ `eslint-config-next` แบบเปิดใช้เป็นค่าเริ่มต้น — หนึ่งใน entry ไม่กี่อันในแคตตาล็อกนี้ที่มี lint coverage จริงแบบเปิดเป็นค่าเริ่มต้น
+
+## Mental Model
+
+```text
+25 patterns, sorted by who actually catches them:
+
+tsc --noEmit (real type errors)     → 10 (revalidateTag), 12 (sync params, if typed via PageProps)
+next build / next dev (real errors) → 2, 3, 7, 9, 13, 15 (RSC/prerender/Cache-Components checks)
+next build (real warnings only)     → 14 (edge deprecated), 18 (middleware→proxy), 22 (metadataBase)
+eslint-config-next (default-on)     → 25 (no-html-link-for-pages)
+Real console warning (dev only)     → 5 (useFormState), 24 (hydration mismatch)
+Reading the route table by eye      → 11 (cookies() flips a route to ƒ)
+Nothing at all                      → 1, 4, 6, 8, 16, 17, 19, 20, 21, 23 — 10 of 25, no tool warns you
+```
+
+<Callout title="สรุปหนึ่งบรรทัด">
+สิบในยี่สิบห้า pattern ข้างบนไม่มีเครื่องมือใดในคอร์สนี้จับได้เลย ไม่ว่าจะตั้งค่ายังไง — และตัวที่เดิมพันสูงที่สุด (Server Action ที่ไม่มีการเช็ค auth) ก็เป็นหนึ่งในนั้น รันทุกเครื่องมือใน <a href="/th/reading-nextjs/verification-tools/">Verification Tools</a> แล้วยังต้องอ่าน diff ด้วย <a href="/th/reading-nextjs/review-checklist/">Review Checklist</a> ในมืออยู่ดี
+</Callout>
+
+export const quizAiBugCatalog = [
+  {
+    q: "```tsx\nfunction getEnvByName(name: string) {\n  return process.env[name]\n}\n// called as: getEnvByName('NEXT_PUBLIC_API_URL')\n```\nทำไมอันนี้อาจไม่ return ค่าจริงใน browser ทั้งที่ `process.env.NEXT_PUBLIC_API_URL` ทำงานถูกต้องที่อื่นในหน้าเดียวกัน",
+    options: [
+      "process.env ไม่มีอยู่ใน Client Component เลย",
+      "Next.js แทนที่ process.env.NEXT_PUBLIC_X ด้วยค่าจริงแค่ตอนที่มันจำ pattern แบบ static ใน source ต้นฉบับได้เท่านั้น — ชื่อที่คำนวณตอน runtime ผ่านตัวแปรจะไม่ถูกแทนที่เลย",
+      "getEnvByName ขาด await",
+      "ตัวแปร NEXT_PUBLIC_ ทำงานได้แค่ใน Server Component",
+    ],
+    answer: 1,
+    explain: "การแทนที่ตอน build จำ pattern ได้แค่ syntax แบบ literal process.env.NEXT_PUBLIC_X ใน source ที่มันสแกน ค่าที่กลายเป็น string นั้นแค่ตอน runtime (ผ่าน parameter, computed key, หรือ input ของ user) จะมองไม่เห็นสำหรับ static analysis นั้น มันเลยตกไปเป็นการ lookup กับ shim ฝั่ง browser ที่ไม่เคยถูกเติม key นั้นเลย",
+  },
+  {
+    q: "Server Action ลบ row ด้วย ID โดยไม่มีการเช็ค session เลย แต่ปุ่มที่เรียกมันแสดงให้แค่เจ้าของ row เห็นใน UI `next build` รายงานอะไร",
+    options: [
+      "security warning ที่ระบุชื่อการเช็ค auth ที่หายไป",
+      "ไม่มีอะไรเลย — มัน build และ deploy ผ่านสะอาด ไม่มีเครื่องมือไหนในแคตตาล็อกนี้จับการเช็ค auth ที่หายไปได้",
+      "type error เพราะฟังก์ชันไม่มี parameter สำหรับ auth",
+      "มันปฏิเสธที่จะ build Server Action ที่ export โดยไม่มีการเช็ค session",
+    ],
+    answer: 1,
+    explain: "นี่คือตัวอย่างที่ชัดที่สุดของแคตตาล็อกนี้: ไม่มี tooling coverage เลยในทุกระดับ — ไม่มี lint rule ไม่มี type error ไม่มี build warning มัน build และ deploy เหมือนกับ action ที่ authorize ถูกต้องทุกประการ มีแค่ curl request ด้วย ID ของคนอื่น (หรือรีวิวด้วยมือ) เท่านั้นที่เผยช่องโหว่",
+  },
+  {
+    q: "ทำไม `revalidateTag('posts')` (argument เดียว) ถึงพังต่างจาก bug ส่วนใหญ่ในแคตตาล็อกนี้",
+    options: [
+      "มันไม่พัง — revalidateTag แบบ argument เดียวยังใช้ได้ใน 16.3.6",
+      "มันเป็นหนึ่งใน entry ไม่กี่อันที่ tsc --noEmit จับได้ตรงๆ เป็น TS2554 'Expected 2 arguments' จริง เพราะ Next.js 16 ต้องการ profile ของ cacheLife เป็น argument ที่สอง",
+      "มันพังแค่ตอน runtime ไม่เคยพังตอน compile time",
+      "มันพังแค่ภายใต้ cacheComponents: true เท่านั้น",
+    ],
+    answer: 1,
+    explain: "type signature ของ revalidateTag เองเปลี่ยนให้ต้องการสอง argument ใน Next.js 16 — นี่คือ compile-time type error จริงแบบไม่มีเงื่อนไข ไม่ขึ้นกับ cacheComponents ต่างจาก bug ส่วนใหญ่ที่เหลือในแคตตาล็อกนี้ที่พังแค่ตอน runtime/build",
+  },
+  {
+    q: "```tsx\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nserver ที่ deploy จริงจะ return อะไรเมื่อ `post` หาไม่เจอ",
+    options: [
+      "หน้า 404 เพราะ notFound() ชนะ catch block เสมอ",
+      "HTTP 200 พร้อม body เป็น null — catch block ดักจับ throw ภายในของ notFound() แล้วกลืนมันไป",
+      "build error เพราะ notFound() เรียกข้างใน try block ไม่ได้",
+      "server crash ด้วย unhandled exception",
+    ],
+    answer: 1,
+    explain: "notFound() throw error ควบคุม flow ภายในของ Next.js เอง catch block ที่ไม่มีเงื่อนไขไม่มีทางแยกแยะมันจาก error ทั่วไปได้ เลย log แล้ว return null — พิสูจน์แล้วกับ server ที่ build และ deploy จริงว่าตอบ 200 ไม่ใช่ 404",
+  },
+  {
+    q: "การอ่าน `props.params.id` ตรงๆ (ไม่มี `await`) ในหน้าที่ type ด้วย helper `PageProps<'/route/[id]'>` ที่สร้างขึ้นมา จะเป็นอะไร",
+    options: [
+      "undefined ตอน runtime แบบเงียบๆ ไม่มี compiler บ่นเลย",
+      "tsc error จริง — TS2339, 'Property does not exist on type Promise<...>' — เพราะ type ที่สร้างขึ้นสะท้อนถูกต้องว่า params เป็น Promise แล้ว",
+      "build warning เท่านั้น ไม่เคยเป็น hard error",
+      "มันทำงานได้ปกติ — params ไม่เคยถูกทำให้ async จริงๆ",
+    ],
+    answer: 1,
+    explain: "ตั้งแต่ Next.js 15/16, params เป็น Promise จริงๆ helper PageProps ที่สร้างจาก next typegen จะ type มันเป็น Promise ถูกต้องเสมอ ดังนั้นการเข้าถึง .id โดยไม่ await เป็น TS2339 type error จริง — แต่เฉพาะเมื่อหน้านั้นถูก type ด้วย helper ที่สร้างขึ้นมา ไม่ใช่ object type ที่หลวมๆ ที่เขียนเอง",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/ai-bug-catalog" questions={quizAiBugCatalog} />
+
+<ProgressTracker client:visible id="reading-catalog" />

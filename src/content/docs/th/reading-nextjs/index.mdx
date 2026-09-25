@@ -1,0 +1,160 @@
+---
+title: วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง
+description: 'ลำดับการอ่านโค้ด Next.js ที่ AI เขียน — เริ่มจาก boundary ตามด้วย caching model ที่ project ใช้จริง, auth, error/redirect path, และ config'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+ทุกโมดูลก่อนหน้านี้สอนให้คุณ *เขียน* Next.js โมดูลนี้สอนอีกครึ่งหนึ่งของงาน คือการอ่านโค้ด Next.js ที่คนอื่น — หรือ AI — เขียนไว้ แล้วตัดสินว่ามันถูกต้องหรือไม่ AI assistant จะส่งโค้ดที่ compile ผ่าน, `next build` ยอมรับ, และหน้าตาเหมือนตัวอย่าง App Router ที่คุณเรียนมาทุกประการ แต่ไม่มีข้อไหนพิสูจน์ว่ามันถูกต้อง ความล้มเหลวของ Next.js เองมักจะเงียบผิดปกติ: หน้าที่ควรเป็น static กลายเป็น dynamic แบบเงียบๆ, prop ที่ควรพังดังๆ กลับ serialize เป็น `undefined`, action ที่ไม่มีการตรวจ auth เลย build และ deploy ได้โดยไม่มี warning สักคำ ห้าขั้นตอนด้านล่างคือลำดับที่ทำให้ความล้มเหลวเหล่านี้ปรากฏออกมาจริงๆ และทุกบทถัดไปในโมดูลนี้จะเจาะลึกทีละส่วน
+
+<Mermaid title="ลำดับการอ่าน route ที่คุณไม่ได้เขียนเอง" code={readingOrderDiagram} />
+
+export const readingOrderDiagram = `flowchart TD
+  A["1. Boundaries<br/>'use client' / 'use server' placement"] --> B["2. Caching model<br/>segment config vs cacheComponents"]
+  B --> C["3. Auth<br/>inside every action and route handler"]
+  C --> D["4. Error and redirect path<br/>try/catch around redirect()/notFound()"]
+  D --> E["5. Config<br/>next.config.ts, env vars"]
+`;
+
+## 1. Boundary: `'use client'` และ `'use server'` อยู่ตรงไหน
+
+ก่อนจะอ่านว่า component *ทำ* อะไร ให้อ่านก่อนว่ามันรันอยู่ฝั่งไหนของ network `"use client"` ไม่ได้ทำเครื่องหมายแค่ component เดียว — มันทำเครื่องหมาย entry point ของทั้ง subtree ใน module graph และทุกอย่างที่ `import` ไปถึงจากจุดนั้นจะถูกส่งไปที่ browser ส่วน `"use server"` ทำเครื่องหมายฟังก์ชันที่ compile ออกมาเป็น public HTTP endpoint ที่ใครก็เรียกได้ถ้ามี action ID ไม่ใช่แค่ form ของคุณเท่านั้น
+
+- **สิ่งที่ต้องมองหา:** ไฟล์ (หรือ parent ที่ใกล้ที่สุด) ที่มี `'use client'` หรือ `'use server'` เป็นบรรทัดแรก; ทุก prop ที่ส่งจาก Server Component ไปยัง Client Component; ทุก hook (`useState`, `useRouter`, `useFormStatus`) และตรวจว่าไฟล์ที่เรียกมันเป็น Client Component จริงหรือไม่
+- **คำถามที่ต้องถาม:** directive นี้อยู่ต่ำในต้นไม้เท่าที่ควรหรือเปล่า หรือมันถูกวางไว้ที่ layout/page ใกล้ราก เพราะเป็นวิธีที่ทำให้ error หายไปง่ายที่สุด
+- **บทที่อธิบายเรื่องนี้:** **[Server and Client Components](/th/foundations/server-and-client-components/)** สำหรับกฎเรื่อง subtree และ serialization boundary; **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)** สำหรับเหตุผลที่ทุก action เป็น public endpoint ทันทีที่มันถูก export
+
+## 2. Caching model ที่ project นี้ใช้จริง
+
+Next.js มี caching model สองแบบตลอดช่วงอายุของมัน และ project หนึ่งจะรันแค่แบบเดียวในเวลาหนึ่ง: **Route Segment Config** (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime` — model ที่ tutorial ก่อน 16 ทุกอันสอน) หรือ **Cache Components** (`cacheComponents: true` ใน `next.config.ts`, `'use cache'`, `cacheLife`, `cacheTag`) ทั้งสองแบบใช้ร่วมกันไม่ได้ — ทุก export ของ Route Segment Config จะทำให้ `next build` พังทันทีที่ `cacheComponents` เปิดอยู่ โค้ดที่ AI เขียนมักผสมคำศัพท์จากทั้งสอง model เพราะทั้งคู่ปรากฏใน training data ของมัน
+
+- **สิ่งที่ต้องมองหา:** เปิด `next.config.ts` ก่อนอ่าน route ไหนเลย และเช็คว่ามี `cacheComponents: true` หรือไม่ จากนั้นเช็คว่า route ใช้ `export const dynamic = ...` / `export const revalidate = ...` (model เก่า) หรือ `'use cache'` / `cacheLife(...)` / `cacheTag(...)` (model ใหม่)
+- **คำถามที่ต้องถาม:** ทุกไฟล์สอดคล้องกับสิ่งที่ `next.config.ts` บอกไว้หรือเปล่า หรือไฟล์นี้สมมติว่าใช้ model *อีกแบบ*
+- **บทที่อธิบายเรื่องนี้:** **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)** สำหรับ model เก่าและ error ที่บอกว่าใช้ร่วมกันไม่ได้; **[`use cache` และ Cache Components](/th/data-fetching-and-caching/use-cache-and-cache-components/)** และ **[Partial Prerendering](/th/rendering/partial-prerendering/)** สำหรับ model ใหม่
+
+## 3. Auth ในทุก action และทุก route handler
+
+Server Action คือ POST endpoint; Route Handler คือ HTTP method อะไรก็ตามที่คุณ export ทั้งคู่ไม่ได้รับการป้องกันสืบทอดมาจากหน้าที่ render ปุ่มชี้ไปหามัน — การซ่อน UI ตอน render (โชว์ปุ่มลบให้แค่ admin) ควบคุมแค่ว่า UI แสดงอะไร ไม่ได้ควบคุมว่าใคร `curl` เข้า endpoint ตรงๆ ได้
+
+- **สิ่งที่ต้องมองหา:** บรรทัดแรกๆ ของทุกฟังก์ชันใน `app/actions.ts`, ไฟล์ `'use server'` ใดๆ, และทุก `app/**/route.ts` มองหาการเช็ค session (pattern DAL ของคอร์สนี้คือ `verifySession()`) ก่อนอ่านหรือเขียนใดๆ และมองหาว่าการเขียนกรองด้วย ID ของ user ปัจจุบันด้วย ไม่ใช่แค่เช็คว่า *มีใครสักคน* login อยู่
+- **คำถามที่ต้องถาม:** ถ้าฉันส่ง request แบบนี้ด้วย `curl` พร้อม session cookie ของคนอื่น ข้อมูลของใครจะถูกแก้ไข
+- **บทที่อธิบายเรื่องนี้:** **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)** และ **[Security and Patterns](/th/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)** สำหรับตัว DAL เอง
+
+## 4. Error และ redirect path
+
+`redirect()` กับ `notFound()` ไม่ได้ return — มัน **throw** error ควบคุม flow พิเศษของ Next.js (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) ที่ framework จะดักจับสูงขึ้นไปในต้นไม้ `try/catch` ที่ครอบโค้ดที่เรียกอันใดอันหนึ่งจะดักจับ throw ภายในนี้ไปด้วย ถ้ามันไม่ตั้งใจ re-throw ออกไป — และความผิดพลาดนี้มองไม่เห็นตอน development เพราะหน้ามักจะ render อะไรบางอย่างออกมาอยู่ดี
+
+- **สิ่งที่ต้องมองหา:** ทุก `try { … } catch { … }` block; มันมีการเรียก `redirect()` หรือ `notFound()` อยู่ข้างในไหม ไม่ว่าจะตรงๆ หรือผ่าน helper อย่าง `verifySession()`; `catch` block log แล้วกลืนไปเลย หรือเรียก `unstable_rethrow(err)` / re-throw
+- **คำถามที่ต้องถาม:** ถ้าฉันยิงเข้า code path นี้กับ server ที่รันจริง มันตอบกลับด้วย redirect / 404 จริงไหม — หรือตอบ 200 พร้อม body ที่ผิด
+- **บทที่อธิบายเรื่องนี้:** **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)** ซึ่งพิสูจน์ความล้มเหลวแบบนี้กับ server จริง
+
+## 5. Config: `next.config.ts` และ environment variables
+
+สิ่งสุดท้ายที่ควรอ่าน เพราะมันเปลี่ยนความหมายของทุกอย่างข้างบน `next.config.ts` ตัดสินว่า caching model ไหนกำลังทำงาน (ขั้นที่ 2) และ flag ทดลองอะไรเปิดอยู่; ไฟล์ `.env*` ตัดสินว่าตัวแปรไหนใช้ได้ที่ไหน และมีแค่ตัวแปรที่ขึ้นต้นด้วย `NEXT_PUBLIC_` — ที่เข้าถึงแบบ static literal `process.env.NEXT_PUBLIC_X` — เท่านั้นที่ปลอดภัยพอจะให้โค้ดฝั่ง browser เข้าถึงได้
+
+- **สิ่งที่ต้องมองหา:** `cacheComponents`, `reactCompiler`, `turbopack.*` ใน `next.config.ts`; ทุกการอ่าน `process.env.*` ในไฟล์ที่มี (หรือ import เข้า) `'use client'`; ทุกตัวแปรที่ขึ้นต้น `NEXT_PUBLIC_` และมันเก็บอะไรอยู่จริงๆ
+- **คำถามที่ต้องถาม:** ตัวแปรนี้จำเป็นต้องไปถึง browser จริงไหม — และถ้าจำเป็น ฉันยังสบายใจไหมถ้ามันโผล่เป็น plain text ในไฟล์ `.next/static/chunks/*.js` ที่ใครก็ดาวน์โหลดได้
+- **บทที่อธิบายเรื่องนี้:** **[Environment and Configuration](/th/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)** สำหรับ `proxy.ts` และ config ระดับ request-time ที่รันก่อนทุกอย่างข้างบน
+
+## Mental Model
+
+```text
+ลำดับการอ่าน route ของ Next.js ที่คุณไม่ได้เขียนเอง:
+
+1. Boundaries    → 'use client' / 'use server' อยู่ตรงไหน และดึงอะไรเข้ามาด้วย
+2. Caching model → segment config หรือ cacheComponents — project นี้ใช้อันไหน?
+3. Auth          → ทุก action/route handler เช็ค session แล้วกรองเจ้าของ row ด้วยไหม?
+4. Error/redirect→ มี try/catch ที่ไหนกลืน redirect()/notFound() ไปหรือเปล่า?
+5. Config/env    → flag ใน next.config.ts และตัวแปรไหนไปถึง browser
+
+การข้ามไปดูแค่ "build ผ่านไหม" ตอบคำถามเหล่านี้ไม่ได้เลย — ทั้งห้าข้อ compile ผ่านหมด
+```
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ถ้า `next build` ผ่าน แปลว่าโค้ดถูกต้อง"** ทุกรูปแบบความล้มเหลวในแคตตาล็อกของโมดูลนี้ build ผ่านทั้งหมด `next build` พิสูจน์แค่ว่าโค้ดเป็น Next.js ที่ syntax ถูกต้อง ไม่ได้พิสูจน์ว่ามันปลอดภัยหรือทำงานตามที่ตั้งใจ
+- **"แค่โค้ดในฟอร์มเท่านั้นที่สำคัญสำหรับ Server Action"** action ถูกเรียกได้จาก ID ของมันจากที่ไหนก็ได้ ไม่ขึ้นกับฟอร์มที่บังเอิญเรียกมัน — ดูขั้นที่ 3
+- **"`try/catch` ครอบโค้ดเสี่ยงๆ ปลอดภัยกว่าเสมอ"** รอบการเรียก `redirect()` หรือ `notFound()` การ `catch` แบบไม่มีเงื่อนไข *อันตรายกว่า*: มันเปลี่ยน redirect/404 ที่สะอาดให้กลายเป็น response 200 ที่ผิดแบบเงียบๆ
+- **"ถ้าคนเขียนเอง ต้องการความระมัดระวังน้อยกว่า AI"** ทุก pattern ในแคตตาล็อกของโมดูลนี้ก็ปรากฏในโค้ด Next.js ที่คนเขียนเองเหมือนกัน AI แค่ผลิตมันด้วยความมั่นใจที่สูงกว่าและปริมาณที่มากกว่า
+
+<Callout title="สรุปหนึ่งบรรทัด">
+อ่าน Next.js ตามลำดับนี้ — boundary, caching model, auth, error/redirect path, config — เพราะแต่ละขั้นเปลี่ยนความหมายของขั้นถัดไป และเพราะ `next build` ผ่านบอกแค่ว่าโค้ด compile ได้ ไม่เคยบอกว่ามันถูกต้อง
+</Callout>
+
+export const quizReadingNextjsIndex = [
+  {
+    q: "ทำไมบทนี้ถึงบอกให้เช็ค `next.config.ts` หา `cacheComponents` *ก่อน* อ่านไฟล์ route ใดๆ",
+    options: [
+      "เพราะ next.config.ts สั้นที่สุดเสมอ",
+      "เพราะ caching model สองแบบ (Route Segment Config กับ Cache Components) ใช้ร่วมกันไม่ได้ และโค้ด route ที่เขียนไว้สำหรับแบบหนึ่งจะทำให้ build พังถ้ารันอีกแบบ",
+      "เพราะ next.config.ts มี connection string ของฐานข้อมูล",
+      "ลำดับการอ่านไม่สำคัญ",
+    ],
+    answer: 1,
+    explain: "route ที่ใช้ export const dynamic = 'force-dynamic' กับ next.config.ts ที่มี cacheComponents: true อยู่ด้วยกันไม่ได้ — next build จะปฏิเสธ segment config export นั้น การรู้ว่า model ไหนทำงานอยู่บอกได้ว่าโค้ด route ตรงหน้าคุณควรมีความหมายว่าอะไร",
+  },
+  {
+    q: "```ts\ntry {\n  const post = await getPost(id)\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nserver ที่รันจริงจะตอบอะไรเมื่อ `post` หาไม่เจอ",
+    options: [
+      "หน้า 404 เพราะ notFound() ชนะเสมอ",
+      "HTTP 200 พร้อม body เป็น null เพราะ catch block ดักจับ throw ภายในของ notFound() แล้วกลืนมันไป",
+      "TypeScript compile error",
+      "server crash",
+    ],
+    answer: 1,
+    explain: "notFound() throw error ควบคุม flow ของ Next.js เองชื่อ NEXT_HTTP_ERROR_FALLBACK catch block นี้ไม่มีการกรอง เลยดักจับ throw นี้เหมือน error ทั่วไป log แล้ว return null — server จริงพิสูจน์ว่ามันตอบ 200 ไม่ใช่ 404",
+  },
+  {
+    q: "Server Action ไม่เช็คอะไรเลยก่อนเขียนฐานข้อมูล แต่ปุ่มที่เรียกมัน render ให้แค่ admin ที่ login แล้วเห็นใน UI action นี้ปลอดภัยไหม",
+    options: [
+      "ปลอดภัย — มีแค่ admin เท่านั้นที่เห็นปุ่ม",
+      "ไม่ปลอดภัย — ID ของ action เป็น POST endpoint ที่เข้าถึงได้ไม่ว่า UI ไหนจะ render ปุ่มชี้ไปหามันหรือไม่",
+      "ปลอดภัย ตราบใดที่ปุ่มใช้ onClick แทน form",
+      "ไม่ปลอดภัย แต่เพราะ Server Action ช้ากว่า Route Handler เท่านั้น",
+    ],
+    answer: 1,
+    explain: "การซ่อน UI ตอน render ควบคุมแค่ว่า UI แสดงอะไร ไม่ได้ควบคุมว่า server ยอมรับอะไร ใครก็ตามที่มี (หรือเดา หรือ replay) action ID สามารถ POST เข้าไปตรงๆ ได้ ไม่ว่าจะเคยเห็นปุ่มหรือไม่",
+  },
+  {
+    q: "ข้อมูลที่ขึ้นต้นด้วย `NEXT_PUBLIC_` จะไปจบที่ไหนถ้าถูกอ่านใน Client Component",
+    options: [
+      "ไม่ไปไหนใหม่ — process.env ทำงานเหมือนกันทั้งฝั่ง server และ browser",
+      "ถูกฝังเป็น plain text ลงใน static JS chunk ที่ส่งไปให้ browser ของผู้เข้าชมทุกคน",
+      "อยู่แค่ใน log file ฝั่ง server",
+      "ถูกเข้ารหัสอัตโนมัติก่อนส่งออกไป",
+    ],
+    answer: 1,
+    explain: "ตัวแปร NEXT_PUBLIC_ ที่อ่านแบบ static literal (process.env.NEXT_PUBLIC_X) จะถูกแทนที่ด้วยค่าจริงตอน build ลงใน client bundle ที่ compile แล้ว — ใครก็อ่านได้ถ้าดาวน์โหลดไฟล์ .js นั้น",
+  },
+  {
+    q: "```ts\n// next.config.ts\nconst nextConfig = { cacheComponents: true }\n\n// app/page.tsx\nexport const dynamic = 'force-dynamic'\n```\nเกิดอะไรขึ้นเมื่อ project นี้รัน `next build`",
+    options: [
+      "build ผ่านสบายๆ — force-dynamic แค่ยืนยันสิ่งที่ cacheComponents ทำอยู่แล้ว",
+      "build พัง: export ของ Route Segment Config ถูกปฏิเสธทันทีที่ cacheComponents เปิดอยู่",
+      "มันเมิน next.config.ts เงียบๆ แล้วใช้ model เก่า",
+      "มันพังแค่ตอน development ไม่พังตอน production build",
+    ],
+    answer: 1,
+    explain: "Route Segment Config กับ Cache Components เป็น caching model คนละแบบที่ใช้ร่วมกันไม่ได้ ทันทีที่ cacheComponents: true ถูกตั้ง ทุก export ของ Route Segment Config — รวมถึง dynamic — จะทำให้ next build พังด้วย error 'not compatible with nextConfig.cacheComponents'",
+  },
+  {
+    q: "ลำดับไหนที่บทนี้แนะนำสำหรับการอ่าน route ของ Next.js ที่คุณไม่ได้เขียนเอง",
+    options: [
+      "Config, แล้ว auth, แล้ว boundary, แล้ว caching, แล้ว error",
+      "Boundary, แล้ว caching model, แล้ว auth, แล้ว error/redirect path, แล้ว config",
+      "ไฟล์ไหนสั้นที่สุดก่อน",
+      "Auth ก่อน แล้วค่อยที่เหลือ",
+    ],
+    answer: 1,
+    explain: "Boundary ก่อน (อะไรรันอยู่ฝั่งไหน) แล้ว caching model (โค้ดตรงหน้าคุณควรมีความหมายว่าอะไร) แล้ว auth แล้ว error/redirect path แล้ว config — แต่ละขั้นเปลี่ยนวิธีที่คุณจะอ่านขั้นถัดไป",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/index" questions={quizReadingNextjsIndex} />
+
+<ProgressTracker client:visible id="reading-index" />

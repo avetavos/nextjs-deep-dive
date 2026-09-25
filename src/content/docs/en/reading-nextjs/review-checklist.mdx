@@ -1,0 +1,137 @@
+---
+title: Review checklist
+description: 'A one-page, six-group checklist for reviewing Next.js code — each line a yes/no question linking to the lesson that explains the underlying rule.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+This is the checklist to run down — by eye, on any diff, yours or an AI's — after the tools in **[Verification Tools](/en/reading-nextjs/verification-tools/)** have run and come back clean. It fits on one printed page on purpose: a checklist nobody actually opens during a review is worthless. Every line links to the lesson that explains *why*, so this page stays a list, not a re-run of the course. The groups follow the same order as **[How to read Next.js you did not write](/en/reading-nextjs/)**, plus a closing performance group.
+
+<Mermaid title="What actually catches each group, if anything" code={checklistCoverageDiagram} />
+
+export const checklistCoverageDiagram = `flowchart LR
+  B["Boundaries"] --> H["Mostly human review<br/>(1 real build-time check: router.push in a Server Component)"]
+  A["Auth"] --> H
+  E["Errors and redirects"] --> H
+  D["Data and caching"] --> P["Partial tool coverage<br/>(tsc catches revalidateTag; next build catches cacheComponents conflicts)"]
+  C["Config and env"] --> P
+  F["Performance"] --> H
+`;
+
+## Boundaries
+
+- Does every `'use client'` sit as low in the tree as it can, instead of on a shared layout or page? See **[Server and Client Components](/en/foundations/server-and-client-components/)**.
+- Does every prop crossing the Server → Client boundary stay plain data (or a genuine Server Action), with no bare class instances or unwrapped function references? See **[Server and Client Components](/en/foundations/server-and-client-components/)**.
+- Is `ssr: false` on `next/dynamic` only ever used inside a Client Component? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 3.
+- Does `useFormStatus` run in a component nested *inside* the `<form>`, never the same component that renders it? See **[Forms and Progressive Enhancement](/en/server-actions-and-mutations/forms-and-progressive-enhancement/)**.
+- Is every pending-state hook `useActionState` (from `react`), not the deprecated `useFormState` (from `react-dom`)? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 5.
+- Does every `useRouter`/`router.push` call live inside a Client Component, never a Server Component? See **[Server and Client Components](/en/foundations/server-and-client-components/)**.
+- Could this data fetch run once in a Server Component instead of a client-side `useEffect`? See **[Fetching in Server Components](/en/data-fetching-and-caching/fetching-in-server-components/)**.
+
+## Data flow and the caching model
+
+- Does `next.config.ts`'s `cacheComponents` setting match every route's assumptions — Route Segment Config exports *or* `'use cache'`, never a mix? See **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)**.
+- Does every `fetch` call state its cache intent explicitly, rather than assuming Next.js 14's cached-by-default behavior? See **[The Four Caching Layers](/en/data-fetching-and-caching/the-four-caching-layers/)**.
+- Does every `revalidateTag` call pass a `cacheLife` profile as its second argument? See **[Revalidation and Cache Invalidation](/en/data-fetching-and-caching/revalidation-and-cache-invalidation/)**.
+- Does a `cookies()`/`headers()` read sit inside a `<Suspense>` boundary, rather than at the top of a page meant to stay static? See **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)**.
+- Is every `params`/`searchParams` access `await`ed, and typed as a `Promise` rather than a loose object? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 12.
+- Does `generateStaticParams` guard against ever returning an empty array under Cache Components? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 13.
+- Has every `export const runtime = 'edge'` been removed, or is it a deliberate, justified exception? See **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)**.
+- Is there a stray `getServerSideProps`/`getStaticProps` left over from the Pages Router inside `app/`? See **[What is Next.js and the App Router](/en/foundations/what-is-nextjs-and-the-app-router/)**.
+
+## Auth in every action and route handler
+
+- Does every Server Action call a real session check before touching data, independent of which UI renders the button that calls it? See **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)**.
+- Does every mutation filter by the authenticated user's own ID, not just confirm that *someone* is logged in? See **[Security and Patterns](/en/server-actions-and-mutations/security-and-patterns/)**.
+- Does every Route Handler apply the same session check an equivalent Server Action would? See **[Authentication Patterns](/en/production-and-ecosystem/authentication-patterns/)**.
+
+## Errors and redirects
+
+- Does every `try/catch` that might contain a `redirect()`/`notFound()` either stay outside them or call `unstable_rethrow` first? See **[Mutations and Revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/)**.
+- Is `error.tsx` a Client Component that calls `reset()`, placed at the segment whose *parent* should catch the error? See **[Pages, Layouts, and Nested Routing](/en/routing-and-navigation/pages-layouts-and-nested-routing/)**.
+- Does `global-error.tsx`, if present, render its own `<html>`/`<body>`? See **[Pages, Layouts, and Nested Routing](/en/routing-and-navigation/pages-layouts-and-nested-routing/)**.
+
+## Config and environment
+
+- Is `middleware.ts` renamed to `proxy.ts` (and its export renamed to `proxy`)? See **[Middleware and the Request Lifecycle](/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)**.
+- Is every `NEXT_PUBLIC_` variable read as a static, literal `process.env.NEXT_PUBLIC_X` — never through a computed key or a helper function's parameter? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 19.
+- Does any variable prefixed `NEXT_PUBLIC_` actually hold something that should be a secret? See the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**, entry 20.
+- Is `metadataBase` set once, in the root layout? See **[Metadata and SEO](/en/optimization/metadata-and-seo/)**.
+
+## Performance
+
+- Does every `next/image` using `fill` or a responsive layout declare `sizes`? See **[Images and Fonts](/en/optimization/images-and-fonts/)**.
+- Is every `<a>` pointing at an internal route actually a `<Link>`? See **[Linking and Navigation](/en/routing-and-navigation/linking-and-navigation/)**.
+- Does any `await` sit above the page's only `<Suspense>` boundary, blocking the entire response? See **[Streaming and Suspense](/en/rendering/streaming-and-suspense/)**.
+- Does any `Date.now()`/`Math.random()` run inside a *Client* Component's render — not a Server Component, where it never mismatches? See **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)**.
+
+<Callout title="A checklist narrows the search, it does not replace it">
+Every line above maps to one of the 25 patterns in the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)** — ten of which no tool in this course catches automatically. Run this list on every diff regardless of how clean `tsc` and `next build` came back.
+</Callout>
+
+export const quizReviewChecklist = [
+  {
+    q: "Why does 'does every mutation filter by the authenticated user's own ID' belong in the Auth group rather than 'Data flow and the caching model'?",
+    options: [
+      "It doesn't — it belongs in the caching group because it's about a database query",
+      "The checklist groups by what actually fails — an unfiltered mutation is an authorization gap, independent of which cache layer or query shape is involved",
+      "Auth checks are always about caching in Next.js",
+      "There's no meaningful difference between the two groups",
+    ],
+    answer: 1,
+    explain: "The groups mirror the reading order's five steps: which failure mode a question targets, not which file or API happens to be involved. A missing ownership filter is an auth gap whether the query uses an ORM, raw SQL, or a cache layer underneath it.",
+  },
+  {
+    q: "```tsx\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nWhich checklist group catches this, and how?",
+    options: [
+      "Performance — it's about a slow lookup",
+      "Errors and redirects — 'does every try/catch that might contain redirect()/notFound() either stay outside them or call unstable_rethrow first?'",
+      "Boundaries — it's a 'use client' placement issue",
+      "No group covers this",
+    ],
+    answer: 1,
+    explain: "This is exactly the failure the Errors and redirects group's first question targets: an unconditional catch here intercepts notFound()'s internal throw, proven elsewhere in this course to return HTTP 200 instead of a 404.",
+  },
+  {
+    q: "Why does the checklist ask specifically whether params/searchParams access is 'typed as a Promise', rather than just 'awaited'?",
+    options: [
+      "Typing doesn't matter — only the runtime await matters",
+      "A loose, non-Promise-typed prop lets a missing await compile clean and return undefined silently; only a Promise-typed prop turns the same mistake into a real compile error",
+      "params is never actually a Promise in Next.js 16",
+      "TypeScript cannot express Promise types for page props",
+    ],
+    answer: 1,
+    explain: "As the AI Bug Catalog's entry 12 shows: the exact same missing-await mistake is a real tsc error when params is typed as Promise<{...}>, but silently returns undefined at runtime when it's typed as a loose, synchronous object instead.",
+  },
+  {
+    q: "Which group does 'is metadataBase set once in the root layout' belong to?",
+    options: [
+      "Performance",
+      "Config and environment",
+      "Boundaries",
+      "Auth",
+    ],
+    answer: 1,
+    explain: "metadataBase is a next.config-adjacent, app-wide setting (declared in metadata export, root layout) that changes how every route's relative metadata URLs resolve — a configuration concern, not a boundary, auth, or raw performance one.",
+  },
+  {
+    q: "The checklist says to check 'does any Date.now()/Math.random() run inside a Client Component's render — not a Server Component.' Why does the distinction matter?",
+    options: [
+      "It doesn't — both always hydration-mismatch identically",
+      "A Server Component renders exactly once, on the server; there is no client-side re-execution of it during hydration to disagree with the HTML that was already sent",
+      "Math.random() is banned entirely in Next.js",
+      "Server Components cannot call Math.random() at all",
+    ],
+    answer: 1,
+    explain: "Hydration mismatches require a second, client-side execution of the same render logic that disagrees with the first (server) one. A Server Component only ever renders once, server-side — there is no second execution to produce a mismatch, which is exactly the trick in the AI Bug Catalog's SpotTheBug for entry 24.",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/review-checklist" questions={quizReviewChecklist} />
+
+<ProgressTracker client:visible id="reading-checklist" />

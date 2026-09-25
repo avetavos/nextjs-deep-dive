@@ -1,0 +1,1210 @@
+---
+title: The AI bug catalog
+description: '25 bugs AI-generated Next.js code produces constantly — the wrong code, the real symptom (real build/tsc/browser output), and the fix.'
+sidebar:
+  order: 2
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+Every pattern below was written to look exactly like the Next.js an AI assistant actually produces, then built, type-checked, or loaded in a real browser — against Next.js 16.3.6 and React 19.2.8. The quoted compiler errors, `tsc` diagnostics, and browser output are copied verbatim from those runs, not reconstructed from memory. The 25 patterns are grouped in the same reading order as **[How to read Next.js you did not write](/en/reading-nextjs/)**: boundaries, the caching model, auth, the error/redirect path, config and env — plus a closing group on rendering and navigation. See the **[Review Checklist](/en/reading-nextjs/review-checklist/)** that follows this lesson for a one-page version of the same 25 questions.
+
+## Boundaries
+
+### 1. `'use client'` placed too high in the tree
+
+```tsx
+// @expect-error illustrative fragment, not a standalone file
+// app/heavy/layout.tsx
+'use client'
+// Nav, Sidebar, and Footer have no hooks — but this directive pulls all
+// three, plus everything they import, into the client bundle anyway.
+import Nav from './nav'
+import Sidebar from './sidebar'
+import Footer from './footer'
+import Counter from './counter'
+
+export default function HeavyLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <Counter />
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+`"use client"` does not mark one component — it marks the entry point to a whole subtree of the module graph, and everything reachable by `import` from there ships to the browser, whether or not it uses a single hook.
+
+**Symptom — real, measured bundle difference** (proven in **[Server and Client Components](/en/foundations/server-and-client-components/)** by summing the referenced chunks in the client-reference manifest, since `next build` no longer prints a per-route bundle-size column as of v16.0.0):
+
+```text
+--- /heavy/high (directive on the layout) ---
+  chunk 3gejn2apugqil.js   8967 bytes  (route-specific: Nav + Sidebar + Footer + Counter)
+
+--- /heavy/low (directive pushed to the leaf) ---
+  chunk 1p8pi2r0mnrj-.js    287 bytes  (route-specific: Counter only)
+```
+
+**Fix:** push the directive down to only the interactive leaf; `Nav`, `Sidebar`, and `Footer` stay Server Components and ship no JavaScript at all:
+
+```tsx
+// app/catalog/01-boundary-too-high/counter.tsx
+'use client'
+// 'use client' pushed down to only the interactive leaf.
+import { useState } from 'react'
+
+export default function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+}
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule. Only `next experimental-analyze --output` (or manually summing `.next/static/chunks/` against the client-reference manifest) makes the extra bytes visible.
+
+### 2. A non-serializable prop crossing the Server → Client boundary
+
+```tsx
+// @expect-error real prerender error, not a type error — see prose
+// app/catalog/02-nonserializable/page.tsx
+import ClientChild from './client-child'
+
+class Money {
+  constructor(public cents: number) {}
+}
+
+export default function Page() {
+  const total = new Money(4200)
+  return <ClientChild amount={total} />
+}
+```
+
+Props are the only channel across the Server → Client boundary, and props must be data React can serialize. TypeScript's structural typing lets a `Money` instance satisfy a `{ cents: number }` prop type with zero type errors — this compiles clean under `tsc --noEmit`. The failure only shows up when Next.js actually tries to serialize the prop for the client bundle.
+
+**Symptom — real `next build` output** (probe: Next.js 16.3.6, Turbopack):
+
+```text
+Error occurred prerendering page "/catalog/02-nonserializable". Read more: https://nextjs.org/docs/messages/prerender-error
+Error: Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. Classes or null prototypes are not supported.
+  {amount: {cents: 4200}}
+           ^^^^^^^^^^^^^
+```
+
+**Fix:** pass a plain object (or a primitive) instead of a class instance:
+
+```tsx
+// app/catalog/02-nonserializable/client-child.tsx
+'use client'
+
+export default function ClientChild({ amount }: { amount: { cents: number } }) {
+  return <div>{amount.cents}</div>
+}
+```
+
+```tsx
+// app/catalog/02-nonserializable/fixed-page.tsx
+import ClientChild from './client-child'
+
+export default function Page() {
+  const total = { cents: 4200 } // plain object, not a class instance
+  return <ClientChild amount={total} />
+}
+```
+
+**Caught by:** nothing at type-check time — only a real `next build` (or `next dev`, loading the page) surfaces the prerender error above.
+
+<SpotTheBug code={`// app/orders/[id]/page.tsx
+import OrderActions from './order-actions'
+
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const order = await getOrder(id)
+  const onCancel = async () => {
+    'use server'
+    await cancelOrder(id)
+  }
+  return <OrderActions order={order} onCancel={onCancel} />
+}`}>
+This one looks fine at a glance because `onCancel` has `'use server'` inside it — but a plain function reference (even one wrapped as a Server Action) is a real, serializable "reference" React understands, so this specific case actually **is** allowed. The bug pattern only bites when the value is a genuine non-serializable object — a `Date` is fine (a few built-ins are allowed), but a `class` instance, a `Map`/`Set` in older React releases, or a plain function *without* `'use server'` are not. Read every prop crossing the boundary and ask: is this plain data, a Server Action, or something React's serializer has never heard of?
+</SpotTheBug>
+
+### 3. `ssr: false` passed to `next/dynamic` inside a Server Component
+
+```tsx
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/03-ssr-false/page.tsx
+import dynamic from 'next/dynamic'
+
+const NoSSRWidget = dynamic(() => import('./widget'), { ssr: false })
+
+export default function Page() {
+  return <NoSSRWidget />
+}
+```
+
+`ssr: false` tells Next.js to skip server-rendering a component entirely — a valid thing to want for a browser-only widget (a map, a chart library that touches `window`). But it only makes sense inside a Client Component; a Server Component has no client-side render pass to "skip" in the first place.
+
+**Symptom — real Turbopack build output:**
+
+```text
+Error: `ssr: false` is not allowed with `next/dynamic` in Server Components. Please move it into a Client Component.
+```
+
+**Fix:** move the `dynamic()` call into a Client Component, or drop `ssr: false` if the widget can render on the server:
+
+```tsx
+// app/catalog/03-ssr-false/widget.tsx
+'use client'
+export default function Widget() {
+  return <div>widget</div>
+}
+```
+
+```tsx
+// app/catalog/03-ssr-false/fixed-wrapper.tsx
+'use client'
+import dynamic from 'next/dynamic'
+
+const NoSSRWidget = dynamic(() => import('./widget'), { ssr: false })
+
+export default function Wrapper() {
+  return <NoSSRWidget />
+}
+```
+
+**Caught by:** `next build` (and `next dev`), not `tsc --noEmit` — this is a Turbopack-level RSC check, not a type error.
+
+### 4. `useFormStatus` called in the same component that renders the `<form>`
+
+```tsx
+// @expect-error compiles and runs, but pending is always false — see prose
+// app/catalog/04-formstatus-same-component/page.tsx
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { save } from './actions'
+
+export default function Page() {
+  const { pending } = useFormStatus() // same component as the <form> below
+  return (
+    <form action={save}>
+      <button disabled={pending}>Save</button>
+    </form>
+  )
+}
+```
+
+`useFormStatus` reads status from the closest **parent** `<form>` — it is designed to be called from a component nested *inside* the form it reports on, so a submit button can show its own pending state without the parent needing to pass props down. Called from the same component that renders the `<form>` itself, there is no parent form in scope, so `pending` stays `false` for the entire lifetime of the submission — no error, no warning, just a button that never visibly disables.
+
+**Fix:** move the piece that reads `useFormStatus` into a child component rendered inside the `<form>` (per **[Forms and Progressive Enhancement](/en/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
+
+```ts
+// app/catalog/04-formstatus-same-component/actions.ts
+'use server'
+
+export async function save(formData: FormData) {
+  // ...
+}
+```
+
+```tsx
+// app/catalog/04-formstatus-same-component/submit-button.tsx
+'use client'
+import { useFormStatus } from 'react-dom'
+
+export function SubmitButton() {
+  const { pending } = useFormStatus()
+  return <button disabled={pending}>Save</button>
+}
+```
+
+```tsx
+// app/catalog/04-formstatus-same-component/fixed-page.tsx
+import { save } from './actions'
+import { SubmitButton } from './submit-button'
+
+export default function Page() {
+  return (
+    <form action={save}>
+      <SubmitButton />
+    </form>
+  )
+}
+```
+
+**Caught by:** nothing — no compiler error, no lint rule, no console warning. The only way to catch this is to actually click submit and watch whether the button disables.
+
+### 5. `useFormState` instead of `useActionState`
+
+```tsx
+// app/catalog/05-useformstate/page.tsx
+'use client'
+
+import { useFormState } from 'react-dom'
+
+async function action(prevState: unknown, formData: FormData) {
+  return { message: 'ok' }
+}
+
+export default function Page() {
+  const [state, formAction] = useFormState(action, { message: '' })
+  return <form action={formAction}>{state.message}</form>
+}
+```
+
+`useFormState` still exists in `react-dom` 19.2.8 and still works — it is a real, exported, typed function, not a removed one. AI training data from before React 19.1 reaches for it constantly. It is deprecated in favor of `useActionState` (moved from `react-dom` to `react` itself, and extended with a third `isPending` return value).
+
+**Symptom — real React DevTools/console warning** (from `react-dom-client.development.js`, triggered the first time the hook runs):
+
+```text
+ReactDOM.useFormState has been renamed to React.useActionState. Please update %s to use React.useActionState.
+```
+
+**Fix:** import `useActionState` from `react`, not `useFormState` from `react-dom`:
+
+```tsx
+// app/catalog/05-useformstate/fixed-page.tsx
+'use client'
+
+import { useActionState } from 'react'
+
+async function action(prevState: unknown, formData: FormData) {
+  return { message: 'ok' }
+}
+
+export default function Page() {
+  const [state, formAction, isPending] = useActionState(action, { message: '' })
+  return <form action={formAction}>{state.message}{isPending ? ' (saving…)' : ''}</form>
+}
+```
+
+**Caught by:** a real console warning in development — not by `tsc --noEmit`, since `useFormState`'s type signature is still valid and exported.
+
+### 6. A `useEffect` fetch where a Server Component would do
+
+```tsx
+// app/catalog/06-useeffect-fetch/page.tsx
+'use client'
+
+import { useEffect, useState } from 'react'
+
+export default function Page() {
+  const [posts, setPosts] = useState<{ id: string; title: string }[]>([])
+  useEffect(() => {
+    fetch('/api/posts')
+      .then((r) => r.json())
+      .then(setPosts)
+  }, [])
+  return <ul>{posts.map((p) => <li key={p.id}>{p.title}</li>)}</ul>
+}
+```
+
+Nothing here fails to build — this is a purely architectural bug, and it is the single most common "AI writes React, not Next.js" pattern: a data fetch that could run once on the server, cached and streamed as HTML, instead ships an empty shell, then fetches client-side after hydration (a loading flash on every visit, a client-server round trip that a Server Component would have skipped entirely, and a second, hand-rolled loading/error state).
+
+**Fix:** fetch directly in a Server Component; no client-side loading state, no extra network waterfall (see **[Fetching in Server Components](/en/data-fetching-and-caching/fetching-in-server-components/)**):
+
+```tsx
+// app/catalog/06-useeffect-fetch/fixed-page.tsx
+async function getPosts() {
+  const res = await fetch('https://api.example.com/posts')
+  return res.json() as Promise<{ id: string; title: string }[]>
+}
+
+export default async function Page() {
+  const posts = await getPosts()
+  return <ul>{posts.map((p) => <li key={p.id}>{p.title}</li>)}</ul>
+}
+```
+
+**Caught by:** nothing automatic — this is a design smell, not an error. The tell is a `'use client'` file whose only job is fetching and rendering a list, with no interactivity anywhere in it.
+
+### 7. `router.push` called from inside a Server Component
+
+```tsx
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/07-router-push/page.tsx
+import { useRouter } from 'next/navigation'
+
+export default function Page() {
+  const router = useRouter()
+  router.push('/somewhere')
+  return <div>redirecting</div>
+}
+```
+
+`useRouter` is a client-side hook — it has nothing to attach to on the server, where there is no client-side history stack to push onto.
+
+**Symptom — real Turbopack build output:**
+
+```text
+Error: You're importing a module that depends on `useRouter` into a React Server Component module. This API is only available in Client Components. To fix, mark the file (or its parent) with the `"use client"` directive.
+    Learn more: https://nextjs.org/docs/app/api-reference/directives/use-client
+```
+
+**Fix:** for a Server Component that needs to redirect, use the server-side `redirect()` function instead of a client hook:
+
+```tsx
+// app/catalog/07-router-push/fixed-page.tsx
+import { redirect } from 'next/navigation'
+
+export default function Page() {
+  redirect('/somewhere')
+}
+```
+
+**Caught by:** `next build` / `next dev` — a real Turbopack RSC-boundary check, not `tsc --noEmit`.
+
+## Data flow and the caching model
+
+### 8. `fetch` cache assumptions carried over from Next.js 14
+
+```ts
+// app/catalog/08-fetch-cache-assumption/page.tsx
+async function getData() {
+  // Written the way Next.js 14 docs taught: fetch is cached by default.
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+```
+
+Next.js 13/14 cached every `fetch` call by default (`cache: 'force-cache'` implicitly). Next.js 15 changed the default to uncached, and 16 keeps that default. AI models trained on older documentation and blog posts still generate code assuming the old default, silently hitting the network on every request instead of serving from cache.
+
+**Evidence — official upgrade docs (bundled with this Next.js version), verbatim:**
+
+> `fetch` requests are no longer cached by default. To opt specific `fetch` requests into caching, you can pass the `cache: 'force-cache'` option.
+
+**Fix:** opt in explicitly, per fetch call or per segment:
+
+```ts
+// app/catalog/08-fetch-cache-assumption/fixed-page.tsx
+async function getData() {
+  const res = await fetch('https://api.example.com/data', { cache: 'force-cache' })
+  return res.json()
+}
+
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+```
+
+**Caught by:** nothing automatic — no build error, no warning. Only **[The Four Caching Layers](/en/data-fetching-and-caching/the-four-caching-layers/)**'s explanation of the current default, or noticing every request hits the network, surfaces this.
+
+### 9. Route Segment Config mixed with `cacheComponents`
+
+```ts
+// @expect-error real next build error under cacheComponents — see prose
+// app/catalog/09-segment-config-cachecomponents/page.tsx
+export const dynamic = 'force-dynamic'
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+```ts
+// app/catalog/09-segment-config-cachecomponents/next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+Route Segment Config (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, `experimental_ppr`) is the model every pre-16 tutorial teaches. `cacheComponents` is the new, mutually exclusive model. AI code trained mostly on the old model keeps writing these exports into a project that already opted into Cache Components.
+
+**Symptom — real, already proven in this course's own build** (see **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)**):
+
+```text
+Route segment config "dynamic" is not compatible with nextConfig.cacheComponents. Please remove it.
+```
+
+**Fix:** delete the segment config export; under Cache Components every route is dynamic by default, and a genuinely static/cached part is marked with `'use cache'` instead:
+
+```ts
+// app/catalog/09-segment-config-cachecomponents/fixed-page.tsx
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+**Caught by:** `next build`, only once `cacheComponents: true` is set — the same export builds fine without it, which is exactly why step 2 of the reading order (check `next.config.ts` first) matters.
+
+### 10. `revalidateTag` called with a single argument
+
+```ts
+// @expect-error real tsc TS2554 error — see prose
+// app/catalog/10-revalidatetag-single-arg/actions.ts
+'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function updateArticle(articleId: string) {
+  revalidateTag(`article-${articleId}`)
+}
+```
+
+As of Next.js 16, `revalidateTag` requires a second argument — a `cacheLife` profile name — describing how stale a reader may see data while it revalidates. The single-argument form from earlier versions is deprecated and now a type error, not a silent behavior change.
+
+**Symptom — real `tsc --noEmit` output** (probe: Next.js 16.3.6):
+
+```text
+app/catalog/10-revalidatetag-single-arg/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.
+```
+
+**Fix:** pass a `cacheLife` profile as the second argument:
+
+```ts
+// app/catalog/10-revalidatetag-single-arg/fixed-actions.ts
+'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function updateArticle(articleId: string) {
+  revalidateTag(`article-${articleId}`, 'max')
+}
+```
+
+**Caught by:** `tsc --noEmit`, directly — one of the few entries in this catalog the type checker alone catches.
+
+### 11. `cookies()` read in a page meant to stay static
+
+```ts
+// app/catalog/11-cookies-static/page.tsx
+import { cookies } from 'next/headers'
+
+export default async function Page() {
+  const cookieStore = await cookies()
+  const theme = cookieStore.get('theme')
+  return <div>theme: {theme?.value}</div>
+}
+```
+
+Nothing here throws. Without Cache Components, reading `cookies()` anywhere in a route silently flips the **entire route** to server-rendered on every request — a page the author assumed (and may have tested by eye) was static quietly loses every benefit of static rendering: no prerendering, no CDN caching, full server work on every hit.
+
+**Symptom — real `next build` route table** (probe, default config, no `cacheComponents`):
+
+```text
+Route (app)
+┌ ○ /
+└ ƒ /catalog/11-cookies-static
+
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+Under `cacheComponents: true` this instead becomes a hard build error (`Next.js encountered uncached or runtime data during prerendering`), already proven in **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)** — the old model fails quietly, the new one fails loudly.
+
+**Fix:** wrap the `cookies()`-dependent part in `<Suspense>` so only that part is dynamic, or (under Cache Components) cache the rest of the page with `'use cache'` and leave the cookie read outside it.
+
+**Caught by:** reading the `next build` route table by eye (the `ƒ` symbol) — no build error under the old model, so nothing forces you to notice.
+
+### 12. Synchronous `params`/`searchParams` access
+
+```ts
+// @expect-error real tsc TS2339 error — see prose
+// app/catalog/12-sync-params/page.tsx
+export default function Page(props: { params: Promise<{ id: string }> }) {
+  const id = props.params.id // params is a Promise, not read synchronously
+  return <div>{id}</div>
+}
+```
+
+Since Next.js 15, `params` and `searchParams` are Promises — Next.js 16 fully removes the temporary synchronous-access compatibility shim. Training data from the Next.js 13/14 era still writes `params.id` directly, without an `await`.
+
+**Symptom — real `tsc --noEmit` output**, reproduced in a scratch probe against a real routed `app/**/[id]/page.tsx` typed with Next's own generated `PageProps<'/route/[id]'>` helper (from `next typegen`), which always types `params` correctly as a `Promise`:
+
+```text
+app/bug-sync-params2/[id]/page.tsx(2,27): error TS2339: Property 'id' does not exist on type 'Promise<{ id: string; }>'.
+```
+
+Written with an explicit `Promise<{ id: string }>` type (as above), the mistake is a real, immediate error. Written with a *loose*, non-Promise-typed prop (`{ params: { id: string } }`) instead — copy-pasted from pre-15 training data — this same mistake compiles clean and just silently returns `undefined` at runtime; nothing forces the type to admit `params` is a Promise unless the annotation says so. Next's own generated `PageProps<'/route'>` helper (from `next typegen`) always gets this right automatically, which is exactly why this course's finished lessons type every page against it rather than hand-writing prop types.
+
+**Fix:** `await` the promise:
+
+```ts
+// app/catalog/12-sync-params/fixed-page.tsx
+export default async function Page(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params
+  return <div>{id}</div>
+}
+```
+
+**Caught by:** `tsc --noEmit`, but only when `params` is actually typed as a `Promise` — a hand-written, loose, non-Promise prop type defeats this check silently, which is why the generated `PageProps` helper matters in real code.
+
+### 13. Empty `generateStaticParams`
+
+```ts
+// @expect-error real next build error under cacheComponents — see prose
+// app/catalog/13-empty-gsp/[slug]/page.tsx
+export async function generateStaticParams() {
+  return []
+}
+
+export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  return <div>{slug}</div>
+}
+```
+
+An AI-generated `generateStaticParams` that fetches a list and maps over it can easily return `[]` when the upstream call fails, is misconfigured, or genuinely has no rows yet.
+
+**Symptom — real `next build` output, under `cacheComponents: true`** (without it, this builds fine and simply serves the whole segment dynamically — the stricter check is Cache-Components-only):
+
+```text
+Error: When using Cache Components, all `generateStaticParams` functions must return at least one result. This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.
+
+Learn more: https://nextjs.org/docs/messages/empty-generate-static-params
+```
+
+**Fix:** guard against an empty result explicitly, or accept the route stays fully dynamic:
+
+```ts
+// app/catalog/13-empty-gsp/fixed-page.tsx
+async function getAllSlugs(): Promise<string[]> {
+  const res = await fetch('https://api.example.com/slugs')
+  return res.json()
+}
+
+export async function generateStaticParams() {
+  const slugs = await getAllSlugs()
+  if (slugs.length === 0) {
+    // Explicit choice, not a build-time surprise.
+    return [{ slug: 'placeholder' }]
+  }
+  return slugs.map((slug) => ({ slug }))
+}
+```
+
+**Caught by:** `next build`, only under `cacheComponents: true`.
+
+### 14. `export const runtime = 'edge'`
+
+```ts
+// app/catalog/14-runtime-edge/page.tsx
+export const runtime = 'edge'
+
+export default function Page() {
+  return <div>edge page</div>
+}
+```
+
+Plenty of existing Next.js code — and plenty of AI training data — uses `runtime = 'edge'` to opt a route into the Edge Runtime for lower cold-start latency. As of this Next.js version, the Edge Runtime itself is deprecated.
+
+**Symptom — real `next build` output:**
+
+```text
+⚠ The Edge Runtime is deprecated. You can use the "nodejs" runtime instead. Learn more: https://nextjs.org/docs/messages/edge-runtime-deprecated
+⚠ Using edge runtime on a page currently disables static generation for that page
+```
+
+**Fix:** remove the `runtime` export entirely and use the default `'nodejs'` runtime (also required if the route lives under `proxy.ts`, which cannot use `'edge'` at all):
+
+```ts
+// app/catalog/14-runtime-edge/fixed-page.tsx
+export default function Page() {
+  return <div>edge page</div>
+}
+```
+
+**Caught by:** a real build warning — not an error, so it is easy to miss in noisy CI output.
+
+### 15. `getServerSideProps` copied into the App Router
+
+```ts
+// @expect-error real Turbopack build error, not a type error — see prose
+// app/catalog/15-gssp-in-app-router/page.tsx
+export async function getServerSideProps() {
+  return { props: {} }
+}
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+`getServerSideProps` is a Pages Router data-fetching function. AI models trained on a mix of both routers occasionally paste it directly into an `app/` file.
+
+**Symptom — real Turbopack build output:**
+
+```text
+Error: "getServerSideProps" is not supported in app/. Read more: https://nextjs.org/docs/app/building-your-application/data-fetching
+```
+
+**Fix:** fetch directly in the Server Component, `await`ed, with no exported data-fetching function at all:
+
+```ts
+// app/catalog/15-gssp-in-app-router/fixed-page.tsx
+export default async function Page() {
+  const data = await getData()
+  return <div>{JSON.stringify(data)}</div>
+}
+
+async function getData() {
+  const res = await fetch('https://api.example.com/data')
+  return res.json()
+}
+```
+
+**Caught by:** `next build` / `next dev` — an App-Router-specific check, not `tsc --noEmit`.
+
+## Auth in every action and route handler
+
+### 16. A Server Action with no session check
+
+```ts
+// app/catalog/16-action-no-auth/actions.ts
+'use server'
+
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string) {
+  await db.post.delete({ where: { id } })
+}
+```
+
+```ts
+// lib/db.ts
+export const db = {
+  post: {
+    delete: async (_args: { where: { id: string; authorId?: string } }) => {},
+  },
+}
+```
+
+Nothing here fails to build, type-check, or even fails a casual manual test by the person who wrote it — clicking delete on their own post works exactly as expected. The bug is invisible until someone sends the same action ID with a different `id`.
+
+As established in **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)**: a Server Action compiles into a public POST endpoint reachable by its action ID, independent of whichever form or button happens to call it in your own UI. `deletePost` here deletes *any* post by ID, for anyone who can reach the app at all — no login required, let alone ownership of that specific post.
+
+**Fix:** authorize the caller, then scope the mutation to their own rows — the same shape as the `verifySession()` Data Access Layer pattern used throughout this course's Server Actions module (see **[Authentication Patterns](/en/production-and-ecosystem/authentication-patterns/)** for the full, real DAL this stub stands in for):
+
+```ts
+// app/catalog/16-action-no-auth/lib/session.ts
+export async function verifySession() {
+  // Stands in for this course's real verifySession() DAL: reads the request's
+  // own session cookie server-side — never an argument the caller supplies.
+  return { userId: 'stub-user-id' }
+}
+```
+
+```ts
+// app/catalog/16-action-no-auth/fixed-actions.ts
+'use server'
+
+import { verifySession } from './lib/session'
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string) {
+  const { userId } = await verifySession()
+  await db.post.delete({ where: { id, authorId: userId } })
+}
+```
+
+**Caught by:** nothing automatic. This is the single most consequential entry in this catalog with zero tooling support of any kind — no linter, no type error, no build warning. Only manual review (the **[Review Checklist](/en/reading-nextjs/review-checklist/)**'s auth section) or an actual unauthorized `curl` request catches it.
+
+<SpotTheBug code={`// app/catalog/16b-action-checks-flag-only/actions.ts
+'use server'
+
+import { getCurrentUser } from '@/app/lib/session'
+import { db } from '@/lib/db'
+
+export async function deletePost(id: string, isAdminUi: boolean) {
+  if (!isAdminUi) return
+  const user = await getCurrentUser()
+  await db.post.delete({ where: { id } })
+}`}>
+This one *looks* like it has an auth check — but `isAdminUi` is a plain boolean argument the caller controls, not a server-verified fact. Anyone who calls this action directly can pass `true` regardless of who they are, and `getCurrentUser()` is called but its result is never actually checked against anything (no `if (!user)`, no ownership filter on the delete). A real check has to (1) verify a session server-side, independent of any argument the caller supplies, and (2) use the verified user's ID in the query itself — exactly the `verifySession()` + `where: { id, authorId: userId }` pattern in the fix above.
+</SpotTheBug>
+
+## The error and redirect path
+
+### 17. `try/catch` swallowing `redirect()` / `notFound()`
+
+```ts
+// app/catalog/17-try-catch-swallows-redirect/actions.ts
+'use server'
+
+import { notFound } from 'next/navigation'
+
+async function getPost(id: string): Promise<{ id: string } | null> {
+  return null // pretend lookup miss
+}
+
+export async function loadPost(id: string) {
+  try {
+    const post = await getPost(id)
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    console.error(err)
+    return null
+  }
+}
+```
+
+`redirect()` and `notFound()` both **throw** an internal Next.js control-flow error (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) that the framework catches further up the tree to actually perform the redirect or render the `not-found` segment. An unconditional `catch` block anywhere in between intercepts that throw exactly like any other error.
+
+**Symptom — already proven against a real running server** in **[Mutations and Revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/)**: the exact pattern above, built and deployed, answers with **HTTP 200 and a `null` body** instead of a 404 — the `catch` block logs the internal error and returns `null`, and the caller has no way to distinguish that from "the post is genuinely null."
+
+**Fix:** either keep `redirect()`/`notFound()` outside any `try/catch` that does not explicitly re-throw them, or re-throw Next.js's own control-flow errors as the first line of the `catch`:
+
+```ts
+// app/catalog/17-try-catch-swallows-redirect/fixed-actions.ts
+'use server'
+
+import { notFound } from 'next/navigation'
+import { unstable_rethrow } from 'next/navigation'
+
+async function getPost(id: string): Promise<{ id: string } | null> {
+  return null
+}
+
+export async function loadPost(id: string) {
+  try {
+    const post = await getPost(id)
+    if (!post) notFound()
+    return post
+  } catch (err) {
+    unstable_rethrow(err) // let Next.js's own control-flow errors escape first
+    console.error(err)
+    return null
+  }
+}
+```
+
+**Caught by:** nothing automatic — compiles clean, and even *looks* defensive. Only hitting the real code path against a running server (or reading the code with this exact rule in mind) reveals it.
+
+## Config and environment
+
+### 18. `middleware.ts` instead of `proxy.ts`
+
+```ts
+// @expect-error real deprecation warning, not a type error — see prose
+// middleware.ts
+import { NextResponse } from 'next/server'
+
+export function middleware() {
+  return NextResponse.next()
+}
+```
+
+`middleware.ts`/the `middleware` export are deprecated file conventions, renamed to `proxy.ts`/`proxy` to make the network-boundary/routing purpose of the file explicit. Both still work in 16.3.6, but a real, unmissable-in-CI-logs warning fires on every build.
+
+**Symptom — real `next build` output** (probe: Next.js 16.3.6):
+
+```text
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+
+  To migrate automatically, run:
+  npx @next/codemod@canary middleware-to-proxy .
+
+  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+```
+
+The route table itself even prints the new name for the old file: `ƒ Proxy (Middleware)`.
+
+**Fix:** rename the file and its exported function:
+
+```ts
+// app/catalog/18-middleware-to-proxy/proxy.ts
+import { NextResponse } from 'next/server'
+
+export function proxy() {
+  return NextResponse.next()
+}
+```
+
+Also note: the `edge` runtime is **not** supported inside `proxy.ts` at all — `proxy` always runs on the `nodejs` runtime and that cannot be configured, unlike the old `middleware.ts`, which could opt into edge. See **[Middleware and the Request Lifecycle](/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)**.
+
+**Caught by:** a real build warning, plus the codemod (`npx @next/codemod@canary upgrade latest` also migrates this automatically).
+
+### 19. `process.env.NEXT_PUBLIC_X` accessed dynamically
+
+```ts
+// app/catalog/19-dynamic-public-env/page.tsx
+'use client'
+
+function getEnvByName(name: string): string | undefined {
+  // AI-written helper: looks reasonable, reads any NEXT_PUBLIC_ var by name
+  return process.env[name]
+}
+
+export default function Page() {
+  const apiUrl = getEnvByName('NEXT_PUBLIC_API_URL')
+  return <div>{apiUrl ?? 'undefined'}</div>
+}
+```
+
+Next.js replaces `process.env.NEXT_PUBLIC_X` with its literal value at build time, for Client Component code — but only when it recognizes the exact static, literal, dot-notation (or bracket-with-literal-key) pattern in the *original* source. A value that only becomes `'NEXT_PUBLIC_API_URL'` at runtime (read from a URL, a prop, `window.location`, or genuinely chosen dynamically) never gets replaced, because Next.js cannot know what string it will be without running the program.
+
+**Symptom — real, in an actual browser** (Playwright, against `next start`, with `NEXT_PUBLIC_API_URL` genuinely set in `.env.local`): a version of this helper reading the variable name from `window.location.search` at runtime rendered, after hydration:
+
+```text
+value: undefined
+```
+
+— even though the exact same variable, read as `process.env.NEXT_PUBLIC_API_URL` (a static literal) elsewhere on the same page, renders its real value correctly. The compiled client bundle makes the difference visible: the static-literal read compiles to the value inlined directly; the dynamic read compiles to a live property lookup (`t.default.env[e]`) against a browser-side `process.env` shim that is only pre-populated with the specific keys Next.js found referenced as static literals somewhere in the bundle — never a full copy of every `NEXT_PUBLIC_` variable that exists.
+
+**Fix:** reference each `NEXT_PUBLIC_` variable as a static, literal dot-notation expression, one per name — never through a variable, a computed key, or a helper function's parameter:
+
+```ts
+// app/catalog/19-dynamic-public-env/fixed-page.tsx
+'use client'
+
+export default function Page() {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL // static literal — replaced at build time
+  return <div>{apiUrl ?? 'undefined'}</div>
+}
+```
+
+**Caught by:** nothing automatic — no build error, no type error. Only actually loading the page in a browser and checking the rendered value reveals it.
+
+### 20. A secret prefixed `NEXT_PUBLIC_`
+
+```ts
+// app/catalog/20-secret-in-public-env/page.tsx
+'use client'
+
+export default function Page() {
+  return <div>{process.env.NEXT_PUBLIC_STRIPE_SECRET}</div>
+}
+```
+
+Every `NEXT_PUBLIC_`-prefixed variable referenced anywhere in Client Component code is inlined, in plain text, into the static JS file shipped to every visitor's browser — by design, since that is the entire mechanism that makes `NEXT_PUBLIC_` variables usable client-side at all. Naming a real secret with that prefix (usually because "it needs to reach the browser eventually" or copy-paste from a server-only variable) ships it to anyone who opens dev tools.
+
+**Symptom — real, found directly inside a browser-served static chunk** (`.next/static/chunks/*.js`, after `next build`, `NEXT_PUBLIC_STRIPE_SECRET=sk_live_totallyrealsecret1234` in `.env.local`):
+
+```js
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,81869,t=>{"use strict";t.i(47167);var e=t.i(43476);t.s(["default",0,function(){return(0,e.jsx)("div",{children:"sk_live_totallyrealsecret1234"})}])}]);
+```
+
+The literal secret value sits in the file, unminified beyond normal variable renaming, in a directory served statically to any request.
+
+**Fix:** never prefix a real secret with `NEXT_PUBLIC_`. Keep it server-only (a plain, un-prefixed environment variable), and read it only from Server Components, Server Actions, or Route Handlers:
+
+```ts
+// app/catalog/20-secret-in-public-env/fixed-page.tsx
+async function chargeCard() {
+  const secret = process.env.STRIPE_SECRET // server-only, never bundled for the client
+  // ... use secret in a server-only call
+}
+
+export default async function Page() {
+  await chargeCard()
+  return <div>charged</div>
+}
+```
+
+**Caught by:** nothing automatic — no build error, no warning naming the variable as sensitive. Only grepping `.next/static/chunks/` for a known secret pattern, or reviewing every `NEXT_PUBLIC_` variable's actual purpose, catches it.
+
+### 21. `next/image` without `sizes`
+
+```tsx
+// app/catalog/21-image-no-sizes/page.tsx
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: '50%' }}>
+      <Image src="/banner.png" alt="Banner" fill />
+    </div>
+  )
+}
+```
+
+Without a `sizes` prop, the browser assumes an image using `fill` (or any responsive layout) will render as wide as the full viewport — even when a parent element, like the `50%`-width `div` above, actually constrains it to half that. `next/image` also generates a narrower `srcset` by default without `sizes` (tuned for fixed-size images), so the browser has fewer good options to choose from in the first place.
+
+**Evidence — official docs, verbatim:**
+
+> If `sizes` is missing, the browser assumes the image will be as wide as the viewport (`100vw`). This can cause unnecessarily large images to be downloaded.
+
+**Fix:** describe the image's real rendered width at each breakpoint:
+
+```tsx
+// app/catalog/21-image-no-sizes/fixed-page.tsx
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: '50%' }}>
+      <Image src="/banner.png" alt="Banner" fill sizes="50vw" />
+    </div>
+  )
+}
+```
+
+**Caught by:** nothing automatic in this Next.js version — no lint rule enforces `sizes`. Only measuring actual downloaded image bytes (Chrome DevTools' Network panel, or Lighthouse) surfaces the waste.
+
+### 22. Missing `metadataBase`
+
+```tsx
+// app/catalog/22-missing-metadatabase/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  openGraph: {
+    images: '/og-image.png',
+  },
+}
+
+export default function Page() {
+  return <div>hello</div>
+}
+```
+
+A relative URL in a URL-based metadata field (Open Graph images, Twitter images, canonical/alternate links) needs a `metadataBase` somewhere up the layout tree to resolve against — without one, Next.js falls back to a placeholder host.
+
+**Symptom — real `next build` output:**
+
+```text
+⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3000". See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+```
+
+Deployed as-is, every social share card links back to `localhost:3000` instead of the real production domain.
+
+**Fix:** set `metadataBase` once, in the root layout, so every route's relative metadata URLs resolve against it:
+
+```tsx
+// app/catalog/22-missing-metadatabase/fixed-layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://example.com'),
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  )
+}
+```
+
+**Caught by:** a real build warning — easy to miss in noisy CI output, and the page still builds and deploys either way.
+
+## Rendering and navigation
+
+### 23. `await`ing the whole page above any `<Suspense>`
+
+```tsx
+// app/catalog/23-await-above-suspense/page.tsx
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500))
+  return 'data'
+}
+
+export default async function Page() {
+  const data = await slow() // no Suspense at all — the whole response blocks
+  return <div>{data}</div>
+}
+```
+
+Already proven in **[Streaming and Suspense](/en/rendering/streaming-and-suspense/)**: with no `<Suspense>` boundary anywhere, the server holds the entire response until every `await` in the tree resolves — the visitor sees a blank tab for the full 1.5 seconds, then everything at once. Adding a `<Suspense>` boundary that wraps the *entire* page changes nothing either, since the fallback becomes the only thing that streams fast, and there is no real content left outside it to arrive early.
+
+**Fix:** `await` only inside the specific region that is slow, wrapped in its own `<Suspense>`, leaving the rest of the page to stream immediately:
+
+```tsx
+// app/catalog/23-await-above-suspense/fixed-page.tsx
+import { Suspense } from 'react'
+
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500))
+  return 'data'
+}
+
+async function SlowPart() {
+  const data = await slow()
+  return <div>{data}</div>
+}
+
+export default function Page() {
+  return (
+    <div>
+      <h1>This heading streams immediately</h1>
+      <Suspense fallback={<p>Loading…</p>}>
+        <SlowPart />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+**Caught by:** nothing automatic — no build error. Only measuring real time-to-first-byte against the actual network response (starting the clock before, not after, the `fetch`/request call) reveals the difference.
+
+### 24. `Date`/`Math.random()` in render → hydration mismatch
+
+```tsx
+// app/catalog/24-hydration-mismatch/page.tsx
+'use client'
+
+export default function Page() {
+  return <div>Rendered at: {Date.now()}</div>
+}
+```
+
+`Date.now()` runs once on the server (producing one timestamp in the initial HTML) and again on the client during hydration (producing a different timestamp a moment later) — React expects the two renders to match exactly.
+
+**Evidence — real React 19 console error, verbatim, already captured against a real `next dev` page** in **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)**:
+
+```text
+Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+```
+
+**Fix:** compute the value once on the server and pass it down as a prop (or genuinely defer it to the client with `useEffect`, if it must reflect the visitor's own clock):
+
+```tsx
+// app/catalog/24-hydration-mismatch/fixed-page.tsx
+function Timestamp({ value }: { value: number }) {
+  return <div>Rendered at: {value}</div>
+}
+
+export default function Page() {
+  const renderedAt = Date.now() // computed once, on the server, passed down as data
+  return <Timestamp value={renderedAt} />
+}
+```
+
+**Caught by:** a real React console error in development — silenceable but not fixed by `suppressHydrationWarning`, which only hides the warning for cosmetic, genuinely-expected differences.
+
+<SpotTheBug code={`// app/catalog/24b-random-in-server-component/page.tsx
+export default function Page() {
+  const id = Math.random().toString(36).slice(2)
+  return <div data-request-id={id}>Rendered</div>
+}`}>
+Trick question: this one does **not** hydration-mismatch. `Math.random()` in render is the classic cause — but only inside a **Client Component**, where the function body genuinely runs a second time on the client during hydration. This file has no `'use client'` directive, so it is a Server Component: it renders exactly once, on the server, and the resulting HTML (with one fixed `id` already baked in) is what ships to the browser — there is no client-side re-execution to disagree with it. The rule from entry 24 only bites once this same code sits inside (or is imported into) a Client Component.
+</SpotTheBug>
+
+### 25. `<a>` instead of `<Link>`
+
+```tsx
+// app/catalog/25-anchor-instead-of-link/page.tsx
+export default function Page() {
+  return (
+    <nav>
+      <a href="/about">About</a>
+    </nav>
+  )
+}
+```
+
+A plain `<a>` to an internal route forces a full page reload for every navigation — no client-side transition, no prefetching, none of the App Router's layout-deduplication or incremental-prefetch benefits from **Enhanced Routing and Navigation**.
+
+**Evidence — this exact rule is one of `eslint-config-next`'s recommended rules, verbatim from the bundled ESLint plugin reference:**
+
+> `@next/next/no-html-link-for-pages` — Prevent usage of `<a>` elements to navigate to internal Next.js pages.
+
+**Fix:** use `<Link>` for any internal navigation; reserve `<a>` for external URLs:
+
+```tsx
+// app/catalog/25-anchor-instead-of-link/fixed-page.tsx
+import Link from 'next/link'
+
+export default function Page() {
+  return (
+    <nav>
+      <Link href="/about">About</Link>
+    </nav>
+  )
+}
+```
+
+**Caught by:** `eslint-config-next`'s `recommended` (and `core-web-vitals`) rule set, out of the box — one of the few entries in this catalog with real, default-on lint coverage.
+
+## Mental Model
+
+```text
+25 patterns, sorted by who actually catches them:
+
+tsc --noEmit (real type errors)     → 10 (revalidateTag), 12 (sync params, if typed via PageProps)
+next build / next dev (real errors) → 2, 3, 7, 9, 13, 15 (RSC/prerender/Cache-Components checks)
+next build (real warnings only)     → 14 (edge deprecated), 18 (middleware→proxy), 22 (metadataBase)
+eslint-config-next (default-on)     → 25 (no-html-link-for-pages)
+Real console warning (dev only)     → 5 (useFormState), 24 (hydration mismatch)
+Reading the route table by eye      → 11 (cookies() flips a route to ƒ)
+Nothing at all                      → 1, 4, 6, 8, 16, 17, 19, 20, 21, 23 — 10 of 25, no tool warns you
+```
+
+<Callout title="The one-line takeaway">
+Ten of the twenty-five patterns above are caught by no tool this course covers, run with any configuration — and the highest-stakes one (a Server Action with no auth check) is one of them. Run every tool in <a href="/en/reading-nextjs/verification-tools/">Verification Tools</a>, then still read the diff with the <a href="/en/reading-nextjs/review-checklist/">Review Checklist</a> in hand.
+</Callout>
+
+export const quizAiBugCatalog = [
+  {
+    q: "```tsx\nfunction getEnvByName(name: string) {\n  return process.env[name]\n}\n// called as: getEnvByName('NEXT_PUBLIC_API_URL')\n```\nWhy might this fail to return the real value in the browser even though `process.env.NEXT_PUBLIC_API_URL` works fine elsewhere on the same page?",
+    options: [
+      "process.env doesn't exist in Client Components at all",
+      "Next.js only replaces process.env.NEXT_PUBLIC_X with its literal value when it recognizes the exact static pattern in the original source — a name computed at runtime through a variable never gets replaced",
+      "getEnvByName is missing an await",
+      "NEXT_PUBLIC_ variables only work in Server Components",
+    ],
+    answer: 1,
+    explain: "The build-time replacement only pattern-matches literal process.env.NEXT_PUBLIC_X syntax in the source it scans. A value that only becomes that string at runtime (through a parameter, a computed key, or user input) is invisible to that static analysis, so it falls through to a browser-side shim that was never populated with that key.",
+  },
+  {
+    q: "A Server Action deletes a row by ID with no session check at all, but the button that calls it only renders for the row's owner in the UI. What does `next build` report?",
+    options: [
+      "A security warning naming the missing auth check",
+      "Nothing — it builds and deploys cleanly; no tool in this catalog catches a missing auth check",
+      "A type error, because the function has no auth parameter",
+      "It refuses to build any exported Server Action without a session check",
+    ],
+    answer: 1,
+    explain: "This is the catalog's starkest example: zero tooling coverage, at any layer — no lint rule, no type error, no build warning. It builds and deploys exactly like a correctly-authorized action would, and only a curl request with someone else's ID (or manual review) reveals the gap.",
+  },
+  {
+    q: "Why does `revalidateTag('posts')` (a single argument) fail differently than most of this catalog's other bugs?",
+    options: [
+      "It doesn't fail — single-argument revalidateTag still works in 16.3.6",
+      "It is one of the few entries tsc --noEmit catches directly, as a real TS2554 'Expected 2 arguments' error, because Next.js 16 requires a cacheLife profile as a second argument",
+      "It only fails at runtime, never at compile time",
+      "It fails only under cacheComponents: true",
+    ],
+    answer: 1,
+    explain: "revalidateTag's type signature itself changed to require two arguments in Next.js 16 — this is a genuine, unconditional compile-time type error, independent of cacheComponents, unlike most of the runtime/build-only bugs elsewhere in this catalog.",
+  },
+  {
+    q: "```tsx\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nWhat does a real deployed server return when `post` is missing?",
+    options: [
+      "A 404 page, because notFound() always wins over a catch block",
+      "HTTP 200 with a null body — the catch block intercepts notFound()'s internal throw and swallows it",
+      "A build error, because notFound() can't be called inside a try block",
+      "The server crashes with an unhandled exception",
+    ],
+    answer: 1,
+    explain: "notFound() throws Next.js's own internal control-flow error. An unconditional catch block has no way to distinguish that from any other thrown error, so it logs it and returns null — proven against a real built-and-deployed server to respond 200, not 404.",
+  },
+  {
+    q: "Reading `props.params.id` directly (no `await`) in a page typed with the generated `PageProps<'/route/[id]'>` helper produces what?",
+    options: [
+      "undefined at runtime, silently, with no compiler complaint",
+      "A real tsc error — TS2339, 'Property does not exist on type Promise<...>' — because the generated type correctly reflects that params is now a Promise",
+      "A build warning only, never a hard error",
+      "It works fine — params was never actually made async",
+    ],
+    answer: 1,
+    explain: "Since Next.js 15/16, params is a genuine Promise. The next typegen-generated PageProps helper types it correctly as a Promise, so accessing .id without awaiting it is a real TS2339 type error — but only when the page is typed against that generated helper instead of a hand-written, loose object type.",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/ai-bug-catalog" questions={quizAiBugCatalog} />
+
+<ProgressTracker client:visible id="reading-catalog" />

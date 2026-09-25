@@ -1,0 +1,302 @@
+---
+title: Verification tools
+description: 'What tsc --noEmit, next build output, ESLint/Biome, next experimental-analyze, next typegen, --debug-prerender, the RSC payload, Playwright, and instrumentation.ts each actually catch — with real output.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+Next.js has no in-browser playground — the only way to prove a claim about it is a real project, a real `tsc`/`next build` run, or a real browser. Every output below is real, captured against Next.js 16.3.6 and React 19.2.8. None of these tools overlap perfectly, and none is close to complete on its own — the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s "Caught by" line for each of its 25 entries names exactly which one (if any) of the tools below would have caught it.
+
+## `tsc --noEmit` — the fast, first pass
+
+Type-checking alone catches surprisingly little of this catalog by design — most of Next.js's own rules (Server/Client boundaries, `cacheComponents` conflicts, prerender-time data access) are enforced by the framework's build step, not by TypeScript's type system. What `tsc` *does* catch reliably: a genuine signature change like `revalidateTag` now requiring two arguments, and any `params`/`searchParams` access that skips `await` — but only when the prop is actually typed as a `Promise` (a hand-written, loose object type defeats this silently; the generated `PageProps`/`LayoutProps` helpers, from `next typegen`, always get it right).
+
+```bash
+npx tsc --noEmit
+```
+
+```text
+app/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.
+```
+
+## Reading `next build` output
+
+`next build` prints a route table after every successful build, one symbol per route:
+
+**The full legend** (official docs, verbatim):
+
+```text
+○  (Static)            Fully prerendered at build time. Served without server rendering.
+◐  (Partial Prerender) Static shell served immediately. Dynamic content streams in at request time.
+●  (SSG)               Prerendered static HTML (from generateStaticParams or getStaticProps).
+ƒ  (Dynamic)           Server-rendered on demand for each request.
+```
+
+`○` Static, `●` SSG, and `ƒ` Dynamic are the modes Next.js has always rendered in, App Router or Pages Router — real `next build` output, default config, no `cacheComponents`, a page reading `cookies()`:
+
+```text
+Route (app)
+┌ ○ /
+└ ƒ /catalog/11-cookies-static
+```
+
+`◐` Partial Prerender only appears once **[Cache Components](/en/data-fetching-and-caching/use-cache-and-cache-components/)** is on (`cacheComponents: true`) — real output from the bundled `next build` guide, adding `generateStaticParams` to a dynamic product page:
+
+```text
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└   /products/[id]
+  ├ ◐ /products/[id]       # Params known, data still uncached
+  ├ ◐ /products/1
+  ├ ◐ /products/2
+  └ ◐ /products/3
+```
+
+Without Cache Components, reading a route's cache behavior means checking `cookies()`/`headers()`/`fetch` calls by eye — the table itself just prints `ƒ` the moment any of them run, silently, as the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 11 shows.
+
+The warnings worth reading past the route table, not just the pass/fail exit code:
+
+```text
+⚠ The Edge Runtime is deprecated. You can use the "nodejs" runtime instead. Learn more: https://nextjs.org/docs/messages/edge-runtime-deprecated
+⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3000".
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+```
+
+None of these three fail the build or the CI exit code — all three still print `next build`'s normal success output and exit 0. A CI pipeline that only checks the exit code misses all three.
+
+## What replaced `next lint`
+
+Starting with Next.js 16, the `next lint` command itself is removed — `next build` no longer runs linting as a build step at all. The bundled docs are explicit about the replacement:
+
+> The `next lint` command has been removed. Use Biome or ESLint directly.
+
+For ESLint specifically, `eslint-config-next` still ships the same `@next/eslint-plugin-next` rules (including `no-html-link-for-pages`, `no-img-element`, and the rest) — you now run the ESLint CLI yourself, against a flat `eslint.config.mjs`:
+
+```bash
+npx eslint .
+```
+
+A codemod migrates an existing `next lint` setup automatically:
+
+```bash
+npx @next/codemod@canary next-lint-to-eslint-cli .
+```
+
+## `next experimental-analyze` — real bundle composition
+
+Since `next build` stopped printing a per-route bundle-size column (v16.0.0), `next experimental-analyze` (stable as of v16.1.0) is the tool that shows what actually shipped to the browser, filterable by route and by client/server:
+
+```bash
+npx next experimental-analyze --output
+```
+
+```text
+✓ Running next.config.ts took 19ms
+  Analyzing a production build...
+✓ Analyze completed in 926ms. Results written to .next/diagnostics/analyze.
+To explore the analyze results interactively, run `next experimental-analyze` without `--output`.
+```
+
+Without `--output`, it starts a local server with an interactive treemap instead of writing static files — useful for the exact kind of comparison the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 1 makes (an 8,967-byte chunk versus a 287-byte one, depending on where `'use client'` sits).
+
+## `next typegen` — route types without a full build
+
+`next typegen` generates the `PageProps`/`LayoutProps`/`RouteContext` helper types (and `next-env.d.ts`) without running a full `next dev` or `next build` — useful in CI, where you want type-checking without paying for a full build:
+
+```bash
+npx next typegen
+```
+
+```text
+Generating route types...
+✓ Types generated successfully
+```
+
+Run it before `tsc --noEmit` in a CI job that only wants to type-check: `next typegen && tsc --noEmit`. Without it (or without `next dev`/`next build` having run at least once), the generated `PageProps<'/route'>` helper types simply do not exist yet.
+
+## `next build --debug-prerender` — real stack traces for prerender errors
+
+Production builds minify server code and skip source maps by default, so a Cache-Components prerender error's stack trace is close to useless on its own. `--debug-prerender` (stable since v15.4.0) disables minification, turns on server-side source maps, and — critically — continues past the *first* prerender failure so every blocked route shows up in one run instead of one per rebuild:
+
+```bash
+npx next build --debug-prerender
+```
+
+A blocking-prerender error with `--debug-prerender` points directly at the offending line (real output, from the bundled `next build` guide, for an unwrapped `params` read):
+
+```text
+Error: Route "/products/[id]": Next.js encountered uncached or runtime data during prerendering.
+  ...
+    at Page (app/products/[id]/page.tsx:2:30)
+  1 | export default async function Page(props: PageProps<'/products/[id]'>) {
+> 2 |   const { id } = await props.params
+    |                              ^
+  3 |   const res = await fetch(`https://api.example.com/products/${id}`)
+```
+
+**Warning**, straight from the CLI: never deploy a build produced with `--debug-prerender` — it skips optimizations production needs.
+
+## Reading the RSC payload in the Network tab
+
+Every navigation and every initial page load carries a React Server Components payload — a compact, streaming, non-JSON serialization of the server-rendered tree — visible in the browser's Network tab as the page's own document request (for the initial load) or as a `text/x-component` fetch (for a client-side navigation). A real payload fragment looks like this (trimmed, from an actual `next build` + `next start` run):
+
+```text
+0:{"P":null,"c":["","bug-public-env"],"q":"","i":false,"f":[[["",{"children":["bug-public-env",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},"$undefined","$undefined",4608]},"$undefined","$undefined",4624], ...
+```
+
+You will not read this format character by character in practice — the point of loading it in the Network tab is confirming *that* a navigation triggered a real RSC fetch at all (versus a full page reload from a stray `<a>`, per the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 25), and roughly how large it is relative to the actual content on screen.
+
+## A Playwright smoke test
+
+A single Playwright test that loads the real, built app and asserts on the final DOM state catches an entire class of bug this page's static tools cannot: anything that only manifests after hydration, after a client-side navigation, or after a Server Action round-trip. This course's own probe used exactly this technique to prove the `NEXT_PUBLIC_` dynamic-access bug in the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 19 — the static-literal read was correct in the initial server-rendered HTML, and only a real browser, after hydration, exposed the dynamic read's `undefined`.
+
+```ts
+// A Playwright test file (tests/smoke.spec.ts) — illustrative, not a
+// fence this course's own tsc harness compiles, since @playwright/test
+// isn't a dependency of the type-check probe.
+import { test, expect } from '@playwright/test'
+
+test('renders the real client-side value, not the SSR one', async ({ page }) => {
+  await page.goto('http://localhost:3000/some-route')
+  await expect(page.locator('body')).toContainText('value: undefined')
+})
+```
+
+## `instrumentation.ts` in development, not just production
+
+`register()` in `instrumentation.ts` runs once for *every* new Next.js server instance — including `next dev` — not only in a deployed production build. Wiring `onRequestError` early, even just to `console.error` during local development, surfaces a server error the moment it happens instead of only after a report reaches production. See **[Deployment and Self-Hosting](/en/production-and-ecosystem/deployment-and-self-hosting/)** for the full, real `onRequestError` example this course builds against a production observability provider.
+
+## This course's own harness: compile every snippet
+
+Every code fence in this course tagged with a `// path.ext` first line is a real file, collected by `tools/verify-snippets.mjs` into a namespaced directory per lesson and type-checked in one `tsc --noEmit` pass across the whole course — the same principle as the Playwright smoke test above, generalized to "does every snippet the reader might copy-paste actually compile," not just the one file you happen to be editing right now:
+
+```bash
+node tools/verify-snippets.mjs
+```
+
+```text
+no type errors.
+
+Per-module fence summary (collected / skipped-no-path / expect-error):
+  reading-nextjs: 46 / 0 / 10
+  ...
+```
+
+A fence deliberately showing broken code (like most of the "wrong code" examples in the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**) starts with `// @expect-error <reason>` so the harness skips it — the lesson prose carries the real, separately-captured build/`tsc` output instead of asking the harness to reproduce a deliberate failure on every run.
+
+## Mental Model
+
+<Mermaid title="Static tools prove things from source or config; dynamic tools need a running app or a real browser" code={verificationToolsDiagram} />
+
+export const verificationToolsDiagram = `flowchart TD
+  subgraph Static["Static (source/config only)"]
+    Tsc["tsc --noEmit<br/>real type errors: revalidateTag, typed params"]
+    Lint["ESLint (eslint-config-next) / Biome<br/>no-html-link-for-pages and friends"]
+    Verify["tools/verify-snippets.mjs<br/>compiles every tagged fence in the course"]
+  end
+  subgraph BuildTime["Build-time (needs a real next build)"]
+    Build["next build route table<br/>○ ● ◐ ƒ, plus warnings that don't fail CI"]
+    Debug["next build --debug-prerender<br/>real stack traces for prerender errors"]
+    Analyze["next experimental-analyze<br/>real bundle composition per route"]
+    Typegen["next typegen<br/>PageProps/LayoutProps without a full build"]
+  end
+  subgraph Runtime["Runtime (needs a real browser or server)"]
+    Rsc["RSC payload in the Network tab"]
+    Pw["Playwright smoke test<br/>post-hydration, post-navigation state"]
+    Instr["instrumentation.ts onRequestError<br/>in next dev, not just production"]
+  end
+`;
+
+<Callout title="The one-line takeaway">
+Every tool on this page is a filter, not a verdict — even run together, they leave ten of the AI Bug Catalog's 25 patterns (including the highest-stakes one, a Server Action with no auth check) completely uncaught. Run every tool here, then still work through the <a href="/en/reading-nextjs/review-checklist/">Review Checklist</a> by eye.
+</Callout>
+
+export const quizVerificationTools = [
+  {
+    q: "```text\napp/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.\n```\nWhich command produced this line, and against which fence in the AI Bug Catalog?",
+    options: [
+      "next build, against the middleware-to-proxy example",
+      "tsc --noEmit, against a single-argument revalidateTag call — one of the few catalog entries the type checker alone catches",
+      "eslint, against a missing sizes prop on next/image",
+      "next experimental-analyze, against an oversized client bundle",
+    ],
+    answer: 1,
+    explain: "TS2554 is tsc's own 'wrong number of arguments' diagnostic. revalidateTag's signature requires a second, cacheLife-profile argument as of Next.js 16 — a genuine, unconditional type error, independent of any build step.",
+  },
+  {
+    q: "A CI pipeline runs `next build` and it exits 0. Which of these is still possible?",
+    options: [
+      "Nothing — a successful next build guarantees the app is correct",
+      "A deprecated-edge-runtime warning, a missing-metadataBase warning, or a deprecated-middleware warning — none of which fail the build or the exit code",
+      "Only style issues, never a real bug",
+      "next build always fails if any warning is present",
+    ],
+    answer: 1,
+    explain: "All three warnings quoted on this page print alongside a completely normal, successful build — next build's exit code alone does not surface them. Reading the warnings, not just checking the exit code, is what catches them.",
+  },
+  {
+    q: "Why does `next typegen` matter for catching the 'synchronous params access' bug specifically?",
+    options: [
+      "It doesn't — tsc catches this regardless of typegen",
+      "The generated PageProps/LayoutProps helpers always type params/searchParams correctly as Promises; a hand-written, loose object type defeats the same tsc check silently",
+      "next typegen runs ESLint rules against the file",
+      "It replaces the need for tsc entirely",
+    ],
+    answer: 1,
+    explain: "tsc only catches a missing await when the prop is actually typed as a Promise. next typegen's generated helpers guarantee that; a hand-rolled { params: { id: string } } type does not, and the same bug then compiles clean.",
+  },
+  {
+    q: "Why is `--debug-prerender` explicitly documented as unsafe to deploy?",
+    options: [
+      "It's actually safe to deploy — the warning is overly cautious",
+      "It disables server code minification and turns on source maps, both meant purely to make a stack trace readable during debugging — real production needs those optimizations back",
+      "It permanently changes next.config.ts",
+      "It deletes the production build output",
+    ],
+    answer: 1,
+    explain: "The flag trades production-grade optimization (minification, no source maps) for a readable stack trace during a single debugging session. Those are exactly the optimizations a real deployment needs, which is why the CLI itself warns never to ship a build made with this flag.",
+  },
+  {
+    q: "What does a Playwright smoke test catch that `tsc --noEmit` and `next build` together cannot?",
+    options: [
+      "Nothing — static tools already cover everything Playwright would find",
+      "Anything that only manifests after hydration or a client-side navigation — for example, a value that renders correctly in server-rendered HTML but resolves to undefined once the browser's own JavaScript runs",
+      "TypeScript type errors",
+      "Whether next.config.ts is valid JSON",
+    ],
+    answer: 1,
+    explain: "This course's own NEXT_PUBLIC_ dynamic-access proof is the exact example: the server-rendered HTML showed the correct value, and only a real browser, post-hydration, revealed the client-side undefined — no static tool observes that difference at all.",
+  },
+  {
+    q: "```ts\n// @expect-error real Turbopack build error, not a type error — see prose\n// app/catalog/07-router-push/page.tsx\nimport { useRouter } from 'next/navigation'\n```\nWhy does this fence start with `@expect-error` instead of just the path comment?",
+    options: [
+      "Because the file path is invalid",
+      "Because this specific code is a real, deliberate bug the lesson demonstrates — tsc --noEmit alone wouldn't flag it (only a real next build would), so the harness skips collecting it and the lesson prose carries the separately-captured build output instead",
+      "Because @expect-error fences are automatically fixed by the harness",
+      "It has no real purpose, just a style convention",
+    ],
+    answer: 1,
+    explain: "useRouter inside a Server Component compiles clean under tsc — the failure is a Turbopack RSC-boundary check that only a real next build performs. Marking it @expect-error tells the harness not to collect it as a plain file to type-check, while the lesson still quotes the real captured build error.",
+  },
+  {
+    q: "Why does this course's harness mark some 'wrong code' fences with `// @expect-error <reason>` instead of giving them a real path comment?",
+    options: [
+      "To hide bugs from the reader",
+      "So the harness skips type-checking a fence that is deliberately broken — the lesson prose carries the real, separately-captured compiler/build output instead of asking every run to reproduce an intentional failure",
+      "Because @expect-error fences run faster",
+      "It has no effect on the harness at all",
+    ],
+    answer: 1,
+    explain: "Without this marker, a deliberately broken 'wrong code' example would make every run of tools/verify-snippets.mjs report a real type error — the marker tells the harness this fence is intentionally uncollected, while the lesson still quotes the real output captured once, separately, against a real build.",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/verification-tools" questions={quizVerificationTools} />
+
+<ProgressTracker client:visible id="reading-tools" />

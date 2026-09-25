@@ -1,0 +1,302 @@
+---
+title: เครื่องมือตรวจสอบ
+description: 'tsc --noEmit, next build output, ESLint/Biome, next experimental-analyze, next typegen, --debug-prerender, RSC payload, Playwright, และ instrumentation.ts แต่ละตัวจับอะไรได้จริง — พร้อม output จริง'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+Next.js ไม่มี playground ให้รันใน browser — วิธีเดียวที่จะพิสูจน์ข้อกล่าวอ้างเกี่ยวกับมันคือ project จริง, การรัน `tsc`/`next build` จริง, หรือ browser จริง ทุก output ด้านล่างเป็นของจริง ที่บันทึกไว้กับ Next.js 16.3.6 และ React 19.2.8 ไม่มีเครื่องมือไหนซ้อนทับกันสมบูรณ์ และไม่มีตัวไหนใกล้เคียงคำว่าครบถ้วนด้วยตัวเอง — บรรทัด "จับได้โดย" ของแต่ละ 25 entry ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** ระบุไว้ชัดว่าเครื่องมือไหน (ถ้ามี) ในหน้านี้ที่จะจับมันได้
+
+## `tsc --noEmit` — ผ่านรอบแรกที่เร็ว
+
+การ type-check เพียงอย่างเดียวจับแคตตาล็อกนี้ได้น้อยอย่างน่าประหลาดใจโดยการออกแบบ — กฎส่วนใหญ่ของ Next.js เอง (boundary Server/Client, ความขัดแย้งของ `cacheComponents`, การเข้าถึงข้อมูลตอน prerender) ถูกบังคับใช้โดยขั้นตอน build ของ framework ไม่ใช่โดยระบบ type ของ TypeScript สิ่งที่ `tsc` *จับได้* จริงๆ: การเปลี่ยน signature จริงอย่าง `revalidateTag` ที่ตอนนี้ต้องการสอง argument, และการเข้าถึง `params`/`searchParams` ที่ข้าม `await` — แต่เฉพาะเมื่อ prop นั้นถูก type เป็น `Promise` จริงๆ (object type ที่หลวมและเขียนเองจะทำให้สิ่งนี้เงียบไป; helper `PageProps`/`LayoutProps` ที่สร้างจาก `next typegen` จะถูกต้องเสมอ)
+
+```bash
+npx tsc --noEmit
+```
+
+```text
+app/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.
+```
+
+## การอ่าน output ของ `next build`
+
+`next build` พิมพ์ตาราง route หลัง build สำเร็จทุกครั้ง สัญลักษณ์หนึ่งตัวต่อ route:
+
+**legend เต็ม** (เอกสารทางการ คำต่อคำ):
+
+```text
+○  (Static)            Fully prerendered at build time. Served without server rendering.
+◐  (Partial Prerender) Static shell served immediately. Dynamic content streams in at request time.
+●  (SSG)               Prerendered static HTML (from generateStaticParams or getStaticProps).
+ƒ  (Dynamic)           Server-rendered on demand for each request.
+```
+
+`○` Static, `●` SSG, และ `ƒ` Dynamic เป็น mode ที่ Next.js render มาตลอด ทั้ง App Router และ Pages Router — `next build` output จริง, config เริ่มต้น, ไม่มี `cacheComponents`, หน้าที่อ่าน `cookies()`:
+
+```text
+Route (app)
+┌ ○ /
+└ ƒ /catalog/11-cookies-static
+```
+
+`◐` Partial Prerender จะปรากฏก็ต่อเมื่อ **[Cache Components](/th/data-fetching-and-caching/use-cache-and-cache-components/)** เปิดอยู่ (`cacheComponents: true`) — output จริงจากคู่มือ `next build` ที่ bundle มา ตอนเพิ่ม `generateStaticParams` เข้าไปในหน้า product แบบ dynamic:
+
+```text
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└   /products/[id]
+  ├ ◐ /products/[id]       # Params known, data still uncached
+  ├ ◐ /products/1
+  ├ ◐ /products/2
+  └ ◐ /products/3
+```
+
+ถ้าไม่มี Cache Components การอ่านพฤติกรรม cache ของ route หมายถึงการเช็คการเรียก `cookies()`/`headers()`/`fetch` ด้วยตา — ตารางเองแค่พิมพ์ `ƒ` ทันทีที่มีตัวไหนทำงาน แบบเงียบๆ ตามที่ entry 11 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** แสดงไว้
+
+**warning ที่ควรอ่านต่อจากตาราง route ไม่ใช่แค่ดู exit code ผ่าน/ไม่ผ่าน:**
+
+```text
+⚠ The Edge Runtime is deprecated. You can use the "nodejs" runtime instead. Learn more: https://nextjs.org/docs/messages/edge-runtime-deprecated
+⚠ metadataBase property in metadata export is not set for resolving social open graph or twitter images, using "http://localhost:3000".
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+```
+
+ไม่มีสามอันนี้ทำให้ build พังหรือ exit code ของ CI พัง — ทั้งสามยังพิมพ์ output สำเร็จปกติของ `next build` และ exit 0 CI pipeline ที่เช็คแค่ exit code จะพลาดทั้งสามอัน
+
+## อะไรมาแทนที่ `next lint`
+
+ตั้งแต่ Next.js 16 คำสั่ง `next lint` เองถูกลบไป — `next build` ไม่รัน linting เป็นขั้นตอน build เลย เอกสาร bundle บอกชัดเจนเรื่องตัวแทน:
+
+> The `next lint` command has been removed. Use Biome or ESLint directly.
+
+สำหรับ ESLint โดยเฉพาะ `eslint-config-next` ยังคง ship rule เดียวกันของ `@next/eslint-plugin-next` อยู่ (รวมถึง `no-html-link-for-pages`, `no-img-element`, และที่เหลือ) — ตอนนี้คุณต้องรัน ESLint CLI เอง กับ `eslint.config.mjs` แบบ flat:
+
+```bash
+npx eslint .
+```
+
+codemod ช่วย migrate setup `next lint` เดิมให้อัตโนมัติ:
+
+```bash
+npx @next/codemod@canary next-lint-to-eslint-cli .
+```
+
+## `next experimental-analyze` — องค์ประกอบ bundle จริง
+
+เพราะ `next build` เลิกพิมพ์คอลัมน์ bundle-size ต่อ route แล้ว (v16.0.0) `next experimental-analyze` (stable ตั้งแต่ v16.1.0) คือเครื่องมือที่แสดงสิ่งที่ถูกส่งไปให้ browser จริงๆ กรองได้ตาม route และตาม client/server:
+
+```bash
+npx next experimental-analyze --output
+```
+
+```text
+✓ Running next.config.ts took 19ms
+  Analyzing a production build...
+✓ Analyze completed in 926ms. Results written to .next/diagnostics/analyze.
+To explore the analyze results interactively, run `next experimental-analyze` without `--output`.
+```
+
+ถ้าไม่ใส่ `--output` มันจะเปิด local server พร้อม treemap แบบ interactive แทนการเขียนไฟล์ static — มีประโยชน์สำหรับการเปรียบเทียบแบบที่ entry 1 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** ทำ (chunk 8,967 byte เทียบกับ 287 byte ขึ้นอยู่กับว่า `'use client'` อยู่ตรงไหน)
+
+## `next typegen` — type ของ route โดยไม่ต้อง build เต็ม
+
+`next typegen` สร้าง helper type `PageProps`/`LayoutProps`/`RouteContext` (และ `next-env.d.ts`) โดยไม่ต้องรัน `next dev` หรือ `next build` เต็มรูปแบบ — มีประโยชน์ใน CI ที่อยากได้แค่ type-check โดยไม่ต้องจ่ายค่า build เต็ม:
+
+```bash
+npx next typegen
+```
+
+```text
+Generating route types...
+✓ Types generated successfully
+```
+
+รันมันก่อน `tsc --noEmit` ใน CI job ที่ต้องการแค่ type-check: `next typegen && tsc --noEmit` ถ้าไม่รันมัน (หรือไม่เคยรัน `next dev`/`next build` เลยสักครั้ง) type helper `PageProps<'/route'>` ที่สร้างขึ้นก็จะยังไม่มีอยู่เลย
+
+## `next build --debug-prerender` — stack trace จริงสำหรับ prerender error
+
+production build minify server code และข้าม source map โดยค่าเริ่มต้น ดังนั้น stack trace ของ prerender error แบบ Cache-Components จึงแทบไม่มีประโยชน์ด้วยตัวเอง `--debug-prerender` (stable ตั้งแต่ v15.4.0) ปิด minification, เปิด source map ฝั่ง server, และที่สำคัญคือ ทำงานต่อแม้เจอ prerender failure *ครั้งแรก* แล้ว เพื่อให้ทุก route ที่ถูกบล็อกโผล่มาในรอบเดียว แทนที่จะต้อง rebuild ทีละอัน:
+
+```bash
+npx next build --debug-prerender
+```
+
+blocking-prerender error พร้อม `--debug-prerender` ชี้ตรงไปที่บรรทัดที่มีปัญหา (output จริง จากคู่มือ `next build` ที่ bundle มา สำหรับการอ่าน `params` ที่ไม่ห่อ):
+
+```text
+Error: Route "/products/[id]": Next.js encountered uncached or runtime data during prerendering.
+  ...
+    at Page (app/products/[id]/page.tsx:2:30)
+  1 | export default async function Page(props: PageProps<'/products/[id]'>) {
+> 2 |   const { id } = await props.params
+    |                              ^
+  3 |   const res = await fetch(`https://api.example.com/products/${id}`)
+```
+
+**คำเตือน** ตรงจาก CLI เลย: ห้าม deploy build ที่สร้างด้วย `--debug-prerender` เด็ดขาด — มันข้าม optimization ที่ production ต้องการ
+
+## การอ่าน RSC payload ใน Network tab
+
+ทุกการ navigate และการโหลดหน้าครั้งแรกพก React Server Components payload มาด้วย — การ serialize ต้นไม้ที่ server render แล้วแบบกระชับ, streaming, ไม่ใช่ JSON — มองเห็นได้ใน Network tab ของ browser เป็น request document ของหน้าเอง (สำหรับการโหลดครั้งแรก) หรือเป็นการ fetch แบบ `text/x-component` (สำหรับการ navigate ฝั่ง client) payload จริงชิ้นหนึ่งหน้าตาแบบนี้ (ตัดให้สั้นลง จากการรัน `next build` + `next start` จริง):
+
+```text
+0:{"P":null,"c":["","bug-public-env"],"q":"","i":false,"f":[[["",{"children":["bug-public-env",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},"$undefined","$undefined",4608]},"$undefined","$undefined",4624], ...
+```
+
+ในทางปฏิบัติคุณจะไม่อ่านรูปแบบนี้ทีละตัวอักษร — จุดประสงค์ของการโหลดมันใน Network tab คือยืนยันว่า *มี* การ fetch RSC จริงเกิดขึ้นตอน navigate หรือเปล่า (เทียบกับ full page reload จาก `<a>` เดี่ยวๆ ตาม entry 25 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)**) และดูคร่าวๆ ว่ามันใหญ่แค่ไหนเทียบกับเนื้อหาจริงบนหน้าจอ
+
+## Playwright smoke test
+
+Playwright test ตัวเดียวที่โหลดแอปที่ build จริงแล้วมาแล้ว assert สถานะ DOM สุดท้าย จับ bug ทั้งกลุ่มที่เครื่องมือ static ในหน้านี้จับไม่ได้: อะไรก็ตามที่ปรากฏหลัง hydration, หลัง client-side navigation, หรือหลัง Server Action round-trip เท่านั้น probe ของคอร์สนี้เองใช้เทคนิคนี้เป๊ะๆ เพื่อพิสูจน์ bug การเข้าถึง `NEXT_PUBLIC_` แบบ dynamic ใน entry 19 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** — การอ่านแบบ static literal ถูกต้องใน HTML ที่ server render ตอนแรก และมีแค่ browser จริง หลัง hydration เท่านั้นที่เผยให้เห็น `undefined` ของการอ่านแบบ dynamic
+
+```ts
+// A Playwright test file (tests/smoke.spec.ts) — illustrative, not a
+// fence this course's own tsc harness compiles, since @playwright/test
+// isn't a dependency of the type-check probe.
+import { test, expect } from '@playwright/test'
+
+test('renders the real client-side value, not the SSR one', async ({ page }) => {
+  await page.goto('http://localhost:3000/some-route')
+  await expect(page.locator('body')).toContainText('value: undefined')
+})
+```
+
+## `instrumentation.ts` ตอน development ไม่ใช่แค่ production
+
+`register()` ใน `instrumentation.ts` รันครั้งเดียวสำหรับ Next.js server instance *ใหม่ทุกตัว* — รวมถึง `next dev` ด้วย — ไม่ใช่แค่ตอน deploy production เดินสาย `onRequestError` ตั้งแต่เนิ่นๆ แม้จะแค่ `console.error` ตอน development ในเครื่อง ก็เผย server error ทันทีที่มันเกิดขึ้น แทนที่จะรู้หลังรายงานไปถึง production เท่านั้น ดู **[Deployment and Self-Hosting](/th/production-and-ecosystem/deployment-and-self-hosting/)** สำหรับตัวอย่าง `onRequestError` จริงเต็มรูปแบบที่คอร์สนี้สร้างไว้กับ observability provider จริง
+
+## Harness ของคอร์สนี้เอง: compile ทุก snippet
+
+ทุก code fence ในคอร์สนี้ที่ทำเครื่องหมายด้วยบรรทัดแรก `// path.ext` เป็นไฟล์จริง ถูกเก็บโดย `tools/verify-snippets.mjs` ลงไดเรกทอรีแยกตาม namespace ต่อบท แล้ว type-check ด้วย `tsc --noEmit` รอบเดียวทั้งคอร์ส — หลักการเดียวกับ Playwright smoke test ข้างบน แต่ขยายเป็น "ทุก snippet ที่ผู้อ่านอาจ copy-paste compile ได้จริงไหม" ไม่ใช่แค่ไฟล์เดียวที่คุณกำลังแก้อยู่:
+
+```bash
+node tools/verify-snippets.mjs
+```
+
+```text
+no type errors.
+
+Per-module fence summary (collected / skipped-no-path / expect-error):
+  reading-nextjs: 46 / 0 / 10
+  ...
+```
+
+fence ที่ตั้งใจโชว์โค้ดที่พัง (เหมือนตัวอย่าง "โค้ดที่ผิด" ส่วนใหญ่ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)**) ขึ้นต้นด้วย `// @expect-error <เหตุผล>` เพื่อให้ harness ข้ามมันไป — เนื้อหาบทเรียนพก output จริงของ build/`tsc` ที่บันทึกแยกไว้ต่างหากแทน ไม่ต้องให้ harness reproduce ความล้มเหลวที่ตั้งใจไว้ทุกครั้งที่รัน
+
+## Mental Model
+
+<Mermaid title="เครื่องมือ static พิสูจน์จาก source หรือ config; เครื่องมือ dynamic ต้องการแอปที่รันอยู่หรือ browser จริง" code={verificationToolsDiagram} />
+
+export const verificationToolsDiagram = `flowchart TD
+  subgraph Static["Static (source/config only)"]
+    Tsc["tsc --noEmit<br/>real type errors: revalidateTag, typed params"]
+    Lint["ESLint (eslint-config-next) / Biome<br/>no-html-link-for-pages and friends"]
+    Verify["tools/verify-snippets.mjs<br/>compiles every tagged fence in the course"]
+  end
+  subgraph BuildTime["Build-time (needs a real next build)"]
+    Build["next build route table<br/>○ ● ◐ ƒ, plus warnings that don't fail CI"]
+    Debug["next build --debug-prerender<br/>real stack traces for prerender errors"]
+    Analyze["next experimental-analyze<br/>real bundle composition per route"]
+    Typegen["next typegen<br/>PageProps/LayoutProps without a full build"]
+  end
+  subgraph Runtime["Runtime (needs a real browser or server)"]
+    Rsc["RSC payload in the Network tab"]
+    Pw["Playwright smoke test<br/>post-hydration, post-navigation state"]
+    Instr["instrumentation.ts onRequestError<br/>in next dev, not just production"]
+  end
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ทุกเครื่องมือในหน้านี้เป็นตัวกรอง ไม่ใช่คำตัดสิน — แม้รันรวมกันทั้งหมด ก็ยังจับ 10 ใน 25 pattern ของ AI Bug Catalog ไม่ได้เลย (รวมถึงตัวที่เดิมพันสูงที่สุด คือ Server Action ที่ไม่มีการเช็ค auth) รันทุกเครื่องมือในหน้านี้ แล้วยังต้องไล่ <a href="/th/reading-nextjs/review-checklist/">Review Checklist</a> ด้วยตาอยู่ดี
+</Callout>
+
+export const quizVerificationTools = [
+  {
+    q: "```text\napp/actions.ts(6,3): error TS2554: Expected 2 arguments, but got 1.\n```\nบรรทัดนี้มาจากคำสั่งไหน และมาจาก fence ไหนใน AI Bug Catalog",
+    options: [
+      "next build จาก ตัวอย่าง middleware-to-proxy",
+      "tsc --noEmit จากการเรียก revalidateTag ด้วย argument เดียว — หนึ่งใน entry ไม่กี่อันของแคตตาล็อกที่ type checker เพียงอย่างเดียวจับได้",
+      "eslint จาก prop sizes ที่หายไปบน next/image",
+      "next experimental-analyze จาก client bundle ที่ใหญ่เกินไป",
+    ],
+    answer: 1,
+    explain: "TS2554 คือ diagnostic 'จำนวน argument ผิด' ของ tsc เอง signature ของ revalidateTag ต้องการ argument ตัวที่สองเป็น profile ของ cacheLife ตั้งแต่ Next.js 16 — เป็น type error จริงแบบไม่มีเงื่อนไข ไม่ขึ้นกับขั้นตอน build ใดๆ",
+  },
+  {
+    q: "CI pipeline รัน `next build` แล้ว exit 0 อะไรยังเป็นไปได้อยู่บ้าง",
+    options: [
+      "ไม่มีอะไรเลย — next build ที่สำเร็จรับประกันว่าแอปถูกต้อง",
+      "warning เรื่อง edge runtime ที่ deprecate, warning เรื่อง metadataBase ที่หายไป, หรือ warning เรื่อง middleware ที่ deprecate — ไม่มีอันไหนทำให้ build พังหรือ exit code พัง",
+      "มีแค่ปัญหาเรื่อง style เท่านั้น ไม่เคยเป็น bug จริง",
+      "next build จะพังเสมอถ้ามี warning อยู่",
+    ],
+    answer: 1,
+    explain: "ทั้งสาม warning ที่ยกมาในหน้านี้พิมพ์คู่กับ build ที่สำเร็จปกติทุกประการ — exit code ของ next build อย่างเดียวไม่เผยมันเลย การอ่าน warning ไม่ใช่แค่เช็ค exit code คือสิ่งที่จับมันได้",
+  },
+  {
+    q: "ทำไม `next typegen` ถึงสำคัญสำหรับการจับ bug 'การเข้าถึง params แบบ synchronous' โดยเฉพาะ",
+    options: [
+      "ไม่สำคัญ — tsc จับสิ่งนี้ได้ไม่ว่าจะมี typegen หรือไม่",
+      "helper PageProps/LayoutProps ที่สร้างขึ้นจะ type params/searchParams เป็น Promise ถูกต้องเสมอ; type object ที่หลวมและเขียนเองจะทำให้การเช็ค tsc แบบเดียวกันเงียบไป",
+      "next typegen รัน ESLint rule กับไฟล์",
+      "มันแทนที่ความจำเป็นของ tsc ไปเลยทั้งหมด",
+    ],
+    answer: 1,
+    explain: "tsc จับการขาด await ได้ก็ต่อเมื่อ prop ถูก type เป็น Promise จริงๆ helper ที่สร้างจาก next typegen รับประกันสิ่งนั้น; type { params: { id: string } } ที่เขียนเองไม่รับประกัน แล้ว bug เดียวกันก็ compile ผ่านสะอาด",
+  },
+  {
+    q: "ทำไม `--debug-prerender` ถึงถูกระบุไว้ชัดเจนว่าไม่ปลอดภัยที่จะ deploy",
+    options: [
+      "จริงๆ แล้วปลอดภัยที่จะ deploy — คำเตือนระมัดระวังเกินไป",
+      "มันปิด minification ของ server code และเปิด source map ทั้งคู่มีไว้แค่ให้ stack trace อ่านง่ายตอน debug — production จริงต้องการ optimization พวกนั้นกลับคืนมา",
+      "มันเปลี่ยน next.config.ts แบบถาวร",
+      "มันลบ production build output",
+    ],
+    answer: 1,
+    explain: "flag นี้แลก production-grade optimization (minification, ไม่มี source map) กับ stack trace ที่อ่านง่ายระหว่าง debug session เดียว นั่นคือ optimization ที่ deployment จริงต้องการพอดี ซึ่งเป็นเหตุผลที่ CLI เองเตือนไว้ว่าห้าม ship build ที่สร้างด้วย flag นี้",
+  },
+  {
+    q: "Playwright smoke test จับอะไรได้ที่ `tsc --noEmit` กับ `next build` รวมกันจับไม่ได้",
+    options: [
+      "ไม่มีอะไรเลย — เครื่องมือ static ครอบคลุมทุกอย่างที่ Playwright จะเจออยู่แล้ว",
+      "อะไรก็ตามที่ปรากฏหลัง hydration หรือหลัง client-side navigation เท่านั้น — เช่น ค่าที่ render ถูกต้องใน HTML ที่ server render แต่กลายเป็น undefined ทันทีที่ JavaScript ของ browser เองรัน",
+      "TypeScript type error",
+      "next.config.ts เป็น JSON ที่ valid หรือไม่",
+    ],
+    answer: 1,
+    explain: "การพิสูจน์ bug NEXT_PUBLIC_ แบบ dynamic ของคอร์สนี้เองคือตัวอย่างพอดี: HTML ที่ server render แสดงค่าที่ถูกต้อง และมีแค่ browser จริง หลัง hydration เท่านั้นที่เผย undefined ฝั่ง client — ไม่มีเครื่องมือ static ตัวไหนสังเกตความต่างนั้นได้เลย",
+  },
+  {
+    q: "```ts\n// @expect-error real Turbopack build error, not a type error — see prose\n// app/catalog/07-router-push/page.tsx\nimport { useRouter } from 'next/navigation'\n```\nทำไม fence นี้ถึงขึ้นต้นด้วย `@expect-error` แทนที่จะเป็นแค่ path comment",
+    options: [
+      "เพราะ path ของไฟล์ไม่ valid",
+      "เพราะโค้ดนี้เป็น bug จริงที่ตั้งใจไว้ที่บทเรียนสาธิต — tsc --noEmit เพียงอย่างเดียวจะไม่ flag มัน (มีแค่ next build จริงเท่านั้นที่จะจับได้) harness เลยข้ามการเก็บมัน แล้วเนื้อหาบทเรียนพก build output จริงที่บันทึกแยกไว้ต่างหากแทน",
+      "เพราะ fence ที่มี @expect-error ถูกแก้ให้อัตโนมัติโดย harness",
+      "ไม่มีจุดประสงค์จริงจัง แค่ธรรมเนียมการเขียน",
+    ],
+    answer: 1,
+    explain: "useRouter ข้างใน Server Component compile ผ่านสะอาดภายใต้ tsc — ความล้มเหลวเป็นการเช็ค Turbopack RSC-boundary ที่มีแค่ next build จริงเท่านั้นที่ทำ การทำเครื่องหมาย @expect-error บอก harness ไม่ให้เก็บมันเป็นไฟล์ธรรมดาสำหรับ type-check ในขณะที่บทเรียนยังคงยก build error จริงที่บันทึกไว้มาอ้างอิง",
+  },
+  {
+    q: "ทำไม harness ของคอร์สนี้ถึงทำเครื่องหมาย fence 'โค้ดที่ผิด' บางอันด้วย `// @expect-error <เหตุผล>` แทนที่จะให้ path comment จริง",
+    options: [
+      "เพื่อซ่อน bug จากผู้อ่าน",
+      "เพื่อให้ harness ข้ามการ type-check fence ที่ตั้งใจให้พังอยู่แล้ว — เนื้อหาบทเรียนพก compiler/build output จริงที่บันทึกแยกไว้ต่างหากแทน ไม่ต้องให้ทุกรอบรัน reproduce ความล้มเหลวที่ตั้งใจไว้",
+      "เพราะ fence ที่มี @expect-error รันเร็วกว่า",
+      "ไม่มีผลอะไรกับ harness เลย",
+    ],
+    answer: 1,
+    explain: "ถ้าไม่มีเครื่องหมายนี้ ตัวอย่าง 'โค้ดที่ผิด' ที่ตั้งใจให้พังจะทำให้ทุกรอบของ tools/verify-snippets.mjs รายงาน type error จริง — เครื่องหมายนี้บอก harness ว่า fence นี้ตั้งใจไม่เก็บ ในขณะที่บทเรียนยังคงยก output จริงที่บันทึกไว้ครั้งเดียวแยกต่างหาก กับ build จริงมาอ้างอิง",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/verification-tools" questions={quizVerificationTools} />
+
+<ProgressTracker client:visible id="reading-tools" />

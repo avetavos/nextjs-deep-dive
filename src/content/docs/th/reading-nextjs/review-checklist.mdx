@@ -1,0 +1,137 @@
+---
+title: Checklist สำหรับรีวิว
+description: 'Checklist หน้าเดียว 6 กลุ่มสำหรับรีวิวโค้ด Next.js — แต่ละบรรทัดเป็นคำถามใช่/ไม่ใช่ ลิงก์ไปบทที่อธิบายกฎเบื้องหลัง'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+นี่คือ checklist ที่ควรไล่ดู — ด้วยตา ในทุก diff ไม่ว่าจะเป็นของคุณหรือของ AI — หลังจากเครื่องมือใน **[Verification Tools](/th/reading-nextjs/verification-tools/)** รันแล้วผ่านสะอาด มันตั้งใจให้อยู่ในกระดาษหน้าเดียวที่ print ได้: checklist ที่ไม่มีใครเปิดดูจริงระหว่างรีวิวไม่มีค่าอะไรเลย ทุกบรรทัดลิงก์ไปบทที่อธิบายว่า *ทำไม* เพื่อให้หน้านี้ยังคงเป็นแค่ list ไม่ใช่การรื้อฟื้นทั้งคอร์สอีกรอบ กลุ่มต่างๆ เรียงตามลำดับเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/th/reading-nextjs/)** บวกกลุ่มปิดท้ายเรื่อง performance
+
+<Mermaid title="อะไรจับแต่ละกลุ่มได้จริง ถ้ามี" code={checklistCoverageDiagram} />
+
+export const checklistCoverageDiagram = `flowchart LR
+  B["Boundaries"] --> H["Mostly human review<br/>(1 real build-time check: router.push in a Server Component)"]
+  A["Auth"] --> H
+  E["Errors and redirects"] --> H
+  D["Data and caching"] --> P["Partial tool coverage<br/>(tsc catches revalidateTag; next build catches cacheComponents conflicts)"]
+  C["Config and env"] --> P
+  F["Performance"] --> H
+`;
+
+## Boundaries
+
+- `'use client'` ทุกตัวอยู่ต่ำในต้นไม้เท่าที่จะทำได้ไหม แทนที่จะอยู่ใน layout หรือ page ที่ใช้ร่วมกัน? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
+- prop ทุกตัวที่ข้าม boundary Server → Client ยังเป็น plain data (หรือ Server Action จริงๆ) อยู่ไหม ไม่มี instance ของ class เปล่าๆ หรือ function reference ที่ไม่ได้ห่อ? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
+- `ssr: false` บน `next/dynamic` ถูกใช้เฉพาะข้างใน Client Component เท่านั้นไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 3
+- `useFormStatus` รันใน component ที่ nest อยู่ *ข้างใน* `<form>` ไม่ใช่ component เดียวกับที่ render มันไหม? ดู **[Forms and Progressive Enhancement](/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**
+- hook สำหรับ pending state ทุกตัวเป็น `useActionState` (จาก `react`) ไม่ใช่ `useFormState` (จาก `react-dom`) ที่ deprecate แล้วใช่ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 5
+- การเรียก `useRouter`/`router.push` ทุกครั้งอยู่ข้างใน Client Component ไม่ใช่ Server Component ใช่ไหม? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
+- data fetch นี้รันครั้งเดียวใน Server Component แทน `useEffect` ฝั่ง client ได้ไหม? ดู **[Fetching in Server Components](/th/data-fetching-and-caching/fetching-in-server-components/)**
+
+## Data flow และ caching model
+
+- การตั้งค่า `cacheComponents` ใน `next.config.ts` ตรงกับสมมติฐานของทุก route ไหม — export ของ Route Segment Config *หรือ* `'use cache'` ไม่ใช่ผสมกัน? ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**
+- การเรียก `fetch` ทุกครั้งระบุ cache intent ชัดเจนไหม แทนที่จะสมมติพฤติกรรม cached-by-default ของ Next.js 14? ดู **[The Four Caching Layers](/th/data-fetching-and-caching/the-four-caching-layers/)**
+- การเรียก `revalidateTag` ทุกครั้งส่ง profile ของ `cacheLife` เป็น argument ที่สองไหม? ดู **[Revalidation and Cache Invalidation](/th/data-fetching-and-caching/revalidation-and-cache-invalidation/)**
+- การอ่าน `cookies()`/`headers()` อยู่ข้างใน `<Suspense>` boundary ไหม แทนที่จะอยู่บนสุดของหน้าที่ตั้งใจให้เป็น static? ดู **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**
+- การเข้าถึง `params`/`searchParams` ทุกครั้ง `await` แล้ว และ type เป็น `Promise` ไม่ใช่ object หลวมๆ ใช่ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 12
+- `generateStaticParams` ป้องกันการ return array ว่างภายใต้ Cache Components ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 13
+- `export const runtime = 'edge'` ทุกตัวถูกลบไปแล้ว หรือเป็นข้อยกเว้นที่จงใจและมีเหตุผลรองรับไหม? ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**
+- มี `getServerSideProps`/`getStaticProps` ตกค้างจาก Pages Router อยู่ข้างใน `app/` หรือเปล่า? ดู **[What is Next.js and the App Router](/th/foundations/what-is-nextjs-and-the-app-router/)**
+
+## Auth ในทุก action และ route handler
+
+- Server Action ทุกตัวเรียกการเช็ค session จริงก่อนแตะข้อมูลไหม ไม่ขึ้นกับว่า UI ไหน render ปุ่มที่เรียกมัน? ดู **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)**
+- mutation ทุกตัวกรองด้วย ID ของ user ที่ยืนยันตัวตนแล้วเอง ไม่ใช่แค่ยืนยันว่า *มีใครสักคน* login อยู่ใช่ไหม? ดู **[Security and Patterns](/th/server-actions-and-mutations/security-and-patterns/)**
+- Route Handler ทุกตัวใช้การเช็ค session แบบเดียวกับที่ Server Action ที่เทียบเท่าจะใช้ไหม? ดู **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)**
+
+## Error และ redirect
+
+- `try/catch` ทุกอันที่อาจมี `redirect()`/`notFound()` อยู่ข้างใน อยู่นอกมันหรือเรียก `unstable_rethrow` ก่อนไหม? ดู **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)**
+- `error.tsx` เป็น Client Component ที่เรียก `reset()` และวางอยู่ที่ segment ซึ่ง *parent* ของมันควรดักจับ error ใช่ไหม? ดู **[Pages, Layouts, and Nested Routing](/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
+- `global-error.tsx` ถ้ามี render `<html>`/`<body>` ของตัวเองไหม? ดู **[Pages, Layouts, and Nested Routing](/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
+
+## Config และ environment
+
+- `middleware.ts` ถูกเปลี่ยนชื่อเป็น `proxy.ts` แล้วหรือยัง (และ export ของมันเปลี่ยนเป็น `proxy`)? ดู **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
+- ตัวแปร `NEXT_PUBLIC_` ทุกตัวถูกอ่านแบบ static literal `process.env.NEXT_PUBLIC_X` ไหม ไม่ผ่าน computed key หรือ parameter ของ helper function เลย? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 19
+- มีตัวแปรที่ขึ้นต้น `NEXT_PUBLIC_` ตัวไหนเก็บสิ่งที่ควรเป็น secret อยู่จริงไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 20
+- `metadataBase` ถูกตั้งไว้ครั้งเดียวใน root layout ไหม? ดู **[Metadata and SEO](/th/optimization/metadata-and-seo/)**
+
+## Performance
+
+- `next/image` ทุกตัวที่ใช้ `fill` หรือ layout แบบ responsive ประกาศ `sizes` ไหม? ดู **[Images and Fonts](/th/optimization/images-and-fonts/)**
+- `<a>` ทุกตัวที่ชี้ไปยัง route ภายในเป็น `<Link>` จริงๆ ไหม? ดู **[Linking and Navigation](/th/routing-and-navigation/linking-and-navigation/)**
+- มี `await` ตัวไหนอยู่เหนือ `<Suspense>` boundary เดียวของหน้า จนบล็อก response ทั้งหมดไหม? ดู **[Streaming and Suspense](/th/rendering/streaming-and-suspense/)**
+- มี `Date.now()`/`Math.random()` ตัวไหนรันข้างใน render ของ Client Component ไหม — ไม่ใช่ Server Component ที่มันไม่มีทาง mismatch เลย? ดู **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**
+
+<Callout title="Checklist ช่วยให้ขอบเขตการค้นหาแคบลง ไม่ได้แทนที่การค้นหา">
+ทุกบรรทัดข้างบนตรงกับหนึ่งใน 25 pattern ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** — สิบในนั้นไม่มีเครื่องมือไหนในคอร์สนี้จับได้อัตโนมัติเลย รัน list นี้กับทุก diff ไม่ว่า `tsc` กับ `next build` จะผ่านสะอาดแค่ไหนก็ตาม
+</Callout>
+
+export const quizReviewChecklist = [
+  {
+    q: "ทำไม 'mutation ทุกตัวกรองด้วย ID ของ user ที่ยืนยันตัวตนแล้วเอง' ถึงอยู่ในกลุ่ม Auth แทนที่จะเป็น 'Data flow และ caching model'",
+    options: [
+      "ไม่ใช่ — มันควรอยู่ในกลุ่ม caching เพราะเป็นเรื่อง database query",
+      "checklist จัดกลุ่มตามสิ่งที่พังจริง — mutation ที่ไม่กรองคือช่องโหว่ authorization ไม่ขึ้นกับ cache layer หรือรูปแบบ query ที่เกี่ยวข้อง",
+      "การเช็ค auth ใน Next.js เป็นเรื่อง caching เสมอ",
+      "สองกลุ่มนี้ไม่มีความต่างที่มีความหมาย",
+    ],
+    answer: 1,
+    explain: "กลุ่มต่างๆ สะท้อนห้าขั้นตอนของลำดับการอ่าน: คำถามพุ่งเป้าไปที่รูปแบบความล้มเหลวอะไร ไม่ใช่ไฟล์หรือ API ไหนที่บังเอิญเกี่ยวข้อง การขาด filter ความเป็นเจ้าของคือช่องโหว่ auth ไม่ว่า query จะใช้ ORM, raw SQL, หรือ cache layer ข้างใต้ก็ตาม",
+  },
+  {
+    q: "```tsx\ntry {\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nกลุ่มไหนใน checklist จับสิ่งนี้ได้ และจับได้อย่างไร",
+    options: [
+      "Performance — เป็นเรื่อง lookup ที่ช้า",
+      "Error และ redirect — 'try/catch ทุกอันที่อาจมี redirect()/notFound() อยู่นอกมันหรือเรียก unstable_rethrow ก่อนไหม?'",
+      "Boundaries — เป็นปัญหาเรื่องตำแหน่ง 'use client'",
+      "ไม่มีกลุ่มไหนครอบคลุมเรื่องนี้",
+    ],
+    answer: 1,
+    explain: "นี่คือความล้มเหลวที่คำถามแรกของกลุ่ม Error และ redirect พุ่งเป้าไว้พอดี: catch ที่ไม่มีเงื่อนไขตรงนี้ดักจับ throw ภายในของ notFound() ซึ่งพิสูจน์แล้วที่อื่นในคอร์สนี้ว่า return HTTP 200 แทนที่จะเป็น 404",
+  },
+  {
+    q: "ทำไม checklist ถึงถามเจาะจงว่าการเข้าถึง params/searchParams 'type เป็น Promise' ไม่ใช่แค่ 'await แล้ว'",
+    options: [
+      "การ type ไม่สำคัญ — มีแค่ await ตอน runtime เท่านั้นที่สำคัญ",
+      "prop type ที่หลวมและไม่ใช่ Promise ทำให้การขาด await compile ผ่านสะอาดแล้ว return undefined แบบเงียบๆ มีแค่ prop type ที่เป็น Promise เท่านั้นที่เปลี่ยนความผิดพลาดแบบเดียวกันให้เป็น compile error จริง",
+      "params ไม่เคยเป็น Promise จริงๆ ใน Next.js 16",
+      "TypeScript แสดง Promise type สำหรับ page prop ไม่ได้",
+    ],
+    answer: 1,
+    explain: "ตามที่ entry 12 ของ AI Bug Catalog แสดงไว้: ความผิดพลาดจากการขาด await แบบเดียวกันเป๊ะเป็น tsc error จริงเมื่อ params ถูก type เป็น Promise<{...}> แต่ return undefined แบบเงียบๆ ตอน runtime เมื่อมัน type เป็น object synchronous ที่หลวมๆ แทน",
+  },
+  {
+    q: "'metadataBase ถูกตั้งไว้ครั้งเดียวใน root layout ไหม' อยู่ในกลุ่มไหน",
+    options: [
+      "Performance",
+      "Config และ environment",
+      "Boundaries",
+      "Auth",
+    ],
+    answer: 1,
+    explain: "metadataBase เป็นการตั้งค่าระดับทั้งแอปที่ใกล้เคียงกับ next.config (ประกาศใน metadata export ของ root layout) ที่เปลี่ยนวิธี resolve URL แบบ relative ของ metadata ทุก route — เป็นเรื่อง configuration ไม่ใช่ boundary, auth, หรือ performance ล้วนๆ",
+  },
+  {
+    q: "checklist บอกให้เช็คว่า 'มี Date.now()/Math.random() ตัวไหนรันข้างใน render ของ Client Component ไหม — ไม่ใช่ Server Component' ทำไมความต่างนี้ถึงสำคัญ",
+    options: [
+      "ไม่สำคัญ — ทั้งคู่ hydration-mismatch เหมือนกันเสมอ",
+      "Server Component render แค่ครั้งเดียวบน server ไม่มีการรันซ้ำฝั่ง client ตอน hydration ที่จะขัดแย้งกับ HTML ที่ส่งไปแล้ว",
+      "Math.random() ถูกห้ามใช้ทั้งหมดใน Next.js",
+      "Server Component เรียก Math.random() ไม่ได้เลย",
+    ],
+    answer: 1,
+    explain: "hydration mismatch ต้องการการรันซ้ำครั้งที่สองฝั่ง client ของ render logic เดียวกันที่ขัดแย้งกับครั้งแรก (server) Server Component render แค่ครั้งเดียวฝั่ง server เท่านั้น ไม่มีการรันครั้งที่สองที่จะทำให้ mismatch ได้ ซึ่งเป็นกลของ SpotTheBug ใน entry 24 ของ AI Bug Catalog พอดี",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/review-checklist" questions={quizReviewChecklist} />
+
+<ProgressTracker client:visible id="reading-checklist" />

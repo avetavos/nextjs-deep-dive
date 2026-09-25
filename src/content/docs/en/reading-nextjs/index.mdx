@@ -1,0 +1,160 @@
+---
+title: How to read Next.js you did not write
+description: 'A reading order for AI-generated Next.js code — boundaries first, then the caching model the project actually runs, then auth, then the error/redirect path, then config.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+Every earlier module in this course taught you to *write* Next.js. This module teaches the other half: reading Next.js someone — or something — else wrote, and deciding whether it is correct. An AI assistant hands you code that compiles, that `next build` accepts, and that looks exactly like the App Router examples you have been studying. None of that proves it is correct. Next.js's own failure modes are unusually quiet: a page that should be static silently becomes dynamic, a prop that should fail loudly serializes into `undefined`, an action with no auth check builds and deploys without one warning. The five steps below are the order that actually surfaces these failures, and every later lesson in this module drills one part of it.
+
+<Mermaid title="Reading order for a route you did not write" code={readingOrderDiagram} />
+
+export const readingOrderDiagram = `flowchart TD
+  A["1. Boundaries<br/>'use client' / 'use server' placement"] --> B["2. Caching model<br/>segment config vs cacheComponents"]
+  B --> C["3. Auth<br/>inside every action and route handler"]
+  C --> D["4. Error and redirect path<br/>try/catch around redirect()/notFound()"]
+  D --> E["5. Config<br/>next.config.ts, env vars"]
+`;
+
+## 1. Boundaries: where does `'use client'` and `'use server'` sit?
+
+Before you read what a component *does*, read which side of the network it runs on. `"use client"` does not mark one component — it marks the entry point to a whole subtree of the module graph, and everything reachable by `import` from there ships to the browser. `"use server"` marks a function that compiles into a public HTTP endpoint, reachable by anyone who has the action ID, not only by your own form.
+
+- **What to look for:** the file (or the nearest parent) that has `'use client'` or `'use server'` as its first line; every prop that crosses from a Server Component into a Client Component; every hook (`useState`, `useRouter`, `useFormStatus`) and confirm the file that calls it is actually a Client Component.
+- **The question to ask:** does this directive sit as low in the tree as it needs to, or did it get put on a layout / page near the root because that was the easiest place to make the error go away?
+- **Which lesson explains it:** **[Server and Client Components](/en/foundations/server-and-client-components/)** for the subtree rule and the serialization boundary; **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)** for why every action is a public endpoint the moment it is exported.
+
+## 2. The caching model this project actually runs
+
+Next.js has shipped two different caching models across its life, and a single project only runs one of them at a time: **Route Segment Config** (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime` — the model every pre-16 tutorial teaches) or **Cache Components** (`cacheComponents: true` in `next.config.ts`, `'use cache'`, `cacheLife`, `cacheTag`). They are mutually exclusive — every Route Segment Config export fails `next build` the moment `cacheComponents` is on. AI-generated code frequently mixes vocabulary from both models, because both appear in its training data.
+
+- **What to look for:** open `next.config.ts` first and check for `cacheComponents: true` before you read a single route. Then check whether the routes use `export const dynamic = ...` / `export const revalidate = ...` (old model) or `'use cache'` / `cacheLife(...)` / `cacheTag(...)` (new model).
+- **The question to ask:** does every file agree with what `next.config.ts` says, or does this file assume the *other* model?
+- **Which lesson explains it:** **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)** for the old model and the exact incompatibility error; **[`use cache` and Cache Components](/en/data-fetching-and-caching/use-cache-and-cache-components/)** and **[Partial Prerendering](/en/rendering/partial-prerendering/)** for the new one.
+
+## 3. Auth inside every action and every route handler
+
+A Server Action is a POST endpoint; a Route Handler is whatever HTTP method you export. Neither one inherits protection from the page that renders a button pointing at it — render-time gating (only showing a delete button to an admin) controls the UI, not who can `curl` the endpoint directly.
+
+- **What to look for:** the first lines of every function body inside `app/actions.ts`, any `'use server'` file, and every `app/**/route.ts`. Look for a session check (this course's own DAL pattern is `verifySession()`) before any read or write, and look for the mutation filtering by the current user's ID, not only checking that *someone* is logged in.
+- **The question to ask:** if I sent this exact request with `curl` and someone else's session cookie, whose data would move?
+- **Which lesson explains it:** **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)** and **[Security and Patterns](/en/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/en/production-and-ecosystem/authentication-patterns/)** for the DAL itself.
+
+## 4. The error and redirect path
+
+`redirect()` and `notFound()` do not return — they **throw** a special Next.js control-flow error (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) that the framework catches higher up the tree. A `try/catch` wrapped around code that calls either of them will catch that internal throw too, unless it deliberately re-throws it — and the failure is invisible in development, because the page usually still renders *something*.
+
+- **What to look for:** every `try { … } catch { … }` block; does it contain a call to `redirect()` or `notFound()`, directly or through a helper like `verifySession()`? Does the `catch` block log-and-swallow, or does it call `unstable_rethrow(err)` / re-throw?
+- **The question to ask:** if I hit this exact code path against a real running server, does it actually respond with a redirect / a 404 — or with a 200 and the wrong body?
+- **Which lesson explains it:** **[Mutations and Revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/)**, which proves this exact failure against a real server.
+
+## 5. Config: `next.config.ts` and environment variables
+
+The last thing to read, because it changes the meaning of everything above it. `next.config.ts` decides which caching model is active (step 2) and which experimental flags are on; `.env*` files decide which variables are available where, and only variables prefixed `NEXT_PUBLIC_` — accessed as a static, literal `process.env.NEXT_PUBLIC_X` — are ever safe to reach from browser code.
+
+- **What to look for:** `cacheComponents`, `reactCompiler`, `turbopack.*` in `next.config.ts`; every `process.env.*` read inside a file that has (or imports into) `'use client'`; every `NEXT_PUBLIC_`-prefixed variable and what it actually holds.
+- **The question to ask:** does this variable need to reach the browser at all — and if it does, would I still be comfortable if it showed up, in plain text, inside a `.next/static/chunks/*.js` file anyone can download?
+- **Which lesson explains it:** **[Environment and Configuration](/en/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)** for `proxy.ts` and the request-time config that runs before any of the above.
+
+## Mental Model
+
+```text
+Reading order for a Next.js route you did not write:
+
+1. Boundaries    → where 'use client' / 'use server' actually sit, and what they pull in
+2. Caching model → segment config XOR cacheComponents — which one does this project run?
+3. Auth          → does every action/route handler check the session AND the row's owner?
+4. Error/redirect→ does a try/catch anywhere swallow redirect()/notFound()?
+5. Config/env    → next.config.ts flags, and which env vars reach the browser
+
+Skipping straight to "does it build" answers none of these — all five compile clean.
+```
+
+## Common Misconceptions
+
+- **"If `next build` passes, the code is correct."** Every failure mode in this module's catalog builds clean. `next build` proves the code is syntactically valid Next.js, not that it is safe or behaves as intended.
+- **"Only the code inside the form matters for a Server Action."** The action is reachable by its ID from anywhere, independent of the form that happens to call it — see step 3.
+- **"A `try/catch` around risky code is always safer."** Around a call to `redirect()` or `notFound()`, an unconditional `catch` is *less* safe: it turns a clean redirect/404 into a silently wrong 200 response.
+- **"If a human wrote it, it needs less scrutiny than AI output."** Every pattern in this module's catalog also appears in human-written Next.js code — AI just produces it with more confidence and at higher volume.
+
+<Callout title="The one-line takeaway">
+Read Next.js in this order — boundaries, caching model, auth, error/redirect path, config — because each step changes what the next one means, and because `next build` passing tells you the code compiles, never that it is correct.
+</Callout>
+
+export const quizReadingNextjsIndex = [
+  {
+    q: "Why does this module tell you to check `next.config.ts` for `cacheComponents` *before* reading any route file?",
+    options: [
+      "Because next.config.ts is always the shortest file",
+      "Because the two caching models (Route Segment Config vs Cache Components) are mutually exclusive, and route code written for one fails a build running the other",
+      "Because next.config.ts contains the database connection string",
+      "It doesn't matter which order you read them in",
+    ],
+    answer: 1,
+    explain: "A route using export const dynamic = 'force-dynamic' and a next.config.ts with cacheComponents: true cannot coexist — next build rejects the segment config export. Knowing which model is active tells you what the route code in front of you is even supposed to mean.",
+  },
+  {
+    q: "```ts\ntry {\n  const post = await getPost(id)\n  if (!post) notFound()\n  return post\n} catch (err) {\n  console.error(err)\n  return null\n}\n```\nWhat does a real running server return when `post` is missing?",
+    options: [
+      "A 404 page, because notFound() always wins",
+      "HTTP 200 with a null body, because the catch block intercepts notFound()'s internal throw and swallows it",
+      "A TypeScript compile error",
+      "The server crashes",
+    ],
+    answer: 1,
+    explain: "notFound() throws Next.js's own NEXT_HTTP_ERROR_FALLBACK control-flow error. This catch block has no filter, so it intercepts that throw exactly like any other error, logs it, and returns null — a real server proves this responds 200, not 404.",
+  },
+  {
+    q: "A Server Action checks nothing before writing to the database, but the button that calls it only renders for logged-in admins in the UI. Is the action safe?",
+    options: [
+      "Yes — only admins ever see the button",
+      "No — the action's ID is a reachable POST endpoint independent of which UI renders a button pointing at it",
+      "Yes, as long as the button uses onClick instead of a form",
+      "No, but only because Server Actions are slower than Route Handlers",
+    ],
+    answer: 1,
+    explain: "Render-time gating controls what the UI shows, not what the server accepts. Anyone who has (or guesses, or replays) the action ID can POST to it directly, whether or not they ever saw the button.",
+  },
+  {
+    q: "Where does `NEXT_PUBLIC_`-prefixed data end up if it is read inside a Client Component?",
+    options: [
+      "Nowhere new — process.env works identically on the server and in the browser",
+      "Inlined, in plain text, into the static JS chunk shipped to every visitor's browser",
+      "Only in a server-side log file",
+      "It is automatically encrypted before shipping",
+    ],
+    answer: 1,
+    explain: "A NEXT_PUBLIC_ variable read as a static literal (process.env.NEXT_PUBLIC_X) gets replaced at build time with its literal value inside the compiled client bundle — readable by anyone who downloads that .js file.",
+  },
+  {
+    q: "```ts\n// next.config.ts\nconst nextConfig = { cacheComponents: true }\n\n// app/page.tsx\nexport const dynamic = 'force-dynamic'\n```\nWhat happens when this project runs `next build`?",
+    options: [
+      "It builds fine — force-dynamic just confirms what cacheComponents already does",
+      "The build fails: Route Segment Config exports are rejected once cacheComponents is on",
+      "It silently ignores next.config.ts and uses the old model",
+      "It only fails in development, not in production builds",
+    ],
+    answer: 1,
+    explain: "Route Segment Config and Cache Components are two different, mutually exclusive caching models. Once cacheComponents: true is set, every Route Segment Config export — including dynamic — fails next build with a 'not compatible with nextConfig.cacheComponents' error.",
+  },
+  {
+    q: "Which order does this lesson recommend for reading a Next.js route you did not write?",
+    options: [
+      "Config, then auth, then boundaries, then caching, then errors",
+      "Boundaries, then the caching model, then auth, then the error/redirect path, then config",
+      "Whichever file is shortest first",
+      "Auth first, everything else afterward",
+    ],
+    answer: 1,
+    explain: "Boundaries first (what runs where), then the caching model (what the code in front of you is supposed to mean), then auth, then the error/redirect path, then config — each step changes how you read the next.",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/index" questions={quizReadingNextjsIndex} />
+
+<ProgressTracker client:visible id="reading-index" />
