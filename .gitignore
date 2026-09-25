@@ -4,6 +4,8 @@ dist/
 .astro/
 # deps
 node_modules/
+# snippet-verification harness probe (scaffolded by tools/verify-snippets.mjs)
+tools/probe/
 # env
 .env
 .env.production
