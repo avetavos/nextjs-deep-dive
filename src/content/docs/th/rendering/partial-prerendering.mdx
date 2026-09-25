@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="บทนี้ใช้โมเดล caching แบบไหน">
+บทนี้รันด้วย `cacheComponents: true` มีผลสองอย่างที่ตามมาจากบทก่อน ๆ — Route Segment Config exports (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`) จะทำให้ build ล้มภายใต้ flag นี้ และ `cookies()`, `headers()`, `searchParams` หรือ `fetch` ที่ไม่ cache ต้องอยู่ใน `<Suspense>` boundary หรือ scope `'use cache'` ไม่อย่างนั้น `next build` จะหยุดด้วย `Next.js encountered uncached or runtime data during prerendering`
+</Callout>
+
 ## ไอเดียในหนึ่งประโยค
 
 Partial Prerendering เสิร์ฟ static shell ที่ prerender ไว้แล้วทันที และ stream "hole" ที่เป็น dynamic — แต่ละอันห่อด้วย Suspense — เข้ามาใน shell ตอน request ทำให้ route เดียวได้ทั้งความเร็วของ static และความสดของ dynamic
@@ -62,7 +66,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-พอตั้ง `cacheComponents: true` route ใดที่ผสม content ที่ prerender กับ content ที่เป็น dynamic ห่อด้วย Suspense จะถูก partially prerender ให้อัตโนมัติ เนื่องจากฟีเจอร์นี้กำลัง stabilize ให้เช็คสถานะและชื่อปัจจุบันในเอกสาร Next.js ก่อนนำไปใช้จริงบน production
+พอตั้ง `cacheComponents: true` route ใดที่ผสม content ที่ prerender กับ content ที่เป็น dynamic ห่อด้วย Suspense จะถูก partially prerender ให้อัตโนมัติ และ `next build` จะแสดง route นั้นด้วยสัญลักษณ์ตัวที่สี่ — `◐ (Partial Prerender) prerendered as static HTML with dynamic server-streamed content`
 
 ## ต่างจาก static ล้วนกับ dynamic ล้วน
 
@@ -72,7 +76,7 @@ export default nextConfig;
 - **dynamic ล้วน** — ทั้ง route render ทุก request สดเสมอ แต่ไม่มีอะไร prerender TTFB จึงรอ data ที่ช้าที่สุด
 - **PPR** — shell ถูก prerender เหมือน static และมีแค่ hole ที่เป็น dynamic first paint เร็ว *และ* มี data ต่อ request ใน route เดียว
 
-<Mermaid title="A PPR route: static shell with a streamed dynamic hole" code={diagramPprTh} />
+<Mermaid title="route แบบ PPR: static shell กับ dynamic hole ที่ stream เข้ามา" code={diagramPprTh} />
 
 export const diagramPprTh = `flowchart LR
   A[Request] --> B[Static shell served instantly]
@@ -80,7 +84,7 @@ export const diagramPprTh = `flowchart LR
   B --> C[Dynamic hole in Suspense]
   C --> D[Streamed at request time]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 PPR ให้ route เดียวมี static shell ที่ prerender ไว้ บวก dynamic hole ห่อ Suspense ที่ stream ตอน request — เปิดใช้ใน Next.js 16 ผ่าน cacheComponents เพราะ flag ppr แบบ experimental ถูกเอาออกไปแล้ว
 </Callout>
 

@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="บทนี้ใช้โมเดล caching แบบไหน">
+บทนี้อธิบายโมเดล default ที่ `cacheComponents` **ปิด** อยู่ใน `next.config.ts` บท Partial Prerendering และ `use cache` จะเปิด `cacheComponents: true` และภายใต้ flag นั้นมีสองอย่างด้านล่างที่เปลี่ยนไป — `export const dynamic = 'force-dynamic'` ทำให้ build ล้ม (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`) และ route จะไม่ถูกพลิกเป็น dynamic ทั้ง route อีกต่อไป การอ่าน `cookies()` บนสุดของ page นอก `<Suspense>` จะทำให้ build ล้มแทน (`Next.js encountered uncached or runtime data during prerendering`) ดังนั้นส่วนที่ต้องใช้ data ตอน request ต้องอยู่ใน `<Suspense>` boundary
+</Callout>
+
 ## ไอเดียในหนึ่งประโยค
 
 Next.js prerender ทุก route เป็น static HTML ตอน build โดย default เว้นแต่ route นั้นต้องใช้ data ตอน request — พอถึงจุดนั้น route จะกลายเป็น dynamic และ render ใหม่ทุก request
@@ -31,8 +35,8 @@ export default function AboutPage() {
 
 route จะสลับไปเป็น **dynamic rendering** ทันทีที่พึ่งพาบางอย่างที่รู้ได้เฉพาะตอน request อย่างใดอย่างหนึ่งต่อไปนี้ทำให้ route flip —
 
-- **Dynamic API** — `cookies()`, `headers()`, `draftMode()` หรือการอ่าน `searchParams` / `params` Promise ตอน request
-- **uncached data request** — `fetch()` ที่ใส่ `cache: 'no-store'` (หรือ fetch ใด ๆ ภายใต้ default ของ Next.js 15+ ที่คุณยังไม่ opt-in cache)
+- **Dynamic API** — `cookies()`, `headers()`, `draftMode()`, `connection()` หรือการอ่าน prop `searchParams`
+- **uncached data request** — `fetch()` ที่ใส่ `cache: 'no-store'` หรือ `next: { revalidate: 0 }` ส่วน `fetch()` ธรรมดาที่ไม่ใส่ cache option จะ *ไม่* ถูกเก็บใน Data Cache ก็จริง แต่ไม่ได้ทำให้ route flip ด้วยตัวเอง — ถ้ามันรันก่อน Dynamic API ใด ๆ Next.js จะ fetch ครั้งเดียวตอน build และ route ยังเป็น static
 - การ **`export const dynamic = 'force-dynamic'`** แบบตรง ๆ
 
 ```tsx
@@ -60,7 +64,7 @@ dynamic segment อย่าง `[slug]` ไม่มีค่าตายตั
 ```tsx
 // app/blog/[slug]/page.tsx
 export async function generateStaticParams() {
-  const posts = await fetch('https://api.example.com/posts').then((r) => r.json());
+  const posts: { slug: string }[] = await fetch('https://api.example.com/posts').then((r) => r.json());
   return posts.map((post) => ({ slug: post.slug }));
 }
 
@@ -74,18 +78,23 @@ export default async function Post({ params }: { params: Promise<{ slug: string 
 
 ## อ่าน build output
 
-`next build` พิมพ์ legend ที่บอก mode ของทุก route จำสัญลักษณ์สามตัวได้แล้วคุณไม่ต้องเดาอีก —
+`next build` พิมพ์ legend ที่บอก mode ของทุก route จำสัญลักษณ์สามตัวได้แล้วคุณไม่ต้องเดาอีก (ถ้าเปิด `cacheComponents` จะมีตัวที่สี่ `◐ (Partial Prerender)` โผล่มา ดูบท Partial Prerendering) —
 
 ```txt
-Route (app)              Rendering
-○  /about                Static    prerendered as static HTML
-ƒ  /dashboard            Dynamic   server-rendered on each request
-●  /blog/[slug]          SSG       prerendered via generateStaticParams
+Route (app)          Revalidate  Expire
+┌ ○ /about
+├   /blog/[slug]
+│ └ ● /blog/hello
+└ ƒ /dashboard
+
+○  (Static)   prerendered as static content
+●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+ƒ  (Dynamic)  server-rendered on demand
 ```
 
 ถ้า route ที่คุณคิดว่าเป็น static ขึ้น `ƒ` แปลว่ามีบางอย่างข้างในไปแตะ data ตอน request ให้ไล่กลับไปหา Dynamic API หรือ uncached fetch ที่เป็นต้นเหตุ
 
-<Mermaid title="How Next.js decides static vs dynamic" code={diagramStaticTh} />
+<Mermaid title="Next.js ตัดสินใจ static กับ dynamic ยังไง" code={diagramStaticTh} />
 
 export const diagramStaticTh = `flowchart TD
   A[Incoming request] --> B{Dynamic API or uncached fetch?}
@@ -93,7 +102,7 @@ export const diagramStaticTh = `flowchart TD
   B -- Yes --> D[Dynamic render, on each request]
   E[generateStaticParams] --> C`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 route เป็น static โดย default และจะกลายเป็น dynamic ก็ต่อเมื่อแตะ data ตอน request — Dynamic API, uncached fetch หรือ force-dynamic — ส่วน generateStaticParams ช่วยให้ dynamic segment ยัง prerender ได้
 </Callout>
 

@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="บทนี้ใช้โมเดล caching แบบไหน">
+option ของ `fetch` และ `export const revalidate` ในบทนี้เป็นของโมเดล **แบบเดิม** ที่ `cacheComponents` ปิดอยู่ ภายใต้ `cacheComponents: true` export `revalidate` จะทำให้ build ล้ม (`Route segment config "revalidate" is not compatible with nextConfig.cacheComponents`) และตัวแทนคือ `cacheLife('hours')` ใน scope `'use cache'` ส่วน `revalidateTag`, `revalidatePath` และ `updateTag` ทำงานเหมือนกันทั้งสองโมเดล
+</Callout>
+
 ## ไอเดียในหนึ่งประโยค
 
 เมื่อ data อยู่ใน Data Cache แล้ว เรา invalidate ได้สองทาง **time-based** (ปล่อยให้ stale หลัง N วินาที) หรือ **on-demand** (`revalidateTag` / `revalidatePath` หลัง mutation) และทั้งคู่ยัง refresh Full Route Cache ของ route ที่เกี่ยวข้องด้วย
@@ -30,7 +34,7 @@ export const revalidate = 3600
 
 ## On-demand revalidation ด้วย tag
 
-สำหรับ data ที่เปลี่ยนตาม event ไม่ใช่ตามนาฬิกา ให้ **tag** fetch ไว้ แล้วเรียก `revalidateTag` หลัง mutation ทุก fetch ที่ถือ tag นั้นจะถูกทิ้งจาก Data Cache
+สำหรับ data ที่เปลี่ยนตาม event ไม่ใช่ตามนาฬิกา ให้ **tag** fetch ไว้ แล้วเรียก `revalidateTag(tag, profile)` หลัง mutation ทุก fetch ที่ถือ tag นั้นจะถูก mark ว่า stale ใน Data Cache argument ตัวที่สองจำเป็นใน Next.js 16 (แบบ argument เดียวถูก deprecate และเป็น TypeScript error) — มันคือ profile ของ `cacheLife` ที่บอกว่ายอมเสิร์ฟ data stale ได้นานแค่ไหนระหว่างที่ refresh อยู่ ค่าที่แนะนำคือ `'max'` ถ้าผู้ใช้ต้องเห็นสิ่งที่ตัวเองเพิ่งเขียนทันที ให้เรียก `updateTag(tag)` จาก Server Action แทน มันจะ expire entry ทำให้ request ถัดไปรอ data สด
 
 ```tsx
 // lib/posts.ts
@@ -52,8 +56,8 @@ export async function createPost(formData: FormData) {
     method: 'POST',
     body: JSON.stringify({ title: formData.get('title') }),
   })
-  // Invalidate every fetch tagged 'posts'
-  revalidateTag('posts')
+  // Mark every fetch tagged 'posts' stale; 'max' = serve stale while refreshing in the background
+  revalidateTag('posts', 'max')
 }
 ```
 
@@ -71,11 +75,11 @@ export async function updateProfile() {
 }
 ```
 
-## map ลงบนสอง server cache
+## map ลงบน caching layer
 
-revalidation แตะสองในสี่ชั้น เริ่มจากทิ้ง entry ที่ match จาก **Data Cache** และเพราะผล render ของ route ขึ้นกับ data นั้น จึง mark **Full Route Cache** ที่เกี่ยวข้องให้ stale ด้วย request ถัดไปจะ render ใหม่ด้วย data สดและเติมทั้งสอง cache กลับ ส่วน Request Memoization และ Router Cache ฝั่ง client ไม่ถูกแตะ Router Cache จะ refresh เองหลัง Server Action
+revalidation แตะสามในสี่ชั้น เริ่มจากทิ้ง entry ที่ match จาก **Data Cache** และเพราะผล render ของ route ขึ้นกับ data นั้น จึง mark **Full Route Cache** ที่เกี่ยวข้องให้ stale ด้วย request ถัดไปจะ render ใหม่ด้วย data สดและเติมทั้งสอง cache กลับ **Client Cache** ฝั่ง browser ก็ถูก invalidate ด้วย — ถ้าเรียกจาก Server Action `revalidateTag` / `revalidatePath` / `updateTag` จะล้างมันทันที ถ้าเรียกจาก Route Handler client จะรับรู้การเปลี่ยนแปลงตอน navigate ครั้งถัดไป มีแค่ Request Memoization ที่ไม่ถูกแตะ — มันเกิดและตายภายใน render เดียว
 
-<Mermaid title="A mutation invalidating the Data and Route caches" code={rciDiagramTh} />
+<Mermaid title="mutation หนึ่งครั้ง invalidate Data Cache กับ Route Cache" code={rciDiagramTh} />
 
 export const rciDiagramTh = `
 flowchart LR
@@ -83,10 +87,11 @@ flowchart LR
   B --> C["Data Cache: drop tagged entries"]
   C --> D["Full Route Cache: mark routes stale"]
   D --> E["Next request re-renders with fresh data"]
+  B --> F["Client Cache: purged when called from a Server Action"]
 `;
 
-<Callout title="The one-line takeaway">
-`revalidate` แบบ time-based ตั้งนาฬิกาความ stale ส่วน `revalidateTag` / `revalidatePath` แบบ on-demand invalidate ตาม event ทั้งคู่เคลียร์ **Data Cache** และ **Full Route Cache** ที่ขึ้นกับ data นั้น ดังนั้น tag fetch ไว้เพื่อ revalidate ให้แม่นยำ
+<Callout title="สรุปในหนึ่งบรรทัด">
+`revalidate` แบบ time-based ตั้งนาฬิกาความ stale ส่วน `revalidateTag(tag, 'max')` / `updateTag` / `revalidatePath` แบบ on-demand invalidate ตาม event ทั้งคู่เคลียร์ **Data Cache**, **Full Route Cache** ที่ขึ้นกับ data นั้น และ **Client Cache** ใน browser ดังนั้น tag fetch ไว้เพื่อ revalidate ให้แม่นยำ
 </Callout>
 
 export const rciQuizTh = [
@@ -116,7 +121,7 @@ export const rciQuizTh = [
       'revalidatePath เล็ง route ส่วน revalidateTag เล็งทุก fetch ที่มี tag',
       'ทั้งคู่เป็น alias เดียวกัน',
       'revalidatePath ทำงานแค่ตอน build',
-      'revalidateTag เคลียร์แค่ Router Cache ฝั่ง client',
+      'revalidateTag เคลียร์แค่ Client Cache ฝั่ง browser',
     ],
     answer: 0,
   },

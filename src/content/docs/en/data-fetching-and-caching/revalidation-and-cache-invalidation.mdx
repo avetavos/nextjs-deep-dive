@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="Which caching model this lesson assumes">
+The `fetch` options and `export const revalidate` here belong to the **previous** model, with `cacheComponents` off. Under `cacheComponents: true` the `revalidate` export fails the build (`Route segment config "revalidate" is not compatible with nextConfig.cacheComponents`) and its replacement is `cacheLife('hours')` inside a `'use cache'` scope; `revalidateTag`, `revalidatePath`, and `updateTag` work the same in both models.
+</Callout>
+
 ## The idea in one sentence
 
 Once data is in the Data Cache you invalidate it two ways — **time-based** (let it go stale after N seconds) or **on-demand** (`revalidateTag` / `revalidatePath` after a mutation) — and both also refresh the Full Route Cache for affected routes.
@@ -30,7 +34,7 @@ export const revalidate = 3600
 
 ## On-demand revalidation with tags
 
-For data that changes on an event, not a clock, **tag** the fetch, then call `revalidateTag` after the mutation. Every fetch carrying that tag is dropped from the Data Cache.
+For data that changes on an event, not a clock, **tag** the fetch, then call `revalidateTag(tag, profile)` after the mutation. Every fetch carrying that tag is marked stale in the Data Cache. The second argument is required in Next.js 16 (the one-argument form is deprecated and a TypeScript error): it is a `cacheLife` profile that says how long stale data may still be served while the refresh runs — `'max'` is the recommended value. When the user must see their own write immediately, call `updateTag(tag)` from the Server Action instead; it expires the entry so the next request waits for fresh data.
 
 ```tsx
 // lib/posts.ts
@@ -52,8 +56,8 @@ export async function createPost(formData: FormData) {
     method: 'POST',
     body: JSON.stringify({ title: formData.get('title') }),
   })
-  // Invalidate every fetch tagged 'posts'
-  revalidateTag('posts')
+  // Mark every fetch tagged 'posts' stale; 'max' = serve stale while refreshing in the background
+  revalidateTag('posts', 'max')
 }
 ```
 
@@ -71,9 +75,9 @@ export async function updateProfile() {
 }
 ```
 
-## How it maps onto the two server caches
+## How it maps onto the caching layers
 
-Revalidation touches two of the four layers. It drops the matching entries from the **Data Cache**, and because a route's rendered output depends on that data, it also marks the affected **Full Route Cache** entries stale. The next request re-runs the render with fresh data and repopulates both. Request Memoization and the client Router Cache are untouched — the Router Cache refreshes on its own after a Server Action.
+Revalidation touches three of the four layers. It drops the matching entries from the **Data Cache**, and because a route's rendered output depends on that data, it also marks the affected **Full Route Cache** entries stale. The next request re-runs the render with fresh data and repopulates both. The browser-side **Client Cache** is invalidated too: called from a Server Action, `revalidateTag` / `revalidatePath` / `updateTag` purge it immediately; called from a Route Handler, the client picks up the change on its next navigation. Only Request Memoization is untouched — it lives and dies inside a single render.
 
 <Mermaid title="A mutation invalidating the Data and Route caches" code={rciDiagramEn} />
 
@@ -83,10 +87,11 @@ flowchart LR
   B --> C["Data Cache: drop tagged entries"]
   C --> D["Full Route Cache: mark routes stale"]
   D --> E["Next request re-renders with fresh data"]
+  B --> F["Client Cache: purged when called from a Server Action"]
 `;
 
 <Callout title="The one-line takeaway">
-Time-based `revalidate` sets a staleness clock; on-demand `revalidateTag` / `revalidatePath` invalidates on an event — both clear the **Data Cache** and the dependent **Full Route Cache**, so tag your fetches to revalidate precisely.
+Time-based `revalidate` sets a staleness clock; on-demand `revalidateTag(tag, 'max')` / `updateTag` / `revalidatePath` invalidate on an event — both clear the **Data Cache**, the dependent **Full Route Cache**, and the browser's **Client Cache**, so tag your fetches to revalidate precisely.
 </Callout>
 
 export const rciQuizEn = [
@@ -116,7 +121,7 @@ export const rciQuizEn = [
       'revalidatePath targets a route; revalidateTag targets all fetches with a tag',
       'They are identical aliases',
       'revalidatePath only works at build time',
-      'revalidateTag clears the client Router Cache only',
+      'revalidateTag clears the browser-side Client Cache only',
     ],
     answer: 0,
   },

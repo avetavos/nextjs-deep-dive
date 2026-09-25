@@ -99,7 +99,7 @@ export function SearchBox() {
 }
 ```
 
-<Mermaid title="Sequential waterfall vs. parallel fetching" code={sfcDiagramTh} />
+<Mermaid title="waterfall แบบ sequential เทียบกับ fetch แบบ parallel" code={sfcDiagramTh} />
 
 export const sfcDiagramTh = `
 flowchart LR
@@ -111,7 +111,7 @@ flowchart LR
   F --> G["Render (sooner)"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 fetch **ตรงจุดที่ render** async Server Component `await` data ได้ตรง ๆ และ `Promise.all` บวก Request Memoization ทำให้เร็วและไม่เกิด waterfall
 </Callout>
 

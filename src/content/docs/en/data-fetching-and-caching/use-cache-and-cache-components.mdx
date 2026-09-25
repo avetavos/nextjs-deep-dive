@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="Which caching model this lesson assumes">
+Everything here needs `cacheComponents: true`. Under that flag the previous-model exports from earlier lessons — `export const dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, and `runtime` — fail the build with `Route segment config "…" is not compatible with nextConfig.cacheComponents`, and `generateStaticParams` must return at least one param (an empty array is the `empty-generate-static-params` build error). Their replacements are the `'use cache'`, `cacheLife`, and `cacheTag` shown below.
+</Callout>
+
 ## The idea in one sentence
 
 Cache Components flips the model: instead of remembering per-`fetch` cache options, you mark a function, file, or component with the `'use cache'` directive to say **"cache this,"** then shape its lifetime and invalidation with `cacheLife` and `cacheTag`.
@@ -33,7 +37,7 @@ async function getData() {
 
 ## cacheLife and cacheTag
 
-`cacheLife` sets how long the entry stays fresh — a named profile like `'hours'` or an explicit object. `cacheTag` attaches a tag so the same `revalidateTag` you already know invalidates it on demand.
+`cacheLife` sets how long the entry stays fresh — a named profile like `'hours'` or an explicit object. `cacheTag` attaches a tag so you can invalidate it on demand: `revalidateTag(tag, 'max')` marks it stale and serves the old entry while refreshing (in Next.js 16 the second argument is required — the one-argument form is deprecated and a TypeScript error), and inside a Server Action `updateTag(tag)` expires it immediately so the user reads their own write.
 
 ```tsx
 import { cacheLife, cacheTag } from 'next/cache'
@@ -63,7 +67,7 @@ export default nextConfig
 
 ## Private and remote caches
 
-Two variants extend the model. `'use cache: private'` caches **per user** — it may read `cookies()`, so it is never shared across visitors. `'use cache: remote'` stores in a shared server-side cache across users. These are current but still stabilizing, so pin your Next.js version and re-check the docs before relying on exact names.
+Two variants extend the model, both shipped with Cache Components in Next.js 16. `'use cache: private'` may read `cookies()`, `headers()`, and `searchParams` directly; its result is never written to a shared server cache — it is kept **per browser**, in the client's memory for the `stale` window, so it is never shared across visitors. `'use cache: remote'` stores the entry in a shared, durable cache handler (Redis, KV, or whatever the platform provides via `cacheHandlers`) so every server instance and every user hits the same entry, at the cost of a network round trip.
 
 ```tsx
 import { cacheLife } from 'next/cache'

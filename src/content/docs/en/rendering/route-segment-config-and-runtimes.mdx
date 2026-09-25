@@ -1,6 +1,6 @@
 ---
 title: 'Route Segment Config and Runtimes'
-description: 'The Route Segment Config exports (dynamic, revalidate, runtime, fetchCache, dynamicParams), the Node.js runtime versus the Edge runtime and when to pick each, and how to enable ISR through revalidate.'
+description: 'The Route Segment Config exports (dynamic, revalidate, runtime, fetchCache, dynamicParams), the Node.js runtime versus the deprecated Edge runtime, how to enable ISR through revalidate, and why none of this survives cacheComponents.'
 sidebar:
   order: 4
 ---
@@ -9,6 +9,10 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+<Callout title="Which caching model this lesson assumes">
+Route Segment Config is the **previous** caching model, with `cacheComponents` off. Once you set `cacheComponents: true` (the Partial Prerendering and `use cache` lessons), every export on this page — `dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, and `runtime` (even `'nodejs'`) — fails `next build` with `Route segment config "…" is not compatible with nextConfig.cacheComponents. Please remove it.` The replacements: drop `force-dynamic` (routes are dynamic by default), replace `force-static` / `revalidate` / `fetchCache` with `'use cache'` plus `cacheLife(...)` (shown below), replace `dynamicParams = false` with `notFound()` in the page, and remove `runtime` entirely — Cache Components requires Node.js.
+</Callout>
 
 ## The idea in one sentence
 
@@ -22,30 +26,30 @@ Each of these is a named export at the top of a `layout.tsx`, `page.tsx`, or `ro
 // app/blog/page.tsx — route segment config exports
 export const dynamic = 'auto';       // 'auto' | 'force-dynamic' | 'error' | 'force-static'
 export const revalidate = 3600;      // ISR: rebuild this route at most once per hour
-export const runtime = 'nodejs';     // 'nodejs' (default) | 'edge'
+export const runtime = 'nodejs';     // 'nodejs' (default) | 'edge' (deprecated)
 export const fetchCache = 'auto';    // control the default caching of fetch() in this segment
 export const dynamicParams = true;   // allow params not returned by generateStaticParams
 ```
 
 - **`dynamic`** — force the rendering mode; `'force-dynamic'` renders every request, `'force-static'` forbids dynamic APIs.
 - **`revalidate`** — seconds between background rebuilds; this is how you turn on ISR.
-- **`runtime`** — the execution environment, `'nodejs'` or `'edge'`.
+- **`runtime`** — the execution environment, `'nodejs'` (default) or `'edge'` (deprecated in Next.js 16).
 - **`fetchCache`** — override how `fetch()` calls in the segment are cached by default.
 - **`dynamicParams`** — when `false`, a param not listed by `generateStaticParams` returns a 404 instead of being rendered on demand.
 
 ## Node.js runtime vs Edge runtime
 
-Every route runs in one of two runtimes. The default, **Node.js**, gives you the full Node API surface. The **Edge** runtime is a smaller environment that starts faster and runs close to the user, at the cost of a limited API set.
+Every route runs on the default **Node.js** runtime, which gives you the full Node API surface. The **Edge** runtime is a smaller, Web-API-only environment. Since Next.js 16 it is **deprecated** as a route runtime: `next build` prints `The Edge Runtime is deprecated` for any page that exports it, and Cache Components rejects the export outright. Edge lives on for `proxy.ts` (the file formerly known as Middleware).
 
 ```tsx
-// Opt a route into the Edge runtime
+// Opt a route into the Edge runtime — deprecated since Next.js 16: next build warns, Cache Components rejects it
 export const runtime = 'edge';
 ```
 
-Choose by what the route needs:
+What that means in practice:
 
-- **Node.js (default)** — full Node APIs, native modules, larger libraries, database drivers. Pick it when you need the whole ecosystem or heavy work.
-- **Edge** — tiny bundle, near-zero cold start, runs geographically close to the user. Pick it for lightweight, latency-sensitive routes like personalization, redirects, or simple auth checks — as long as they stay inside the limited Edge API set.
+- **Node.js (default)** — full Node APIs, native modules, larger libraries, database drivers, and the only runtime that supports ISR and Cache Components. Leave the `runtime` export out and this is what you get.
+- **Edge** — a limited API set (no filesystem, no native modules, no `require`), no ISR, and a deprecation warning at build. If you need edge-style logic such as redirects or lightweight auth checks, put it in `proxy.ts` rather than on a route.
 
 ## ISR through revalidate
 
@@ -56,12 +60,26 @@ Incremental Static Regeneration keeps a route static and fast while still lettin
 export const revalidate = 60;
 
 export default async function Products() {
-  const products = await fetch('https://api.example.com/products').then((r) => r.json());
+  const products: { id: number; name: string }[] = await fetch('https://api.example.com/products').then((r) => r.json());
   return <ul>{products.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
 }
 ```
 
 The first request after 60 seconds triggers a background rebuild; visitors keep getting the fast cached page until the fresh one is ready.
+
+Under `cacheComponents: true` the `revalidate` export is rejected. The equivalent is a `'use cache'` scope with a `cacheLife` profile — `next build` then lists the route as `○ /products  1m  1h`:
+
+```tsx
+// app/products/page.tsx — the same ISR under Cache Components: cache the page and give it a lifetime
+import { cacheLife } from 'next/cache';
+
+export default async function Products() {
+  'use cache';
+  cacheLife('minutes'); // stale 5m, revalidate 1m, expire 1h — closest preset to revalidate = 60
+  const products: { id: number; name: string }[] = await fetch('https://api.example.com/products').then((r) => r.json());
+  return <ul>{products.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
+}
+```
 
 <Mermaid title="Route segment config and the two runtimes" code={diagramSegmentEn} />
 
@@ -70,10 +88,10 @@ export const diagramSegmentEn = `flowchart TD
   A --> C[revalidate for ISR]
   A --> D[runtime]
   D --> E[nodejs, full APIs, default]
-  D --> F[edge, small, fast cold start, limited APIs]`;
+  D --> F[edge, deprecated in 16, limited APIs, no ISR]`;
 
 <Callout title="The one-line takeaway">
-Route Segment Config exports let a single segment override its rendering, caching, and runtime — where revalidate turns on ISR and runtime picks between full-API Node.js and the small, fast, limited Edge.
+Route Segment Config exports let a single segment override its rendering, caching, and runtime in the previous model — revalidate turns on ISR, runtime should stay on the default Node.js because Edge is deprecated, and under cacheComponents all of these exports give way to `'use cache'` plus cacheLife.
 </Callout>
 
 export const quizSegmentEn = [
@@ -93,8 +111,8 @@ export const quizSegmentEn = [
     answer: 1,
   },
   {
-    q: 'When is the Edge runtime the better choice?',
-    options: ['When you need native Node modules', 'For lightweight, latency-sensitive routes with limited API needs', 'For heavy database work', 'When you need the full Node API surface'],
+    q: 'What is the status of export const runtime = \'edge\' in Next.js 16?',
+    options: ['It is the default runtime', 'It is deprecated — next build warns, and Cache Components rejects the export', 'It is required to enable ISR', 'It is the only runtime that supports use cache'],
     answer: 1,
   },
 ];

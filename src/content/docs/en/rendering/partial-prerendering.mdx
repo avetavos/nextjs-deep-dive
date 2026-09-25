@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="Which caching model this lesson assumes">
+This lesson runs with `cacheComponents: true`. Two consequences carry over from the previous lessons: the Route Segment Config exports (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`) fail the build under this flag, and any `cookies()`, `headers()`, `searchParams`, or uncached `fetch` must sit inside a `<Suspense>` boundary or a `'use cache'` scope — otherwise `next build` stops with `Next.js encountered uncached or runtime data during prerendering`.
+</Callout>
+
 ## The idea in one sentence
 
 Partial Prerendering serves a prerendered static shell instantly and streams the dynamic "holes" — each wrapped in Suspense — into that shell at request time, giving one route the speed of static and the freshness of dynamic.
@@ -62,7 +66,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-With `cacheComponents: true`, any route that mixes prerendered content with Suspense-wrapped dynamic content is partially prerendered automatically. Because this area is still stabilizing, verify the current status and naming in the Next.js docs before you rely on it in production.
+With `cacheComponents: true`, any route that mixes prerendered content with Suspense-wrapped dynamic content is partially prerendered automatically, and `next build` lists it with a fourth symbol: `◐ (Partial Prerender) prerendered as static HTML with dynamic server-streamed content`.
 
 ## Contrast with all-static and all-dynamic
 

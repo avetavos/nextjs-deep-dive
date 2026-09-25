@@ -1,6 +1,6 @@
 ---
 title: 'สี่ Caching Layers'
-description: 'Request Memoization, Data Cache, Full Route Cache และ Router Cache แต่ละชั้น cache อะไร อยู่ที่ไหน อยู่นานแค่ไหน และ invalidate ยังไง'
+description: 'Request Memoization, Data Cache, Full Route Cache และ Client Cache (ชื่อเดิม Router Cache) แต่ละชั้น cache อะไร อยู่ที่ไหน อยู่นานแค่ไหน และ invalidate ยังไง'
 sidebar:
   order: 2
 ---
@@ -10,20 +10,24 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="บทนี้ใช้โมเดล caching แบบไหน">
+สี่ชั้นนี้คือโมเดล **แบบเดิม** ที่ `cacheComponents` ปิดอยู่ พอเปิด `cacheComponents: true` (บท `use cache`) `export const dynamic = 'force-static'` ที่แสดงด้านล่างจะทำให้ build ล้ม (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`) และ Data Cache ถูกแทนด้วย scope `'use cache'` ส่วน option ของ `fetch` และ `experimental.staleTimes` ที่แสดงตรงนี้ยังใช้ได้ แต่ `cacheLife` คือวิธีที่แนะนำสำหรับตั้ง lifetime ในโมเดลนั้น
+</Callout>
+
 ## ไอเดียในหนึ่งประโยค
 
-caching ของ Next.js คือ **สี่ชั้นแยกกัน** ได้แก่ Request Memoization, Data Cache, Full Route Cache และ Router Cache และตั้งแต่ v15 Data Cache เป็นแบบ **opt-in** เพราะ `fetch` ไม่ถูก cache โดย default อีกต่อไป
+caching ของ Next.js คือ **สี่ชั้นแยกกัน** ได้แก่ Request Memoization, Data Cache, Full Route Cache และ Client Cache (ชื่อปัจจุบันในเอกสารของสิ่งที่เคยเรียกว่า Router Cache) และตั้งแต่ v15 Data Cache เป็นแบบ **opt-in** เพราะ `fetch` ไม่ถูก cache โดย default อีกต่อไป
 
 ## สี่ชั้น สี่หน้าที่
 
 แต่ละชั้น cache คนละอย่าง อยู่คนละที่ และ invalidate คนละแบบ การแยกทั้งสี่ชั้นออกจากกันในหัวคือทักษะทั้งหมดของเรื่องนี้
 
-| Layer | What it caches | Where it lives | Lifetime | How it is invalidated |
+| ชั้น | cache อะไร | อยู่ที่ไหน | อยู่นานแค่ไหน | invalidate ยังไง |
 | --- | --- | --- | --- | --- |
 | Request Memoization | ค่าที่ return จาก `fetch` / `cache()` ที่เหมือนกันใน render เดียว | Server, per request (React) | หนึ่ง request / render pass | จบเองเมื่อ render เสร็จ |
-| Data Cache | ผลของ data fetch ใช้ซ้ำข้าม request และ deploy | Server (persistent) | จนกว่าจะ revalidate | `revalidateTag`, `revalidatePath` หรือ `revalidate` แบบ time-based |
+| Data Cache | ผลของ data fetch ใช้ซ้ำข้าม request และ deploy | Server (persistent) | จนกว่าจะ revalidate | `revalidateTag(tag, profile)`, `updateTag`, `revalidatePath` หรือ `revalidate` แบบ time-based |
 | Full Route Cache | RSC payload กับ HTML ของ route ที่ render แบบ static | Server (persistent, build หรือ runtime) | จนกว่าจะ deploy หรือ data revalidate | revalidate data ข้างใต้ หรือ redeploy |
-| Router Cache | RSC payload ของ route ที่เข้าชมหรือ prefetch | Client (browser memory) | ตลอด session; `staleTimes` คุมความสด | navigation, `router.refresh()` หรือ Server Action revalidation |
+| Client Cache (ชื่อเดิม Router Cache) | RSC payload ของ route ที่เข้าชมหรือ prefetch | Client (browser memory) | จนกว่าจะ refresh หน้า; `staleTimes` คุมความสด | refresh หน้า, `router.refresh()`, `cookies.set` / `cookies.delete` หรือ `revalidateTag` / `revalidatePath` / `updateTag` |
 
 ## ฝั่ง server: memoization, data และ route cache
 
@@ -45,12 +49,12 @@ await fetch('https://api.example.com/feed', { next: { revalidate: 60 } })
 await fetch('https://api.example.com/cart', { next: { tags: ['cart'] } })
 ```
 
-## ฝั่ง client: Router Cache
+## ฝั่ง client: Client Cache
 
-ชั้นที่สี่อยู่ใน browser เมื่อเรา navigate หรือ hover `<Link>` ที่ prefetch ไว้ Next.js เก็บ RSC payload ของ route ไว้ใน memory ทำให้ back และ forward ทันที ตั้งแต่ v15 ค่า default ของ `staleTimes.dynamic` คือ **0** ดังนั้น dynamic page จะไม่ถูกเก็บฝั่ง client จนกว่าเราจะเพิ่มค่า
+ชั้นที่สี่อยู่ใน browser (เอกสารและบทความเก่า ๆ เรียกมันว่า Router Cache) เมื่อเรา navigate หรือ hover `<Link>` ที่ prefetch ไว้ Next.js เก็บ RSC payload ของ route ไว้ใน memory ทำให้ back และ forward ทันที ตั้งแต่ v15 ค่า default ของ `staleTimes.dynamic` คือ **0** ดังนั้น dynamic page จะไม่ถูกเก็บฝั่ง client จนกว่าเราจะเพิ่มค่า
 
 ```ts
-// next.config.ts — opt into holding dynamic routes for 30s in the Router Cache
+// next.config.ts — opt into holding dynamic routes for 30s in the Client Cache (still experimental)
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
@@ -64,13 +68,13 @@ export default nextConfig
 
 ## ทำไม "fetch ไม่ cache โดย default" ถึงสำคัญ
 
-ใน Next.js 14 `fetch` default เป็น `force-cache` tutorial เลยสอนว่า "Next.js cache ทุกอย่างให้อัตโนมัติ" ซึ่ง **ผิดสำหรับ v15 และ v16** วันนี้ caching เป็นแบบ layered และ opt-in `fetch` ที่ไม่ cache ทำให้ route กลายเป็น dynamic และ Data Cache ว่างจนกว่าเราจะร้องขอ `GET` Route Handler ก็เปลี่ยนแบบเดียวกัน เป็น dynamic จนกว่าเราจะเพิ่ม `export const dynamic = 'force-static'`
+ใน Next.js 14 `fetch` default เป็น `force-cache` tutorial เลยสอนว่า "Next.js cache ทุกอย่างให้อัตโนมัติ" ซึ่ง **ผิดสำหรับ v15 และ v16** วันนี้ caching เป็นแบบ layered และ opt-in `fetch` ธรรมดาไม่เขียนอะไรลง Data Cache และ cache จะว่างจนกว่าเราจะร้องขอ แต่สังเกตว่ามัน *ไม่ได้* หมายความว่า route กลายเป็น dynamic — `fetch` ธรรมดาที่ถูกเรียกก่อน request-time API ใด ๆ จะถูก fetch ครั้งเดียวตอน build และ route ยังเป็น static มีแค่ `cache: 'no-store'` (หรือ `revalidate: 0`) เท่านั้นที่ทำให้ route เป็น dynamic `GET` Route Handler ก็เปลี่ยนแบบเดียวกัน เป็น dynamic จนกว่าเราจะเพิ่ม `export const dynamic = 'force-static'` (หรือภายใต้ Cache Components ย้ายการเข้าถึง data ไปไว้ใน function `'use cache'`)
 
-<Mermaid title="How a request falls through the four caches" code={fclDiagramTh} />
+<Mermaid title="request ไหลผ่าน cache ทั้งสี่ชั้นยังไง" code={fclDiagramTh} />
 
 export const fclDiagramTh = `
 flowchart TD
-  A["Browser navigates"] --> B["Router Cache (client)"]
+  A["Browser navigates"] --> B["Client Cache (browser)"]
   B -->|miss| C["Full Route Cache (server)"]
   C -->|miss or dynamic| D["Render Server Components"]
   D --> E["Request Memoization (per render)"]
@@ -78,8 +82,8 @@ flowchart TD
   F -->|miss| G["Origin: API or database"]
 `;
 
-<Callout title="The one-line takeaway">
-สี่ cache สี่หน้าที่ Request Memoization (per render), Data Cache (per data fetch), Full Route Cache (per rendered route), Router Cache (ใน browser) และตั้งแต่ v15 Data Cache เป็น **opt-in** เพราะ `fetch` ไม่ cache โดย default
+<Callout title="สรุปในหนึ่งบรรทัด">
+สี่ cache สี่หน้าที่ Request Memoization (per render), Data Cache (per data fetch), Full Route Cache (per rendered route), Client Cache (ใน browser) และตั้งแต่ v15 Data Cache เป็น **opt-in** เพราะ `fetch` ไม่ cache โดย default
 </Callout>
 
 export const fclQuizTh = [
@@ -94,7 +98,7 @@ export const fclQuizTh = [
       'Request Memoization',
       'Data Cache',
       'Full Route Cache',
-      'Router Cache',
+      'Client Cache (ชื่อเดิม Router Cache)',
     ],
     answer: 3,
   },
@@ -104,14 +108,14 @@ export const fclQuizTh = [
       'Request Memoization',
       'Data Cache',
       'Full Route Cache',
-      'Router Cache',
+      'Client Cache (ชื่อเดิม Router Cache)',
     ],
     answer: 0,
   },
   {
     q: 'revalidateTag invalidate อะไร?',
     options: [
-      'แค่ Router Cache ฝั่ง client',
+      'แค่ Client Cache ฝั่ง browser',
       'Data Cache entry ที่มี tag นั้น และ route ที่ขึ้นกับ entry นั้น',
       'Request Memoization ของ render ปัจจุบัน',
       'ไม่ทำอะไรจนกว่าจะ deploy ครั้งถัดไป',

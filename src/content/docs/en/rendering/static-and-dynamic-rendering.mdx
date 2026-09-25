@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="Which caching model this lesson assumes">
+This lesson describes the default model, with `cacheComponents` **off** in `next.config.ts`. The Partial Prerendering and `use cache` lessons turn `cacheComponents: true` on, and under that flag two things below change: `export const dynamic = 'force-dynamic'` fails the build (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`), and a route is no longer flipped wholesale to dynamic — reading `cookies()` at the top of a page outside `<Suspense>` fails the build instead (`Next.js encountered uncached or runtime data during prerendering`), so the request-time part must sit inside a `<Suspense>` boundary.
+</Callout>
+
 ## The idea in one sentence
 
 Next.js prerenders every route as static HTML at build time unless the route reaches for request-time data — at which point it becomes dynamic and renders on each request.
@@ -31,8 +35,8 @@ This is the fastest path: the HTML sits on a CDN and returns instantly. Most mar
 
 A route switches to **dynamic rendering** the moment it depends on something only known at request time. Any of these will flip it:
 
-- A **Dynamic API** — `cookies()`, `headers()`, `draftMode()`, or reading `searchParams` / the `params` Promise at request time.
-- An **uncached data request** — a `fetch()` with `cache: 'no-store'` (or any fetch under Next.js 15+ defaults that you have not opted into caching).
+- A **Dynamic API** — `cookies()`, `headers()`, `draftMode()`, `connection()`, or reading the `searchParams` prop.
+- An **uncached data request** — a `fetch()` with `cache: 'no-store'` or `next: { revalidate: 0 }`. A plain `fetch()` with no cache option is *not* stored in the Data Cache, but it does not flip the route by itself: if it runs before any Dynamic API, Next.js fetches it once at build time and the route stays static.
 - An explicit **`export const dynamic = 'force-dynamic'`**.
 
 ```tsx
@@ -60,7 +64,7 @@ A dynamic segment like `[slug]` has no fixed value at build time. `generateStati
 ```tsx
 // app/blog/[slug]/page.tsx
 export async function generateStaticParams() {
-  const posts = await fetch('https://api.example.com/posts').then((r) => r.json());
+  const posts: { slug: string }[] = await fetch('https://api.example.com/posts').then((r) => r.json());
   return posts.map((post) => ({ slug: post.slug }));
 }
 
@@ -74,13 +78,18 @@ Each returned `slug` is built into its own static HTML file at build time.
 
 ## Reading the build output
 
-`next build` prints a legend that tells you the mode of every route. Learn the three symbols and you never have to guess:
+`next build` prints a legend that tells you the mode of every route. Learn the three symbols and you never have to guess (with `cacheComponents` on, a fourth one — `◐ (Partial Prerender)` — appears; see the Partial Prerendering lesson):
 
 ```txt
-Route (app)              Rendering
-○  /about                Static    prerendered as static HTML
-ƒ  /dashboard            Dynamic   server-rendered on each request
-●  /blog/[slug]          SSG       prerendered via generateStaticParams
+Route (app)          Revalidate  Expire
+┌ ○ /about
+├   /blog/[slug]
+│ └ ● /blog/hello
+└ ƒ /dashboard
+
+○  (Static)   prerendered as static content
+●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+ƒ  (Dynamic)  server-rendered on demand
 ```
 
 If a route you expected to be static shows `ƒ`, something inside it reached for request-time data — trace back to the Dynamic API or uncached fetch that caused it.

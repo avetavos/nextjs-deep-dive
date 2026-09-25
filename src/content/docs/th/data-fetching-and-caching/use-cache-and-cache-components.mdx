@@ -10,6 +10,10 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
+<Callout title="บทนี้ใช้โมเดล caching แบบไหน">
+ทุกอย่างในบทนี้ต้องใช้ `cacheComponents: true` ภายใต้ flag นั้น export ของโมเดลแบบเดิมจากบทก่อน ๆ — `export const dynamic`, `revalidate`, `fetchCache`, `dynamicParams` และ `runtime` — จะทำให้ build ล้มด้วย `Route segment config "…" is not compatible with nextConfig.cacheComponents` และ `generateStaticParams` ต้อง return อย่างน้อยหนึ่ง param (array ว่างคือ build error `empty-generate-static-params`) ตัวแทนของพวกมันคือ `'use cache'`, `cacheLife` และ `cacheTag` ที่แสดงด้านล่าง
+</Callout>
+
 ## ไอเดียในหนึ่งประโยค
 
 Cache Components พลิกโมเดล แทนที่จะจำ cache option ต่อ `fetch` เรา mark function, file หรือ component ด้วย directive `'use cache'` เพื่อบอกว่า **"cache อันนี้"** แล้วปรับ lifetime กับ invalidation ด้วย `cacheLife` และ `cacheTag`
@@ -33,7 +37,7 @@ async function getData() {
 
 ## cacheLife และ cacheTag
 
-`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ `revalidateTag` ตัวเดิมที่เรารู้จักอยู่แล้ว invalidate entry นั้นได้แบบ on-demand
+`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ invalidate แบบ on-demand ได้ — `revalidateTag(tag, 'max')` mark ว่า stale แล้วเสิร์ฟ entry เดิมระหว่าง refresh (ใน Next.js 16 argument ตัวที่สองจำเป็น แบบ argument เดียวถูก deprecate และเป็น TypeScript error) ส่วนใน Server Action `updateTag(tag)` จะ expire ทันทีเพื่อให้ผู้ใช้เห็นสิ่งที่ตัวเองเพิ่งเขียน
 
 ```tsx
 import { cacheLife, cacheTag } from 'next/cache'
@@ -63,7 +67,7 @@ export default nextConfig
 
 ## private และ remote cache
 
-มีสอง variant ที่ต่อยอดโมเดลนี้ `'use cache: private'` cache **ต่อ user** และอ่าน `cookies()` ได้ จึงไม่แชร์ข้ามผู้เข้าชม ส่วน `'use cache: remote'` เก็บใน shared cache ฝั่ง server ที่แชร์ข้าม user ทั้งสองใช้ได้ในปัจจุบันแต่ยัง stabilizing ดังนั้น pin version ของ Next.js และเช็ค docs อีกครั้งก่อนพึ่งชื่อที่แน่นอน
+มีสอง variant ที่ต่อยอดโมเดลนี้ ทั้งคู่มาพร้อม Cache Components ใน Next.js 16 `'use cache: private'` อ่าน `cookies()`, `headers()` และ `searchParams` ได้ตรง ๆ ผลลัพธ์ไม่ถูกเขียนลง shared cache ฝั่ง server เลย — มันถูกเก็บ **ต่อ browser** ใน memory ของ client ตลอดช่วง `stale` จึงไม่แชร์ข้ามผู้เข้าชม ส่วน `'use cache: remote'` เก็บ entry ใน cache handler ที่แชร์และคงทน (Redis, KV หรืออะไรก็ตามที่ platform ให้ผ่าน `cacheHandlers`) ทำให้ทุก server instance และทุก user เจอ entry เดียวกัน แลกกับ network round trip
 
 ```tsx
 import { cacheLife } from 'next/cache'
@@ -77,7 +81,7 @@ async function getRecommendations() {
 }
 ```
 
-<Mermaid title="cacheComponents: the static shell plus streamed dynamic holes" code={uccDiagramTh} />
+<Mermaid title="cacheComponents: static shell บวก dynamic hole ที่ stream เข้ามา" code={uccDiagramTh} />
 
 export const uccDiagramTh = `
 flowchart TD
@@ -88,7 +92,7 @@ flowchart TD
   D --> E["Dynamic uncached holes stream in"]
 `;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 `'use cache'` ทำให้ caching **explicit** mark ว่าจะ cache อะไร แล้วปรับด้วย `cacheLife` กับ `cacheTag` และ flag `cacheComponents` ของตัวเองคือสวิตช์เดียวกับที่เปิด Partial Prerendering ใน Next.js 16
 </Callout>
 

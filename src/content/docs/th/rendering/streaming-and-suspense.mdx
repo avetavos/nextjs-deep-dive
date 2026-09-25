@@ -42,7 +42,7 @@ export default function Loading() {
 import { Suspense } from 'react';
 
 async function SlowComments() {
-  const comments = await fetch('https://api.example.com/comments', {
+  const comments: { id: number; text: string }[] = await fetch('https://api.example.com/comments', {
     cache: 'no-store',
   }).then((r) => r.json());
   return <ul>{comments.map((c) => <li key={c.id}>{c.text}</li>)}</ul>;
@@ -70,7 +70,7 @@ streaming แยก "first paint" ออกจาก "data ที่ช้าท
 - **TTFB ดีขึ้น** — shell ออกจาก server โดยไม่รอ data request ใด ๆ byte แรกจึงมาถึงเร็ว
 - **perceived performance ดีขึ้น** — ผู้ใช้อ่าน layout จริงได้ระหว่างที่ region ช้ากำลังเติมเข้ามา แทนที่จะจ้องหน้าจอว่างจนกว่าทุกอย่างจะพร้อม
 
-<Mermaid title="Shell first, then stream the slow parts" code={diagramStreamTh} />
+<Mermaid title="ส่ง shell ก่อน แล้วค่อย stream ส่วนที่ช้า" code={diagramStreamTh} />
 
 export const diagramStreamTh = `flowchart LR
   A[Request] --> B[Server sends static shell now]
@@ -78,7 +78,7 @@ export const diagramStreamTh = `flowchart LR
   D[Slow async component resolves] --> E[Server streams the chunk]
   E --> F[Suspense fallback swaps to real content]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปในหนึ่งบรรทัด">
 streaming ส่ง static shell ก่อนเพื่อ TTFB ที่เร็ว แล้วค่อยดัน region ช้าเข้ามาเมื่อ resolve — ผ่าน loading.tsx สำหรับทั้ง segment หรือ `<Suspense>` แบบ manual รอบ component เดียวที่ช้า
 </Callout>
 

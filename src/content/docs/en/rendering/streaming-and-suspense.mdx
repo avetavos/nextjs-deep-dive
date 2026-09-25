@@ -42,7 +42,7 @@ When only one region of the page is slow, wrap that region in `<Suspense>` so th
 import { Suspense } from 'react';
 
 async function SlowComments() {
-  const comments = await fetch('https://api.example.com/comments', {
+  const comments: { id: number; text: string }[] = await fetch('https://api.example.com/comments', {
     cache: 'no-store',
   }).then((r) => r.json());
   return <ul>{comments.map((c) => <li key={c.id}>{c.text}</li>)}</ul>;
