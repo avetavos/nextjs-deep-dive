@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="บทนี้ใช้โมเดล caching แบบไหน">
 option ของ `fetch` และ `export const revalidate` ในบทนี้เป็นของโมเดล **แบบเดิม** ที่ `cacheComponents` ปิดอยู่ ภายใต้ `cacheComponents: true` export `revalidate` จะทำให้ build ล้ม (`Route segment config "revalidate" is not compatible with nextConfig.cacheComponents`) และตัวแทนคือ `cacheLife('hours')` ใน scope `'use cache'` ส่วน `revalidateTag`, `revalidatePath` และ `updateTag` ทำงานเหมือนกันทั้งสองโมเดล
@@ -75,6 +76,63 @@ export async function updateProfile() {
 }
 ```
 
+### `revalidatePath('/', 'layout')`: blast radius
+
+`revalidatePath` รับ parameter `type` เป็น `'page'` หรือ `'layout'` การส่ง `'/'` คู่กับ `'layout'` คือ revalidation call เดี่ยว ๆ ที่กว้างที่สุดใน API นี้ เอกสารที่ bundle มาอธิบายว่ามัน purge Client Cache **และ** invalidate cached data ทั้งหมดให้ revalidate ตอนเข้าชมครั้งถัดไป — root layout ห่อทั้งแอปไว้ ดังนั้น blast radius ของมันคือทุก route ที่อยู่ข้างใต้ ใช้มันเฉพาะกับสิ่งที่กระทบทุกอย่างจริง ๆ (reindex เนื้อหาทั้งหมด, สลับ locale) ไม่ใช่เป็น call แบบ "เผื่อไว้ก่อน" หลัง mutation ธรรมดา
+
+```tsx
+'use server'
+import { revalidatePath } from 'next/cache'
+
+export async function purgeEverything() {
+  // Invalidates the root layout — every page in the app revalidates on next visit,
+  // and the Client Cache is purged immediately. The largest revalidatePath call there is.
+  revalidatePath('/', 'layout')
+}
+```
+
+## On-demand revalidation จาก Route Handler ด้วย secret
+
+revalidation ของ Server Action ถูก trigger จาก mutation ของ user เอง แต่ content ที่เปลี่ยน *นอก* แอปของเรา — CMS ที่ถูกแก้, webhook จาก payment provider — ต้องการ Route Handler ที่ใครก็ตามบน internet เรียกได้ในทางเทคนิค ถ้าไม่มีการเช็ก Route Handler นั้นก็คือ open invalidation endpoint ทางแก้มาตรฐาน ตรงจาก pattern on-demand revalidation ของเอกสาร คือ secret ที่แชร์กันไว้ ส่งมาเป็น query parameter แล้วเทียบกับ environment variable ฝั่ง server ก่อนทำอะไรทั้งนั้น:
+
+```ts
+// app/api/revalidate/route.ts
+import { revalidateTag } from 'next/cache'
+import { NextRequest, NextResponse } from 'next/server'
+
+// Called by a CMS webhook: /api/revalidate?secret=...&tag=posts
+export async function POST(request: NextRequest) {
+  const secret = request.nextUrl.searchParams.get('secret')
+  if (secret !== process.env.REVALIDATE_SECRET) {
+    return NextResponse.json({ message: 'Invalid secret' }, { status: 401 })
+  }
+
+  const tag = request.nextUrl.searchParams.get('tag')
+  if (!tag) {
+    return NextResponse.json({ message: 'Missing tag' }, { status: 400 })
+  }
+
+  revalidateTag(tag, 'max')
+  return NextResponse.json({ revalidated: true, tag, now: Date.now() })
+}
+```
+
+CMS (หรือ webhook sender อะไรก็ตาม) ถูกตั้งค่าให้รู้ URL บวก secret `REVALIDATE_SECRET` อยู่แค่ใน environment ฝั่ง server เท่านั้น ไม่เคยอยู่ใน `NEXT_PUBLIC_` variable ดังนั้นมันไม่มีทางไปถึง client bundle เลย ใครก็ตามที่เรียก endpoint โดยไม่มี secret ที่ถูกต้องจะได้ `401` และไม่มีอะไร revalidate
+
+## header `x-nextjs-cache` ยังมีอยู่ใน Next.js 16 ไหม?
+
+มี — เช็กด้วย `curl -I` กับ server ที่รันจาก `next start` ใน probe ของคอร์สนี้ บน App Router route ที่ static เต็มตัว ทั้งสอง caching model:
+
+```text
+HTTP/1.1 200 OK
+x-nextjs-cache: HIT
+x-nextjs-prerender: 1
+x-nextjs-stale-time: 300
+Cache-Control: s-maxage=31536000
+```
+
+`x-nextjs-cache` (ค่า `HIT` / `MISS` / `STALE` / `REVALIDATED` ที่เอกสารมีไว้สำหรับ Pages Router ISR flow แบบเก่า) ยังถูกส่งมาบน App Router route ที่ prerender ใน Next.js 16.3.6 — มันไม่ได้ถูกถอดออก มันอยู่คู่กับสอง header ใหม่กว่า: `x-nextjs-prerender` (บอกว่า response นี้เป็นแบบ prerendered/static) และ `x-nextjs-stale-time` (ช่วง `stale` ของ Client Cache หน่วยวินาที ในที่นี้ `300` ตรงกับ `cacheLife` profile `default`) ทั้งสามตัวโผล่มาเหมือนกันไม่ว่า `cacheComponents` จะเปิดหรือปิด
+
 ## map ลงบน caching layer
 
 revalidation แตะสามในสี่ชั้น เริ่มจากทิ้ง entry ที่ match จาก **Data Cache** และเพราะผล render ของ route ขึ้นกับ data นั้น จึง mark **Full Route Cache** ที่เกี่ยวข้องให้ stale ด้วย request ถัดไปจะ render ใหม่ด้วย data สดและเติมทั้งสอง cache กลับ **Client Cache** ฝั่ง browser ก็ถูก invalidate ด้วย — ถ้าเรียกจาก Server Action `revalidateTag` / `revalidatePath` / `updateTag` จะล้างมันทันที ถ้าเรียกจาก Route Handler client จะรับรู้การเปลี่ยนแปลงตอน navigate ครั้งถัดไป มีแค่ Request Memoization ที่ไม่ถูกแตะ — มันเกิดและตายภายใน render เดียว
@@ -90,6 +148,49 @@ flowchart LR
   B --> F["Client Cache: purged when called from a Server Action"]
 `;
 
+## Mental Model
+
+revalidation call ทุกตัวตอบคำถามเดียวกัน — "cached entry ไหนผิดไปแล้วบ้าง?" — ด้วยความละเอียดคนละระดับ `revalidateTag` ตอบในแง่ *data อะไร* (ทุก entry ที่ถือ tag นั้น ไม่ว่าจะอยู่ที่ไหน) `revalidatePath` ตอบในแง่ *route ไหน* (ทุกอย่างที่ cache ไว้ให้ path นั้น ไม่สนใจ tag) `revalidate` แบบ time-based ตอบในแง่ *นานแค่ไหน* (นาฬิกา ไม่ใช่ event) ไม่มีตัวไหนลบ data ทันทีโดย default — `revalidateTag`/`revalidatePath` mark ว่า stale แล้ว refresh แบบ background มีแค่ `updateTag` (Server Action เท่านั้น) ที่ expire ทันทีเพื่อ read-your-own-write
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| `revalidateTag(tag, 'max')` | แม่นยำ — แตะแค่ entry ที่ถือ tag นั้นตรง ๆ | ต้องมีการ tag fetch ไว้ก่อน — tag ที่ลืมใส่มองไม่เห็นสำหรับ call นี้เลย |
+| `revalidatePath('/blog/1')` | ทำงานได้โดยไม่ต้องรู้ tag | revalidate แค่ path นั้นตรง ๆ — page พี่น้องที่ใช้ data เดียวกันยัง stale จนกว่า path ของมันเอง (หรือ tag ที่แชร์กัน) จะถูก revalidate |
+| `revalidatePath('/', 'layout')` | เรียกครั้งเดียว ทั้งแอปสดหมด | เป็นค้อนที่ใหญ่ที่สุดที่มี — purge Client Cache และ mark ทุก route ให้ revalidate ซึ่งสิ้นเปลืองมากสำหรับ mutation แค่ record เดียว |
+| Route Handler ที่มี secret gate | ให้ระบบภายนอก (CMS, webhook) trigger revalidation ได้อย่างปลอดภัย | เพิ่มพื้นที่ operational — ต้อง provision secret, เก็บให้พ้นจาก `NEXT_PUBLIC_`, และหมุนเวียนถ้ารั่ว |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"revalidateTag ลบ cached data ทันที"** — ไม่จริง (โดยตั้งใจ) — มัน mark entry ว่า stale แล้วเสิร์ฟค่าเดิมระหว่างที่ background refresh รัน นานสูงสุดตาม `cacheLife` profile ที่ส่งเป็น argument ตัวที่สอง มีแค่ `updateTag` เท่านั้นที่ expire ทันที และเรียกได้แค่จาก Server Action
+- **"revalidatePath('/blog/1') revalidate /blog/2 ด้วยถ้าแชร์ fetch tag เดียวกัน"** — ไม่จริง `revalidatePath` แตะแค่ path ตรง ๆ (หรือ pattern page/layout ที่ให้ไป) ไม่แตะ path อื่นที่บังเอิญใช้ data ที่ tag เดียวกันเลย นั่นคือหน้าที่ของ tag-based revalidation ตรง ๆ
+- **"revalidatePath('/', 'layout') เป็น default ที่ปลอดภัยจะโรยไว้หลัง mutation ไหนก็ได้"** — มันทำงานได้ก็จริง แต่เป็น revalidation call ที่ใหญ่ที่สุดที่มี — purge Client Cache และ mark ทั้งแอปให้ revalidate ใช้ call ที่แคบที่สุดที่ยังถูกต้องแทน
+- **"Route Handler สำหรับ revalidation ที่ไม่มีการเช็ก secret ก็โอเคเพราะ URL มันลึกลับ"** — URL ที่ลึกลับไม่ใช่ authorization ใครก็ตามที่เจอหรือเดา URL ได้ก็ trigger revalidation ได้ (หรือแย่กว่านั้น denial-of-service ด้วยการ purge cache ซ้ำ ๆ) ถ้าไม่มี secret กันไว้
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มา revalidate cached data ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- `revalidateTag` ได้ argument ครบสองตัวไหม? call ที่มี argument เดียวคือ TypeScript error ใน Next.js 16 (`revalidateTag` ต้องการ `cacheLife` profile เป็น argument ตัวที่สอง) — snippet ที่ generate มาจาก docs เก่าหรือ training data มักจะลืมใส่
+- Route Handler สำหรับ revalidation ขาดการเช็ก secret หรือเปล่า? Route Handler ไหนก็ตามที่เรียก `revalidateTag`/`revalidatePath` ต้อง verify secret ที่ caller ส่งมาเทียบกับ environment variable ฝั่ง server ก่อนทำอะไรทั้งนั้น
+- `revalidatePath('/', 'layout')` ถูกใช้กับ mutation ธรรมดาแค่ record เดียวหรือเปล่า? นั่นคือ blast radius ที่ใหญ่ที่สุดที่เป็นไปได้ — ใช้ tag หรือ path เฉพาะเจาะจงแทน เว้นแต่การเปลี่ยนแปลงจะกระทบทั้งแอปจริง ๆ
+- โค้ดเรียก `updateTag` จาก Route Handler หรือเปล่า? `updateTag` ทำงานได้แค่ใน Server Action เท่านั้น Route Handler ต้องใช้ `revalidateTag` แทน
+
+<SpotTheBug code={`'use server'
+
+import { revalidateTag } from 'next/cache'
+
+export async function createPost(formData: FormData) {
+  await fetch('https://api.example.com/posts', {
+    method: 'POST',
+    body: JSON.stringify({ title: formData.get('title') }),
+  })
+  revalidateTag('posts')
+}`}>
+`revalidateTag` ถูกเรียกด้วย argument แค่ตัวเดียว ตั้งแต่ Next.js 16 มันต้องการ argument ตัวที่สอง — profile ของ `cacheLife` ที่บอกว่ายอมเสิร์ฟ data stale ได้นานแค่ไหนระหว่าง refresh พิสูจน์แล้วในโพรบ: `tsc --noEmit` กับ call นี้เป๊ะ ๆ รายงาน `error TS2554: Expected 2 arguments, but got 1.` — compile error จริง ไม่ใช่ lint warning ทางแก้คือ `revalidateTag('posts', 'max')` (หรือ profile ชื่ออื่น) ซึ่ง compile ผ่านสะอาด
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
 `revalidate` แบบ time-based ตั้งนาฬิกาความ stale ส่วน `revalidateTag(tag, 'max')` / `updateTag` / `revalidatePath` แบบ on-demand invalidate ตาม event ทั้งคู่เคลียร์ **Data Cache**, **Full Route Cache** ที่ขึ้นกับ data นั้น และ **Client Cache** ใน browser ดังนั้น tag fetch ไว้เพื่อ revalidate ให้แม่นยำ
 </Callout>
@@ -104,6 +205,7 @@ export const rciQuizTh = [
       'useEffect กับ setInterval',
     ],
     answer: 1,
+    explain: 'time-based revalidation ตั้งได้ทั้งต่อ fetch call (next: { revalidate: N }) หรือทั้ง route segment (export const revalidate) revalidateTag/revalidatePath คือทางเลือกแบบ on-demand ที่ขึ้นกับ event',
   },
   {
     q: 'เรียก revalidateTag ได้ที่ไหน?',
@@ -114,6 +216,7 @@ export const rciQuizTh = [
       'ใน useEffect ฝั่ง client',
     ],
     answer: 1,
+    explain: 'revalidateTag ทำงานได้แค่ใน server environment เท่านั้น — Server Action หรือ Route Handler มันรันใน Client Component หรือ useEffect ฝั่ง browser ไม่ได้',
   },
   {
     q: 'revalidatePath ต่างจาก revalidateTag ยังไง?',
@@ -124,6 +227,7 @@ export const rciQuizTh = [
       'revalidateTag เคลียร์แค่ Client Cache ฝั่ง browser',
     ],
     answer: 0,
+    explain: 'revalidatePath invalidate ทุกอย่างที่ cache ไว้ให้ route เดียว (page หรือ layout) revalidateTag invalidate ทุก cached entry ที่ถือ tag นั้น ไม่ว่าจะ fetch มาจากไหน',
   },
   {
     q: 'fetch ต้องมีอะไรก่อน revalidateTag ถึงจะ invalidate fetch นั้นได้?',
@@ -134,6 +238,29 @@ export const rciQuizTh = [
       'ห่อด้วย useEffect',
     ],
     answer: 1,
+    explain: 'revalidateTag เข้าถึงได้แค่ Data Cache entry ที่ถูก tag ด้วย next: { tags: [...] } ตอน fetch (หรือ cacheTag() ภายใต้ Cache Components) entry ที่ไม่มี tag จะมองไม่เห็นสำหรับมันเลย',
+  },
+  {
+    q: '```tsx\n\'use server\'\nimport { revalidateTag } from \'next/cache\'\n\nexport async function createPost(formData: FormData) {\n  await fetch(\'https://api.example.com/posts\', {\n    method: \'POST\',\n    body: JSON.stringify({ title: formData.get(\'title\') }),\n  })\n  revalidateTag(\'posts\')\n}\n```\ncompile ผ่านไหมใน Next.js 16?',
+    options: [
+      'ผ่าน และ revalidate tag "posts" ด้วย profile default',
+      'ไม่ผ่าน — TS2554: Expected 2 arguments, but got 1',
+      'ผ่าน แต่ไม่ทำอะไรเงียบ ๆ จนกว่าจะเพิ่ม profile',
+      'ไม่ผ่าน — revalidateTag เรียกจาก Server Action ไม่ได้',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วในโพรบด้วย tsc --noEmit: revalidateTag ตอนนี้ต้องการ cacheLife profile เป็น argument ตัวที่สอง revalidateTag(\'posts\', \'max\') compile ผ่านสะอาด ส่วน revalidateTag(\'posts\') ตัวเดียวไม่ผ่าน',
+  },
+  {
+    q: '```tsx\n\'use server\'\nimport { revalidatePath } from \'next/cache\'\n\nexport async function tweakOneComment() {\n  await updateComment()\n  revalidatePath(\'/\', \'layout\')\n}\n```\ncomment ถูกแก้แค่อันเดียว blast radius จริง ๆ ของ revalidatePath call นี้คืออะไร?',
+    options: [
+      'แค่ page ของ comment นั้นเอง — scope เล็กที่สุดที่เป็นไปได้',
+      'แค่ route /comments กับลูกของมัน',
+      'ทั้งแอป — ทุก route revalidate ตอนเข้าชมครั้งถัดไป และ Client Cache ของ browser ถูก purge ทันที',
+      'ไม่มีอะไรเลย เพราะ layout path ต้องมี dynamic segment',
+    ],
+    answer: 2,
+    explain: 'เอกสารที่ bundle มาอธิบาย revalidatePath(\'/\', \'layout\') ว่า purge Client Cache และ invalidate cached data ทั้งหมดให้ revalidate ตอนเข้าชมครั้งถัดไป — revalidation call เดี่ยวที่ใหญ่ที่สุดที่มี เหมาะกับการ reindex ทั้งหมด ไม่ใช่แก้ comment แค่อันเดียว',
   },
 ];
 

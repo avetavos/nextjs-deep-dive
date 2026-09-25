@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
 Everything here needs `cacheComponents: true`. Under that flag the previous-model exports from earlier lessons — `export const dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, and `runtime` — fail the build with `Route segment config "…" is not compatible with nextConfig.cacheComponents`, and `generateStaticParams` must return at least one param (an empty array is the `empty-generate-static-params` build error). Their replacements are the `'use cache'`, `cacheLife`, and `cacheTag` shown below.
@@ -35,16 +36,81 @@ async function getData() {
 }
 ```
 
+## From `unstable_cache` to `use cache`
+
+Code written against Next.js 14 (or an AI model trained on it) still uses `unstable_cache` — wrap the function, pass a key-parts array, pass an options object. The bundled docs now say plainly: "This API has been replaced by `use cache` in Next.js 16." It still works (it has not been removed), but the mapping is worth knowing cold, because it comes up in every review of older code:
+
+| `unstable_cache` | `'use cache'` equivalent |
+| --- | --- |
+| `unstable_cache(fn, keyParts, options)` wraps the function from outside | `'use cache'` goes *inside* the function itself, as its first line |
+| `keyParts: ['posts']` — a manual cache-key suffix | Not needed — `'use cache'` derives the key from the function's own arguments and closure automatically |
+| `options.tags: ['posts']` | `cacheTag('posts')`, called inside the function |
+| `options.revalidate: 3600` (seconds) | `cacheLife({ revalidate: 3600 })`, or a named profile like `cacheLife('hours')` |
+| Works with `cacheComponents` off | Requires `cacheComponents: true` |
+| Docs status in Next.js 16 | Deprecated, still importable — not removed |
+
+```ts
+// lib/posts-old.ts
+import { unstable_cache } from 'next/cache'
+import { db } from '@/lib/db'
+
+// Old model: keyParts is a manual cache-key suffix; tags/revalidate live in
+// the options object.
+export const getPosts = unstable_cache(
+  async () => db.post.findMany(),
+  ['posts'],
+  { tags: ['posts'], revalidate: 3600 },
+)
+```
+
+```ts
+// lib/posts-new.ts
+import { cacheLife, cacheTag } from 'next/cache'
+import { db } from '@/lib/db'
+
+// New model: no manual key — 'use cache' derives it from the function's
+// arguments and closure. Tag and lifetime are set inline, in scope.
+export async function getPosts() {
+  'use cache'
+  cacheTag('posts')
+  cacheLife({ revalidate: 3600 })
+  return db.post.findMany()
+}
+```
+
+```ts
+// lib/db.ts
+export const db = {
+  post: {
+    findMany: async () => [] as { id: string; title: string }[],
+  },
+}
+```
+
 ## cacheLife and cacheTag
 
-`cacheLife` sets how long the entry stays fresh — a named profile like `'hours'` or an explicit object. `cacheTag` attaches a tag so you can invalidate it on demand: `revalidateTag(tag, 'max')` marks it stale and serves the old entry while refreshing (in Next.js 16 the second argument is required — the one-argument form is deprecated and a TypeScript error), and inside a Server Action `updateTag(tag)` expires it immediately so the user reads their own write.
+`cacheLife` sets how long the entry stays fresh — a named profile like `'hours'` or an explicit object. Next.js ships six named profiles besides `default`, each balancing the same three timing properties (`stale`, `revalidate`, `expire`):
+
+| Profile | Use case | `stale` | `revalidate` | `expire` |
+| --- | --- | --- | --- | --- |
+| `default` | Standard content | 5 min | 15 min | never |
+| `seconds` | Real-time data (stock prices, live scores) | 30 s | 1 s | 1 min |
+| `minutes` | Frequently updated (social feeds, news) | 5 min | 1 min | 1 hour |
+| `hours` | Multiple daily updates (product inventory, weather) | 5 min | 1 hour | 1 day |
+| `days` | Daily updates (blog posts, articles) | 5 min | 1 day | 1 week |
+| `weeks` | Weekly updates (podcasts, newsletters) | 5 min | 1 week | 30 days |
+| `max` | Rarely changes (legal pages, archived content) | 5 min | 30 days | 1 year |
+
+You can also define your own named profile in `next.config.ts`, alongside or instead of using the built-in names — see [Custom cache profiles](#custom-cache-profiles) below for a full example built and checked in the probe.
+
+`cacheTag` attaches a tag so you can invalidate the entry on demand, and a single call can attach more than one: `cacheTag('products', 'product-42')` tags the same entry both broadly (every product) and specifically (this one product), so a mutation can invalidate at whichever granularity makes sense. `revalidateTag(tag, 'max')` marks a tag stale and serves the old entry while refreshing (in Next.js 16 the second argument is required — the one-argument form is deprecated and a TypeScript error), and inside a Server Action `updateTag(tag)` expires it immediately so the user reads their own write.
 
 ```tsx
 import { cacheLife, cacheTag } from 'next/cache'
 
 async function getProduct(id: string) {
   'use cache'
-  cacheTag(`product-${id}`)
+  cacheTag('products', `product-${id}`)
   cacheLife({ stale: 60, revalidate: 300 })
   return db.product.findUnique({ where: { id } })
 }
@@ -63,6 +129,55 @@ const nextConfig: NextConfig = {
 }
 
 export default nextConfig
+```
+
+### Custom cache profiles
+
+Extend the same config file with your own named `cacheLife` profiles, alongside the flag:
+
+```ts
+// next.config.ts — extends the minimal config above with a custom profile
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  cacheLife: {
+    biweekly: {
+      stale: 60 * 60 * 24 * 14, // 14 days
+      revalidate: 60 * 60 * 24, // 1 day
+      expire: 60 * 60 * 24 * 14, // 14 days
+    },
+  },
+}
+
+export default nextConfig
+```
+
+```tsx
+// app/catalog/page.tsx — only type-checks against the config above, not the harness's shared probe config
+import { cacheLife } from 'next/cache'
+
+async function getData() {
+  'use cache'
+  cacheLife('biweekly')
+  return { now: Date.now() }
+}
+
+export default async function CatalogPage() {
+  const data = await getData()
+  return <p>{data.now}</p>
+}
+```
+
+`cacheLife`'s type overloads for a custom profile name are generated from whichever `next.config.ts` is live at the probe root during `next dev`/`next build`/`next typegen` — a lesson fence named `next.config.ts` does not itself change that for the shared type-check harness, which is why this pair was verified with a real, isolated `next build` (below) rather than left for automatic collection.
+
+Built and checked in the probe, the build output confirms the custom profile's exact numbers made it through:
+
+```text
+Route (app)         Revalidate  Expire
+┌ ○ /
+├ ○ /_not-found
+└ ○ /catalog                1d      2w
 ```
 
 ## Private and remote caches
@@ -92,6 +207,44 @@ flowchart TD
   D --> E["Dynamic uncached holes stream in"]
 `;
 
+## Mental Model
+
+`'use cache'` moves the caching decision from the *call site* (an options object on each `fetch`) to the *definition site* (a directive at the top of the function). Once you are inside a `'use cache'` scope, `cacheLife` and `cacheTag` are just local configuration for that one cached unit — they never leak out, and nothing about how the function is called from outside needs to change. That is the whole shift from the old model: caching becomes a property of the function, not of each call.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| `'use cache'` on a function | No manual cache key, tags/lifetime live next to the logic they describe | Requires `cacheComponents: true` — an all-or-nothing flag for the route segment config it replaces |
+| Built-in `cacheLife` profiles | A name communicates intent (`'days'` reads as "updates daily") | The exact numbers are fixed unless you override them — read the table if precision matters |
+| Custom `cacheLife` profile in `next.config.ts` | Exact control, reusable by name across the app | One more thing to keep in sync — the name only means what the config currently says it means |
+| Multiple `cacheTag` values on one entry | Invalidate broadly (`'products'`) or narrowly (`'product-42'`) from different mutations | Every extra tag is one more thing that must be revalidated correctly, or a change looks invalidated when it is not |
+
+## Common Misconceptions
+
+- **"`unstable_cache` was removed in Next.js 16."** It was not — it still compiles and runs, but the docs mark it replaced by `'use cache'` and recommend migrating.
+- **"`'use cache'` needs a manual cache key like `unstable_cache`'s `keyParts`."** It does not — the directive derives the key from the function's own arguments and closure automatically.
+- **"Adding a second `cacheTag` replaces the first one."** It does not — `cacheTag('products', 'product-42')` attaches both tags to the same entry; either one alone can invalidate it later.
+- **"`'use cache: private'` is just a shorter-lived version of the regular cache."** It is a different storage location entirely — never written to a shared server cache, kept per browser instead, specifically so it is safe to read `cookies()`/`headers()` inside it.
+
+## Reading AI-generated code
+
+When a generated snippet uses `unstable_cache` or `'use cache'`, check for these before trusting it:
+
+- Is `unstable_cache` used with no `tags` in its options object? Without a tag, nothing can ever target that entry with `revalidateTag` — it can only expire on its `revalidate` timer or a full redeploy, which silently defeats on-demand invalidation.
+- Does a `'use cache'` function call `cacheLife` at all? Omitting it does not error — it silently falls back to the `default` profile (15-minute revalidate), which is easy to mistake for "no caching."
+- Is `cacheTag` called with a single tag when the entry logically needs two (a collection-level tag and an item-level tag)? `cacheTag` accepts multiple values in one call — no need for two separate calls or to pick just one granularity.
+- Does the code assume `'use cache'` works without `cacheComponents: true` in `next.config.ts`? It does not — the directive requires the flag, and old route-segment-config exports (`dynamic`, `revalidate`, `fetchCache`) fail the build once it is on.
+
+<SpotTheBug code={`import { unstable_cache } from 'next/cache'
+import { db } from '@/lib/db'
+
+export const getPosts = unstable_cache(async () => {
+  return db.post.findMany()
+})`}>
+No `tags` were passed in the (omitted) options object, and no `keyParts` array was passed either. The bundled docs describe `tags` as what `revalidateTag` uses to target an entry — without one, this cached result can only ever go stale on its own timer (there is no `revalidate` here either, so it is cached indefinitely) or when the app redeploys. A Server Action that later calls `revalidateTag('posts')` after creating a post will do nothing to this entry, because it was never tagged `'posts'` — a bug that produces no error, no warning, just stale data forever. The fix is `unstable_cache(async () => db.post.findMany(), ['posts'], { tags: ['posts'] })`, or better, migrate it to `'use cache'` with an explicit `cacheTag('posts')`.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
 `'use cache'` makes caching **explicit** — mark what to cache, then tune it with `cacheLife` and `cacheTag` — and its `cacheComponents` flag is the same switch that turns on Partial Prerendering in Next.js 16.
 </Callout>
@@ -106,6 +259,7 @@ export const uccQuizEn = [
       'Sets a route to dynamic rendering',
     ],
     answer: 1,
+    explain: "'use cache' at the top of a function, file, or component means everything it returns is cached — it replaces scattering cache options across individual fetch calls.",
   },
   {
     q: 'Which config flag enables use cache?',
@@ -116,6 +270,7 @@ export const uccQuizEn = [
       'dynamic: force-static',
     ],
     answer: 2,
+    explain: "'use cache' requires cacheComponents: true in next.config.ts. The older experimental ppr flag was removed — cacheComponents is now also how Partial Prerendering is enabled.",
   },
   {
     q: 'What set the lifetime and tag of a use cache entry?',
@@ -126,6 +281,7 @@ export const uccQuizEn = [
       'force-cache and no-store',
     ],
     answer: 1,
+    explain: 'cacheLife (a named profile or an object) sets the lifetime, and cacheTag attaches one or more tags for on-demand invalidation with revalidateTag or updateTag.',
   },
   {
     q: 'In Next.js 16, what does cacheComponents also enable?',
@@ -136,6 +292,29 @@ export const uccQuizEn = [
       'Automatic fetch caching like Next.js 14',
     ],
     answer: 1,
+    explain: 'The same cacheComponents flag that enables use cache is also the switch for Partial Prerendering in Next.js 16 — the old experimental_ppr export and ppr flag were removed.',
+  },
+  {
+    q: '```ts\nexport const getPosts = unstable_cache(\n  async () => db.post.findMany(),\n  [\'posts\'],\n  { tags: [\'posts\'], revalidate: 3600 },\n)\n```\nMigrated to \'use cache\', which pair of calls is the direct equivalent of the options object?',
+    options: [
+      "cacheLife('posts') and cacheTag(3600)",
+      "cacheTag('posts') and cacheLife({ revalidate: 3600 })",
+      'Nothing needed — use cache infers tags and revalidate automatically',
+      "unstable_cache's options map to a second 'use cache' directive, not to cacheTag/cacheLife",
+    ],
+    answer: 1,
+    explain: "options.tags becomes a cacheTag() call inside the function; options.revalidate (seconds) becomes cacheLife({ revalidate }) or a named profile. The keyParts array ('posts') has no equivalent — 'use cache' derives its key from the function's own arguments and closure.",
+  },
+  {
+    q: '```ts\nimport { unstable_cache } from \'next/cache\'\nimport { db } from \'@/lib/db\'\n\nexport const getPosts = unstable_cache(async () => {\n  return db.post.findMany()\n})\n```\nA Server Action later calls `revalidateTag(\'posts\', \'max\')` after creating a new post. What happens to this cached entry?',
+    options: [
+      "It revalidates immediately, since revalidateTag always clears every unstable_cache entry",
+      "Nothing — this entry was never tagged 'posts' (no tags were passed at all), so revalidateTag has no way to reach it",
+      'It throws a runtime error because unstable_cache requires tags',
+      'It revalidates because the function name matches the tag',
+    ],
+    answer: 1,
+    explain: "unstable_cache's options object (including tags) was omitted entirely, and it compiles fine — tags and keyParts are optional. Without a 'posts' tag, revalidateTag('posts', ...) has no cache entry to target: the data stays cached until its own timer (there is none here, so indefinitely) or a redeploy.",
   },
 ];
 

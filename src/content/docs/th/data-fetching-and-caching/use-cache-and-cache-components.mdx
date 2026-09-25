@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="บทนี้ใช้โมเดล caching แบบไหน">
 ทุกอย่างในบทนี้ต้องใช้ `cacheComponents: true` ภายใต้ flag นั้น export ของโมเดลแบบเดิมจากบทก่อน ๆ — `export const dynamic`, `revalidate`, `fetchCache`, `dynamicParams` และ `runtime` — จะทำให้ build ล้มด้วย `Route segment config "…" is not compatible with nextConfig.cacheComponents` และ `generateStaticParams` ต้อง return อย่างน้อยหนึ่ง param (array ว่างคือ build error `empty-generate-static-params`) ตัวแทนของพวกมันคือ `'use cache'`, `cacheLife` และ `cacheTag` ที่แสดงด้านล่าง
@@ -35,16 +36,81 @@ async function getData() {
 }
 ```
 
+## จาก `unstable_cache` ไปสู่ `use cache`
+
+โค้ดที่เขียนสำหรับ Next.js 14 (หรือ AI model ที่ train มาจากยุคนั้น) ยังใช้ `unstable_cache` — ห่อ function, ส่ง key-parts array, ส่ง options object เอกสารที่ bundle มาบอกตรง ๆ ว่า "This API has been replaced by `use cache` in Next.js 16" มันยังทำงานได้อยู่ (ไม่ได้ถูกลบ) แต่การ mapping นี้ควรจำให้ขึ้นใจ เพราะเจอได้ในการ review โค้ดเก่าแทบทุกครั้ง:
+
+| `unstable_cache` | สิ่งที่เทียบเท่าใน `'use cache'` |
+| --- | --- |
+| `unstable_cache(fn, keyParts, options)` ห่อ function จากข้างนอก | `'use cache'` อยู่ *ข้างใน* ตัว function เอง เป็นบรรทัดแรก |
+| `keyParts: ['posts']` — ส่วนต่อท้าย cache key ที่ตั้งเอง | ไม่ต้องมี — `'use cache'` derive key จาก argument และ closure ของ function เองอัตโนมัติ |
+| `options.tags: ['posts']` | `cacheTag('posts')` เรียกข้างในตัว function |
+| `options.revalidate: 3600` (วินาที) | `cacheLife({ revalidate: 3600 })` หรือ named profile อย่าง `cacheLife('hours')` |
+| ทำงานได้แม้ `cacheComponents` ปิดอยู่ | ต้องการ `cacheComponents: true` |
+| สถานะใน docs ของ Next.js 16 | Deprecated แล้ว แต่ยัง import ได้ — ไม่ได้ถูกลบ |
+
+```ts
+// lib/posts-old.ts
+import { unstable_cache } from 'next/cache'
+import { db } from '@/lib/db'
+
+// Old model: keyParts is a manual cache-key suffix; tags/revalidate live in
+// the options object.
+export const getPosts = unstable_cache(
+  async () => db.post.findMany(),
+  ['posts'],
+  { tags: ['posts'], revalidate: 3600 },
+)
+```
+
+```ts
+// lib/posts-new.ts
+import { cacheLife, cacheTag } from 'next/cache'
+import { db } from '@/lib/db'
+
+// New model: no manual key — 'use cache' derives it from the function's
+// arguments and closure. Tag and lifetime are set inline, in scope.
+export async function getPosts() {
+  'use cache'
+  cacheTag('posts')
+  cacheLife({ revalidate: 3600 })
+  return db.post.findMany()
+}
+```
+
+```ts
+// lib/db.ts
+export const db = {
+  post: {
+    findMany: async () => [] as { id: string; title: string }[],
+  },
+}
+```
+
 ## cacheLife และ cacheTag
 
-`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด `cacheTag` ติด tag เพื่อให้ invalidate แบบ on-demand ได้ — `revalidateTag(tag, 'max')` mark ว่า stale แล้วเสิร์ฟ entry เดิมระหว่าง refresh (ใน Next.js 16 argument ตัวที่สองจำเป็น แบบ argument เดียวถูก deprecate และเป็น TypeScript error) ส่วนใน Server Action `updateTag(tag)` จะ expire ทันทีเพื่อให้ผู้ใช้เห็นสิ่งที่ตัวเองเพิ่งเขียน
+`cacheLife` ตั้งว่า entry จะสดอยู่นานแค่ไหน เป็น named profile อย่าง `'hours'` หรือ object ที่ระบุชัด Next.js มี named profile ให้หกแบบนอกจาก `default` แต่ละแบบสมดุลสามค่าเวลาเดียวกัน (`stale`, `revalidate`, `expire`):
+
+| Profile | Use case | `stale` | `revalidate` | `expire` |
+| --- | --- | --- | --- | --- |
+| `default` | เนื้อหาทั่วไป | 5 นาที | 15 นาที | ไม่มี |
+| `seconds` | data แบบ real-time (ราคาหุ้น, สกอร์สด) | 30 วิ | 1 วิ | 1 นาที |
+| `minutes` | อัปเดตบ่อย (social feed, ข่าว) | 5 นาที | 1 นาที | 1 ชั่วโมง |
+| `hours` | อัปเดตหลายครั้งต่อวัน (สต๊อกสินค้า, สภาพอากาศ) | 5 นาที | 1 ชั่วโมง | 1 วัน |
+| `days` | อัปเดตรายวัน (blog post, บทความ) | 5 นาที | 1 วัน | 1 สัปดาห์ |
+| `weeks` | อัปเดตรายสัปดาห์ (podcast, newsletter) | 5 นาที | 1 สัปดาห์ | 30 วัน |
+| `max` | แทบไม่เปลี่ยนเลย (หน้ากฎหมาย, เนื้อหา archive) | 5 นาที | 30 วัน | 1 ปี |
+
+คุณนิยาม named profile ของตัวเองใน `next.config.ts` ได้ด้วย ควบคู่หรือแทนที่ชื่อ built-in — ดู [Custom cache profiles](#custom-cache-profiles) ด้านล่างสำหรับตัวอย่างเต็มที่ build และเช็กในโพรบแล้ว
+
+`cacheTag` ติด tag เพื่อ invalidate entry แบบ on-demand ได้ และหนึ่ง call ติดได้มากกว่าหนึ่ง tag: `cacheTag('products', 'product-42')` ติด tag ให้ entry เดียวกันทั้งแบบกว้าง (สินค้าทุกชิ้น) และแบบเจาะจง (สินค้าชิ้นนี้) ทำให้ mutation invalidate ได้ในระดับความละเอียดที่เหมาะสม `revalidateTag(tag, 'max')` mark tag ว่า stale แล้วเสิร์ฟ entry เดิมระหว่าง refresh (ใน Next.js 16 argument ตัวที่สองจำเป็น แบบ argument เดียวถูก deprecate และเป็น TypeScript error) ส่วนใน Server Action `updateTag(tag)` จะ expire ทันทีเพื่อให้ผู้ใช้เห็นสิ่งที่ตัวเองเพิ่งเขียน
 
 ```tsx
 import { cacheLife, cacheTag } from 'next/cache'
 
 async function getProduct(id: string) {
   'use cache'
-  cacheTag(`product-${id}`)
+  cacheTag('products', `product-${id}`)
   cacheLife({ stale: 60, revalidate: 300 })
   return db.product.findUnique({ where: { id } })
 }
@@ -63,6 +129,55 @@ const nextConfig: NextConfig = {
 }
 
 export default nextConfig
+```
+
+### Custom cache profiles
+
+ขยาย config file เดิมด้วย named `cacheLife` profile ของตัวเอง ควบคู่กับ flag:
+
+```ts
+// next.config.ts — extends the minimal config above with a custom profile
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  cacheLife: {
+    biweekly: {
+      stale: 60 * 60 * 24 * 14, // 14 days
+      revalidate: 60 * 60 * 24, // 1 day
+      expire: 60 * 60 * 24 * 14, // 14 days
+    },
+  },
+}
+
+export default nextConfig
+```
+
+```tsx
+// app/catalog/page.tsx — only type-checks against the config above, not the harness's shared probe config
+import { cacheLife } from 'next/cache'
+
+async function getData() {
+  'use cache'
+  cacheLife('biweekly')
+  return { now: Date.now() }
+}
+
+export default async function CatalogPage() {
+  const data = await getData()
+  return <p>{data.now}</p>
+}
+```
+
+type overload ของ `cacheLife` สำหรับชื่อ profile ที่ตั้งเองถูก generate จาก `next.config.ts` ตัวไหนก็ตามที่อยู่จริงที่ root ของโพรบตอนรัน `next dev`/`next build`/`next typegen` — fence ในบทเรียนที่ชื่อ `next.config.ts` ไม่ได้เปลี่ยนอันนั้นให้ shared type-check harness เลย นี่คือเหตุผลที่คู่นี้ถูกพิสูจน์ด้วย `next build` จริงแบบแยกโพรบ (ด้านล่าง) แทนที่จะปล่อยให้ harness เก็บอัตโนมัติ
+
+Build และเช็กในโพรบแล้ว build output ยืนยันว่าตัวเลขของ custom profile ผ่านเข้าไปจริง:
+
+```text
+Route (app)         Revalidate  Expire
+┌ ○ /
+├ ○ /_not-found
+└ ○ /catalog                1d      2w
 ```
 
 ## private และ remote cache
@@ -92,6 +207,44 @@ flowchart TD
   D --> E["Dynamic uncached holes stream in"]
 `;
 
+## Mental Model
+
+`'use cache'` ย้ายจุดตัดสินใจเรื่อง caching จาก *ตำแหน่งที่เรียก* (options object บน `fetch` แต่ละครั้ง) ไปที่ *ตำแหน่งที่นิยาม* (directive บนสุดของ function) พอเข้ามาอยู่ใน scope ของ `'use cache'` แล้ว `cacheLife` กับ `cacheTag` คือ configuration ท้องถิ่นสำหรับหน่วย cache นั้นเดียว — มันไม่มีทางรั่วออกไป และไม่มีอะไรเกี่ยวกับวิธีที่มันถูกเรียกจากข้างนอกที่ต้องเปลี่ยน นั่นคือการพลิกโมเดลทั้งหมดจากแบบเดิม — caching กลายเป็นคุณสมบัติของ function ไม่ใช่ของแต่ละ call
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| `'use cache'` บน function | ไม่ต้องมี cache key เอง tag/lifetime อยู่ติดกับ logic ที่มันอธิบาย | ต้องการ `cacheComponents: true` — flag แบบ all-or-nothing สำหรับ route segment config ที่มันมาแทน |
+| Built-in `cacheLife` profile | ชื่อสื่อความหมาย (`'days'` อ่านแล้วรู้ว่า "อัปเดตรายวัน") | ตัวเลขจริงตายตัวเว้นแต่จะ override — อ่านตารางถ้าความแม่นยำสำคัญ |
+| Custom `cacheLife` profile ใน `next.config.ts` | คุมได้ชัดเจน ใช้ชื่อซ้ำได้ทั่วแอป | มีอีกจุดที่ต้องดูแลให้ตรงกัน — ชื่อมีความหมายแค่ตามที่ config บอกไว้ตอนนั้น |
+| `cacheTag` หลายค่าบน entry เดียว | invalidate แบบกว้าง (`'products'`) หรือแบบแคบ (`'product-42'`) จาก mutation คนละตัว | ทุก tag ที่เพิ่มมาคือสิ่งที่ต้อง revalidate ให้ถูกต้อง ไม่งั้นจะดูเหมือน invalidate แล้วทั้งที่ยังไม่ได้ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`unstable_cache` ถูกลบใน Next.js 16 แล้ว"** — ไม่จริง มันยัง compile และรันได้อยู่ แค่เอกสาร mark ว่าถูกแทนด้วย `'use cache'` และแนะนำให้ migrate
+- **"`'use cache'` ต้องมี cache key เองเหมือน `keyParts` ของ `unstable_cache`"** — ไม่จริง directive derive key จาก argument และ closure ของ function เองอัตโนมัติ
+- **"เพิ่ม `cacheTag` ตัวที่สองจะแทนที่ตัวแรก"** — ไม่จริง `cacheTag('products', 'product-42')` ติดทั้งสอง tag ให้ entry เดียวกัน ตัวไหนก็ invalidate มันได้ทีหลัง
+- **"`'use cache: private'` เป็นแค่ cache ธรรมดาที่อายุสั้นกว่า"** — ไม่ใช่ มันเป็นที่เก็บคนละที่เลย ไม่เคยเขียนลง shared cache ฝั่ง server เก็บต่อ browser แทน โดยเฉพาะเพื่อให้อ่าน `cookies()`/`headers()` ข้างในได้อย่างปลอดภัย
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาใช้ `unstable_cache` หรือ `'use cache'` ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- `unstable_cache` ถูกใช้โดยไม่มี `tags` ใน options object หรือเปล่า? ถ้าไม่มี tag จะไม่มีทางให้ `revalidateTag` เล็ง entry นั้นได้เลย — มันจะ expire ได้แค่ตาม timer ของ `revalidate` (หรือตอน redeploy ทั้งแอป) ซึ่งทำลาย on-demand invalidation แบบเงียบ ๆ
+- function `'use cache'` เรียก `cacheLife` หรือเปล่า? การไม่ใส่ไม่ error — มันแค่ fallback ไป profile `default` (revalidate 15 นาที) แบบเงียบ ๆ ซึ่งเข้าใจผิดเป็น "ไม่ cache" ได้ง่าย
+- `cacheTag` ถูกเรียกด้วย tag เดียวทั้งที่ entry ต้องการสอง tag ตาม logic (tag ระดับ collection กับ tag ระดับ item) หรือเปล่า? `cacheTag` รับหลายค่าในหนึ่ง call ได้ ไม่ต้องเรียกสองครั้งหรือเลือกแค่ความละเอียดเดียว
+- โค้ดสมมติว่า `'use cache'` ทำงานได้โดยไม่มี `cacheComponents: true` ใน `next.config.ts` หรือเปล่า? ไม่ได้ directive ต้องการ flag นี้ และ export แบบ route-segment-config เดิม (`dynamic`, `revalidate`, `fetchCache`) จะทำให้ build ล้มทันทีที่เปิด flag นี้
+
+<SpotTheBug code={`import { unstable_cache } from 'next/cache'
+import { db } from '@/lib/db'
+
+export const getPosts = unstable_cache(async () => {
+  return db.post.findMany()
+})`}>
+ไม่มี `tags` ถูกส่งใน options object (ที่ถูกละไว้) และไม่มี `keyParts` array ด้วย เอกสารที่ bundle มาอธิบายว่า `tags` คือสิ่งที่ `revalidateTag` ใช้เล็ง entry — ถ้าไม่มี cached result นี้จะ stale ได้แค่ตาม timer ของตัวเอง (ในที่นี้ไม่มี `revalidate` เลยด้วย เลย cache ไปตลอด) หรือตอนแอป redeploy Server Action ที่เรียก `revalidateTag('posts')` หลังสร้าง post ใหม่ทีหลังจะไม่ทำอะไรกับ entry นี้เลย เพราะมันไม่เคยถูก tag ว่า `'posts'` — bug ที่ไม่มี error ไม่มี warning มีแต่ data ค้างตลอดไป ทางแก้คือ `unstable_cache(async () => db.post.findMany(), ['posts'], { tags: ['posts'] })` หรือดีกว่านั้นคือ migrate ไปเป็น `'use cache'` พร้อม `cacheTag('posts')` ชัดเจน
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
 `'use cache'` ทำให้ caching **explicit** mark ว่าจะ cache อะไร แล้วปรับด้วย `cacheLife` กับ `cacheTag` และ flag `cacheComponents` ของตัวเองคือสวิตช์เดียวกับที่เปิด Partial Prerendering ใน Next.js 16
 </Callout>
@@ -106,6 +259,7 @@ export const uccQuizTh = [
       'ตั้ง route ให้ render แบบ dynamic',
     ],
     answer: 1,
+    explain: "'use cache' บนสุดของ function, file หรือ component หมายความว่าทุกอย่างที่มัน return จะถูก cache — มาแทนการโปรย cache option ตาม fetch call ทีละอัน",
   },
   {
     q: 'flag ตัวไหนเปิดใช้ use cache?',
@@ -116,6 +270,7 @@ export const uccQuizTh = [
       'dynamic: force-static',
     ],
     answer: 2,
+    explain: "'use cache' ต้องการ cacheComponents: true ใน next.config.ts flag ppr แบบ experimental เดิมถูกถอดออกแล้ว — cacheComponents เป็นตัวเปิด Partial Prerendering ด้วยตอนนี้",
   },
   {
     q: 'อะไรตั้ง lifetime และ tag ของ entry use cache?',
@@ -126,6 +281,7 @@ export const uccQuizTh = [
       'force-cache กับ no-store',
     ],
     answer: 1,
+    explain: 'cacheLife (named profile หรือ object) ตั้ง lifetime และ cacheTag ติด tag หนึ่งตัวหรือมากกว่าเพื่อ invalidate on-demand ด้วย revalidateTag หรือ updateTag',
   },
   {
     q: 'ใน Next.js 16 cacheComponents ยังเปิดอะไรอีก?',
@@ -136,6 +292,29 @@ export const uccQuizTh = [
       'auto fetch caching แบบ Next.js 14',
     ],
     answer: 1,
+    explain: 'flag cacheComponents ตัวเดียวกับที่เปิด use cache ก็เป็นสวิตช์ของ Partial Prerendering ใน Next.js 16 ด้วย — export experimental_ppr เดิมกับ flag ppr ถูกถอดออกไปแล้ว',
+  },
+  {
+    q: '```ts\nexport const getPosts = unstable_cache(\n  async () => db.post.findMany(),\n  [\'posts\'],\n  { tags: [\'posts\'], revalidate: 3600 },\n)\n```\nถ้า migrate ไปเป็น \'use cache\' คู่ call ไหนเทียบเท่ากับ options object ตรง ๆ?',
+    options: [
+      "cacheLife('posts') กับ cacheTag(3600)",
+      "cacheTag('posts') กับ cacheLife({ revalidate: 3600 })",
+      'ไม่ต้องทำอะไรเลย — use cache infer tags กับ revalidate ให้อัตโนมัติ',
+      "options ของ unstable_cache map ไปเป็น 'use cache' directive ตัวที่สอง ไม่ใช่ cacheTag/cacheLife",
+    ],
+    answer: 1,
+    explain: "options.tags กลายเป็น cacheTag() call ข้างในตัว function options.revalidate (วินาที) กลายเป็น cacheLife({ revalidate }) หรือ named profile keyParts array ('posts') ไม่มีสิ่งเทียบเท่า — 'use cache' derive key จาก argument และ closure ของ function เอง",
+  },
+  {
+    q: '```ts\nimport { unstable_cache } from \'next/cache\'\nimport { db } from \'@/lib/db\'\n\nexport const getPosts = unstable_cache(async () => {\n  return db.post.findMany()\n})\n```\nSever Action ทีหลังเรียก `revalidateTag(\'posts\', \'max\')` หลังสร้าง post ใหม่ เกิดอะไรกับ cached entry นี้?',
+    options: [
+      'revalidate ทันที เพราะ revalidateTag เคลียร์ unstable_cache entry ทุกตัวเสมอ',
+      "ไม่เกิดอะไรเลย — entry นี้ไม่เคยถูก tag ว่า 'posts' (ไม่มี tags ถูกส่งเลย) revalidateTag เลยไม่มีทางเข้าถึงมัน",
+      'throw runtime error เพราะ unstable_cache ต้องมี tags',
+      'revalidate เพราะชื่อ function ตรงกับ tag',
+    ],
+    answer: 1,
+    explain: "options object ของ unstable_cache (รวมถึง tags) ถูกละไว้ทั้งหมด และมัน compile ผ่านสบาย ๆ — tags กับ keyParts เป็น optional ถ้าไม่มี tag 'posts' revalidateTag('posts', ...) ก็ไม่มี cache entry ให้เล็ง — data ยัง cache อยู่จนกว่าจะถึง timer ของมันเอง (ในที่นี้ไม่มีเลย เลยตลอดไป) หรือ redeploy",
   },
 ];
 
