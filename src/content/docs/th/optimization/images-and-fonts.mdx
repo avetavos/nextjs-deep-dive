@@ -1,6 +1,6 @@
 ---
 title: 'Image และ Font'
-description: 'next/image resize, แปลง format และ lazy-load image โดยไม่มี layout shift และ next/font self-host font ตอน build โดยไม่ยิง request ไป Google'
+description: 'next/image resize, แปลง format และ lazy-load image โดยไม่มี layout shift — qualities, localPatterns, minimumCacheTTL, sizes/srcset, priority vs preload, unoptimized — และ next/font self-host font ตอน build โดยไม่ยิง request ไป Google'
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -16,7 +17,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## next/image resize, แปลง format และ lazy-load
 
-`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request โดยสร้าง version ที่ resize ตามอุปกรณ์ ส่ง WebP เมื่อ browser รองรับ (และ AVIF ด้วย ถ้าคุณเพิ่มเข้าไปใน `images.formats`) และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
+`Image` คือตัวแทนแบบ drop-in ของ `<img>` ที่ optimize ให้ตอน request โดยสร้าง version ที่ resize ตามอุปกรณ์ ส่ง WebP เมื่อ browser รองรับ (และ AVIF ด้วย ถ้าคุณเพิ่มเข้าไปใน `images.formats` — default ของ `formats` มีแค่ `['image/webp']` เท่านั้น) และ lazy-load ทุกอย่างที่อยู่ใต้ fold ให้อัตโนมัติ
 
 เมื่อคุณ import ไฟล์ในเครื่อง Next.js อ่านขนาดจริงตอน build ดังนั้น `width` กับ `height` จึงถูกเติมให้เอง
 
@@ -30,37 +31,7 @@ export default function Page() {
 }
 ```
 
-## width, height และ priority
-
-image ที่ Next.js เดาขนาดไม่ได้ — เช่น remote URL — คุณ **ต้อง** ส่ง `width` กับ `height` ค่าสองตัวนี้จองกล่องขนาดเป๊ะไว้ก่อน pixel จะมาถึง ซึ่งคือสิ่งที่กัน Cumulative Layout Shift ใส่ `priority` ให้ image ตัวที่เป็น Largest Contentful Paint เพื่อให้ Next.js preload ภาพนั้นและข้าม lazy-load
-
-```tsx
-// Remote image: width + height are required to reserve space
-import Image from 'next/image'
-
-export default function Avatar() {
-  return (
-    <Image
-      src="https://cdn.example.com/avatar.png"
-      alt="User avatar"
-      width={64}
-      height={64}
-      priority // preload the LCP image, skip lazy-loading
-    />
-  )
-}
-```
-
-เมื่อไม่รู้ขนาดจริง ๆ ใช้ `fill` ภายใน parent ที่ตั้ง position ไว้ แล้วปล่อยให้ CSS จัดการขนาดกล่องแทน
-
-```tsx
-// Unknown dimensions: use fill inside a positioned parent
-<div style={{ position: 'relative', width: 400, height: 300 }}>
-  <Image src={src} alt="" fill sizes="400px" style={{ objectFit: 'cover' }} />
-</div>
-```
-
-## remote image ต้องมี remotePatterns
+## remote image ต้องมี remotePatterns ส่วน local image ที่มี query string ต้องมี localPatterns
 
 การ optimize external URL ตามใจชอบเท่ากับเปิด open proxy Next.js จึงปฏิเสธจนกว่าคุณจะ allowlist host นั้น ประกาศ `images.remotePatterns` ใน `next.config` และระบุให้เจาะจงที่สุดเท่าที่ทำได้
 
@@ -78,6 +49,162 @@ const nextConfig: NextConfig = {
 
 export default nextConfig
 ```
+
+ตั้งแต่ Next.js 16 หลักการ allowlist เดียวกันนี้ใช้กับ image **local** ที่มี query string ด้วย (`/assets/photo?v=1`) — เดิมทีสิ่งนี้ optimize ได้ฟรี แต่ query string ที่ไม่จำกัดบน local path ถูกใช้โจมตีแบบ enumeration ได้ จึงกลายเป็น **ข้อจำกัดตอน build/runtime**: คุณต้องเพิ่ม pattern ที่ตรงเป๊ะลงใน `images.localPatterns` รวม `search` ด้วย
+
+```ts
+// next.config.ts — required since 16 for local images with a query string
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    localPatterns: [{ pathname: '/assets/**', search: '?v=1' }],
+  },
+}
+
+export default nextConfig
+```
+
+ถ้าละ `search` ไว้ จะอนุญาตทุก query string บน path นั้น — ควร pin เป็นค่าที่แน่นอน เว้นแต่จำเป็นต้องใช้ wildcard จริง ๆ
+
+## qualities และ minimumCacheTTL: allowlist สองตัวที่ค่า default เปลี่ยนใน 16
+
+field `images` สองตัวเปลี่ยนค่า default แบบเงียบ ๆ ใน Next.js 16 และทั้งคู่มีมิติด้าน security ไม่ใช่แค่ performance
+
+**`qualities`** เดิมรับ `quality` ค่าไหนก็ได้ ตั้งแต่ 16 เป็น allowlist ที่ต้องประกาศ default คือ `[75]` เท่านั้น
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    qualities: [25, 50, 75, 100],
+  },
+}
+
+export default nextConfig
+```
+
+ถ้า prop `<Image quality={80}>` ไม่ตรงกับค่าที่อนุญาต Next.js จะ coerce ให้เป็นค่าที่ใกล้ที่สุดในลิสต์แบบเงียบ ๆ แต่ถ้ายิง endpoint ของ optimizer ตรง ๆ ด้วย quality ที่ไม่อยู่ในลิสต์ มันปฏิเสธทันที — พิสูจน์กับ probe จริง (`next start` ใหม่ ไม่ override `qualities` ดังนั้น default allowlist `[75]` ทำงานอยู่):
+
+```txt
+$ curl -sD - -o /dev/null "http://localhost:3181/_next/image?url=%2Fhero.jpg&w=640&q=80"
+HTTP/1.1 400 Bad Request
+```
+
+**`minimumCacheTTL`** เปลี่ยนจาก 60 วินาที เป็น **4 ชั่วโมง (14400 วินาที)** ตั้งแต่ Next.js 16 — ยืนยันด้วยการอ่าน header `Cache-Control` จริงที่ optimizer ส่งมาตอน cache miss:
+
+```txt
+$ curl -sD - -o /dev/null "http://localhost:3181/_next/image?url=%2Fhero.jpg&w=640&q=75"
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=14400, must-revalidate
+```
+
+`14400` ตรงกับ default ใหม่เป๊ะ — framework เลือก cache ที่อยู่ทนกว่าแทนการ revalidate บ่อย ๆ โดยมองว่า image ต้นทางส่วนใหญ่ที่ไม่มี `Cache-Control` header เป็นของตัวเองมักไม่ค่อยเปลี่ยน override ได้ต่อโปรเจกต์ถ้าต้องการ image ใหม่กว่านั้น:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: { minimumCacheTTL: 60 }, // pre-16 behavior
+}
+
+export default nextConfig
+```
+
+## sizes, srcset และการโหลด image ที่ใหญ่เกินจำเป็น
+
+`sizes` บอก browser ว่า image จะ render กว้างแค่ไหนจริง ๆ ที่แต่ละ breakpoint เพื่อให้เลือก candidate ที่เล็กที่สุดแต่พอดีจาก `srcset` ที่ Next.js สร้างให้ ถ้าไม่ใส่ `sizes` บน image ที่เป็น `fill` Next.js จะตั้งค่า default ของ `sizes` เป็น `100vw` — browser จึงคิดว่า image กว้างเท่า viewport ไม่ว่ากล่องจริงจะเล็กแค่ไหนก็ตาม
+
+พิสูจน์ใน probe ด้วย source image ขนาด 1600×1600 ที่อยู่ใน `fill` box กว้าง 300px:
+
+```tsx
+// app/sizes-wrong/page.tsx — no sizes prop
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: 300, position: 'relative', height: 200 }}>
+      <Image src="/hero.jpg" alt="wrong sizes demo" fill style={{ objectFit: 'cover' }} />
+    </div>
+  )
+}
+```
+
+HTML ที่ render ออกมาโชว์ตัวเลือกจริงที่ browser มี:
+
+```txt
+sizes="100vw"
+srcSet="/_next/image?url=%2Fhero.jpg&w=640&q=75 640w,
+        /_next/image?url=%2Fhero.jpg&w=750&q=75 750w,
+        ... up to
+        /_next/image?url=%2Fhero.jpg&w=3840&q=75 3840w"
+```
+
+มีแค่ tier ของ `deviceSizes` (`640, 750, 828, 1080, 1200, 1920, 2048, 3840`) เท่านั้นที่ถูกเสนอ — tier เล็กของ `imageSizes` (`32...384`) หายไปทั้งหมด เพราะ Next.js จะใส่ candidate เล็ก ๆ พวกนี้ก็ต่อเมื่อ `sizes` บอกว่า image เล็ก *กว่า* เต็ม viewport เท่านั้น บน viewport กว้าง 400px `sizes="100vw"` จะกลายเป็น 400px browser จึงเลือก candidate เล็กที่สุดที่ยังครอบคลุมได้: **640w** — มากกว่าพื้นที่ pixel ที่กล่อง 300px ต้องการจริงกว่า 4 เท่า
+
+ใส่ `sizes` ค่าจริงลงไป tier เล็กจะกลับมา แล้ว browser จะโหลดสิ่งที่ใกล้เคียงกับที่แสดงจริงมากขึ้น:
+
+```tsx
+// app/sizes-right/page.tsx — sizes matches the actual rendered width
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: 300, position: 'relative', height: 200 }}>
+      <Image src="/hero.jpg" alt="right sizes demo" fill sizes="300px" style={{ objectFit: 'cover' }} />
+    </div>
+  )
+}
+```
+
+```txt
+sizes="300px"
+srcSet="... 32w, 48w, 64w, 96w, 128w, 256w, 384w, 640w, ..."
+```
+
+ตอนนี้ tier เต็มของ `imageSizes` กลับมาแล้ว viewport 400px จะเลือก **384w** สำหรับจอ 1x — เวอร์ชัน `sizes` ผิดโหลดกว้างเกินไปกว่า 2.7 เท่า (และพื้นที่ pixel ราว 7 เท่า) ของที่ต้องการจริง
+
+## priority ถูก deprecate แล้ว หันไปใช้ preload ส่วน loading กับ fetchPriority ใช้ที่เหลือ
+
+ตั้งแต่ Next.js 16 prop `priority` ถูก **deprecate** — docs ที่ bundle มากับเวอร์ชันนี้เขียนตรง ๆ ว่า "Starting with Next.js 16, the `priority` property has been deprecated in favor of the `preload` property in order to make the behavior clear" `priority` ยังทำงานได้อยู่วันนี้ แต่โค้ดใหม่ควรใช้ `preload` แทน
+
+```tsx
+// app/page.tsx — current API: preload replaces priority
+import Image from 'next/image'
+
+export default function Hero() {
+  return <Image src="/hero.jpg" alt="Hero" width={1600} height={900} preload />
+}
+```
+
+ใช้ `preload` กับ image ตัวที่เป็น Largest Contentful Paint (LCP) — โดยทั่วไปคือ hero image เหนือ fold เมื่อมี image มากกว่าหนึ่งตัวที่อาจเป็น LCP ขึ้นกับ viewport (เคส responsive hero ที่พบบ่อย) docs แนะนำให้ใช้ `loading="eager"` หรือ `fetchPriority="high"` แทน `preload` เพราะ `preload` แทรก `<link>` ใน `<head>` แบบไม่มีเงื่อนไข ไม่ว่า browser จะต้องการ image ตัวไหนจริง ๆ
+
+```tsx
+// Multiple viewport-dependent hero candidates: fetchPriority, not preload
+<Image src="/hero-mobile.jpg" alt="" width={400} height={600} fetchPriority="high" />
+```
+
+`loading` ยังควบคุม lazy-vs-eager แบบเดิม — `lazy` (default) จะเลื่อนโหลดจนกว่าจะใกล้ viewport, `eager` โหลดทันทีไม่ว่าจะอยู่ตำแหน่งไหน
+
+## unoptimized: self-host โดยไม่มี sharp
+
+Image Optimization ต้องการ `sharp` บน server พิสูจน์ใน probe แล้ว: เอา `sharp` ออกจาก `node_modules` แล้วยิง request ไป `/_next/image` **ไม่** error — มันเสิร์ฟไฟล์ต้นฉบับขนาดเต็มแบบเงียบ ๆ (source 1600×1600 กลับมาเป็น 1600×1600 เหมือนเดิม ทั้งที่ขอ `w=750`) แทนที่จะ fail แบบชัดเจนหรือแปลง format ให้ การ fallback แบบเงียบ ๆ นี้แย่กว่าการเลือกอย่างชัดเจน — ถ้า deploy target ติดตั้ง `sharp` ไม่ได้จริง ๆ ให้ตั้ง `images.unoptimized: true` เองเพื่อให้พฤติกรรมนี้ถูกบันทึกไว้ใน config ไม่ใช่มาเจอทีหลังจากการอ่าน response header ตอน production
+
+```ts
+// next.config.ts — intentional opt-out, e.g. static export or a host without sharp
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: { unoptimized: true },
+}
+
+export default nextConfig
+```
+
+`unoptimized` ยังเหมาะกับ image รายตัวที่ไม่ได้ประโยชน์จาก optimize เลย — ไอคอนเล็ก ๆ ต่ำกว่า 1KB, SVG หรือ GIF แบบ animated
 
 ## next/font self-host ตอน build
 
@@ -104,54 +231,128 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 export const diagramImgTh = `flowchart LR
   Src[Source asset] --> Build[Build step]
-  Build --> Opt["Resized, WebP/AVIF, self-hosted font"]
-  Opt --> Reserve["width + height reserve space"]
+  Build --> Opt["Resized, WebP-only by default, self-hosted font"]
+  Opt --> Reserve["width + height (or sizes) reserve space"]
   Reserve --> Page["No layout shift, fast LCP"]`;
 
+## Mental Model
+
+คิดว่า `next/image` เป็นตู้ขายของอัตโนมัติที่มีขนาดตายตัวให้เลือก (`deviceSizes` + `imageSizes`) ไม่ใช่เครื่องถ่ายเอกสารที่พิมพ์ขนาดไหนก็ได้ตามสั่ง `sizes` คือคุณบอกตู้ว่าคุณจะใช้ช่องไหนจริง ๆ ถ้าไม่บอก ตู้จะสมมติว่าคุณอยากได้ช่องใหญ่สุด "เผื่อไว้ก่อน" เพราะนั่นคือข้อสมมติที่ปลอดภัยที่สุดสำหรับ image แบบเต็มความกว้าง ส่วน `qualities` กับ `minimumCacheTTL` คือกฎความปลอดภัยของตู้เอง — เมนู quality คงที่แทนปุ่มหมุนไม่จำกัด และอายุการเก็บ default ที่ยาวขึ้นเพื่อไม่ต้อง restock ทุกนาที
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| ตั้ง `sizes` ถูกต้อง | browser โหลด candidate เล็กสุดที่พอดี | ต้อง sync prop นี้กับ CSS layout จริงอีกตัว |
+| `qualities` allowlist (default `[75]`) | ต้นทุน optimizer คาดเดาได้ ไม่ถูกยิง quality ตามใจ | ต้องเพิ่มทุกค่า quality ที่ design ใช้จริง |
+| `minimumCacheTTL: 14400` (default) | revalidate น้อยลง ต้นทุน optimizer ต่ำลง | image เก่าอยู่ได้นานถึง 4 ชม. ถ้า upstream ไม่มี `Cache-Control` |
+| `unoptimized: true` | ใช้ได้ทุกที่ แม้ไม่มี `sharp` | ไม่ resize ไม่แปลง format — ต้นทุนนั้นย้ายไปที่อื่น |
+| `preload` / `fetchPriority="high"` | ควบคุมชัดเจนว่า image ไหนถูก prioritize | ถ้า mark ผิด image จริงที่เป็น LCP จะถูกหน่วง |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`fill` ไม่ใส่ `sizes` ก็ใช้ได้ เพราะกล่องมี CSS width ตายตัวอยู่แล้ว"** Next.js ไม่ได้อ่าน CSS ของคุณ — มันเห็นแค่ prop `sizes` (หรือ default `100vw`) กล่องที่มองด้วยตาแล้วเล็ก แต่ไม่มี `sizes` ก็ยังขอ candidate ขนาดเต็ม viewport อยู่ดี
+- **"`priority` ยังเป็นวิธี mark LCP image แบบทันสมัยอยู่"** มันถูก deprecate ตั้งแต่ Next.js 16 หันไปใช้ `preload` แทน และใช้ `fetchPriority`/`loading="eager"` สำหรับเคสที่มีหลาย candidate
+- **"prop `quality` ที่ผิดจะถูกเมินไปเฉย ๆ"** มันถูก coerce เป็นค่าที่ใกล้ที่สุดใน `images.qualities` เมื่อใช้ผ่าน `<Image>` — แต่ถ้ายิง endpoint ของ optimizer ตรง ๆ ด้วย quality ที่ไม่อนุญาต จะถูกปฏิเสธด้วย `400`
+- **"ถ้าไม่มี `sharp` image optimization จะ fail แบบชัดเจนให้เห็นเลย"** ไม่จริง — มันเสิร์ฟไฟล์ต้นฉบับขนาดเต็มแบบเงียบ ๆ ตั้ง `unoptimized: true` เองถ้านั่นคือ deploy ที่คุณต้องการจริง ๆ
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะ `next/image` เช็กสิ่งเหล่านี้ก่อนเชื่อ:
+
+- image ที่เป็น `fill` มี `sizes` ที่ตรงกับความกว้างที่ render จริงไหม ไม่ใช่แค่ "อะไรก็ได้ที่ compile ผ่าน"? ไม่มี `sizes` บน `fill` จะ default เป็น `100vw` แบบเงียบ ๆ
+- ใช้ `priority` ตรงจุดที่ `preload` (หรือ `fetchPriority`/`loading="eager"` สำหรับ LCP หลาย candidate) เป็น API ปัจจุบันหรือเปล่า?
+- image ที่เป็น remote หรือ local ที่มี query string ขาด `images.remotePatterns` / `images.localPatterns` ที่ต้องมีเพื่อให้โหลดได้หรือเปล่า?
+- prop `quality` สมมติว่าใช้ค่า 1–100 ค่าไหนก็ได้ โดยไม่รู้ว่า `images.qualities` default เป็น `[75]` เท่านั้นใน Next.js 16 หรือเปล่า?
+- โค้ดสมมติว่ามี `sharp` อยู่โดยไม่ทั้งติดตั้งและไม่ทั้งตั้ง `unoptimized: true` ให้ชัดเจนสำหรับ target ที่ไม่มี `sharp` หรือเปล่า?
+
+<SpotTheBug code={`// app/product/[id]/page.tsx
+import Image from 'next/image'
+
+export default function ProductGrid() {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+      {[1, 2, 3].map((id) => (
+        <div key={id} style={{ position: 'relative', height: 200 }}>
+          <Image src={\`/products/\${id}.jpg\`} alt="" fill style={{ objectFit: 'cover' }} />
+        </div>
+      ))}
+    </div>
+  )
+}`}>
+แต่ละช่องของ grid render กว้างประมาณหนึ่งในสามของ viewport แต่ไม่มี `sizes` prop บน `fill` image ตัวไหนเลย — Next.js จะ default `sizes` เป็น `100vw` ดังนั้นทั้งสาม image จึงขอ candidate ที่กว้างเต็ม viewport จาก tier `deviceSizes` (640w ขึ้นไป) ทั้งที่แต่ละช่องกว้างแค่ ~33vw พิสูจน์ใน probe แล้ว: กล่อง 300px ที่ไม่มี `sizes` โหลด candidate อย่างน้อย 640w ส่วนกล่องเดียวกันที่มี `sizes="300px"` โหลดแค่ 384w — วิธีแก้คือใส่ `sizes="(max-width: 768px) 100vw, 33vw"` (หรือความกว้างเป็น pixel ตายตัวถ้า grid ไม่ responsive)
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-`next/image` ต้องมี `width`/`height` (หรือ `fill`) เพื่อจองพื้นที่และใส่ `priority` ให้ image ที่เป็น LCP ส่วน `next/font` self-host font ตอน build ทุกอย่างจึงไม่ขยับและไม่มีอะไรยิงไป Google
+`next/image` ต้องมี `sizes` ที่ถูกต้อง (หรือ `width`/`height`) เพื่อไม่ให้โหลด candidate ใหญ่เกินจำเป็น `preload` (ไม่ใช่ `priority` ที่ถูก deprecate แล้ว) ใช้ mark image ที่เป็น LCP `qualities` กับ `minimumCacheTTL` default เป็น allowlist `[75]` เท่านั้นและ cache 4 ชั่วโมงใน Next.js 16 ส่วน `next/font` self-host font ตอน build ทุกอย่างจึงไม่ขยับและไม่มีอะไรยิงไป Google
 </Callout>
 
 export const quizImgTh = [
   {
-    q: 'ทำไมต้องส่ง width และ height ให้ remote next/image',
+    q: 'image ที่เป็น `fill` ไม่มี `sizes` prop Next.js จะสมมติอะไร',
     options: [
-      'เพื่อเลือก format ของ image',
-      'เพื่อจองพื้นที่และกัน layout shift',
-      'เพื่อเปิด lazy-load',
-      'เพื่ออนุญาต remote host',
+      'สมมติว่า image กว้าง 0px แล้วข้าม optimize',
+      'default sizes เป็น 100vw ขอ candidate กว้างเต็ม viewport',
+      'build error ทันที',
+      'ใช้ computed CSS width ของ parent element อัตโนมัติ',
     ],
     answer: 1,
+    explain: 'Next.js อ่าน CSS ของคุณไม่ได้ ถ้าไม่มี sizes prop ชัดเจนบน fill image มันจะ default เป็น 100vw — พิสูจน์ใน probe แล้ว กล่อง 300px ที่ไม่มี sizes ยังขอ candidate 640w ซึ่งเป็นตัวเล็กสุดที่ครอบคลุม viewport 400px เต็ม',
   },
   {
-    q: 'prop priority ทำหน้าที่อะไร',
-    options: [
-      'บีบอัด image ให้หนักขึ้น',
-      'preload image ที่เป็น LCP และข้าม lazy-load',
-      'ทำเครื่องหมายว่า image เป็นแค่ของประดับ',
-      'บังคับใช้ format AVIF',
-    ],
+    q: 'อะไรมาแทน prop priority ใน Next.js 16',
+    options: ['loading="lazy"', 'preload', 'fetchPriority="low"', 'ไม่มีอะไรแทน — priority ถูกลบไปแล้วทั้งหมด'],
     answer: 1,
+    explain: 'docs Next.js 16 ที่ bundle มาระบุว่า priority ถูก deprecate หันไปใช้ preload แทน มันยังทำงานได้อยู่วันนี้ แต่โค้ดใหม่ควรใช้ preload (หรือ fetchPriority/loading="eager" เมื่อมีหลาย image ที่อาจเป็น LCP)',
   },
   {
-    q: 'ต้องมีอะไรก่อน next/image จะ optimize remote URL',
+    q: 'ค่า default ของ images.qualities ใน Next.js 16 คืออะไร และเกิดอะไรขึ้นถ้ายิง endpoint ของ optimizer ตรง ๆ ด้วย quality ที่ไม่อยู่ในนั้น',
     options: [
-      'ไม่ต้องมีอะไร ใช้ได้กับทุก URL',
-      'host ต้องถูกลิสต์ไว้ใน images.remotePatterns',
-      'image ต้องเป็นไฟล์ WebP',
-      'ต้องมี prop priority บน image',
+      '[75] และ request ถูก coerce แบบเงียบ ๆ ไม่ว่ากรณีไหน',
+      'อนุญาตทุกค่า 1-100 โดย default',
+      '[75] และ request ตรง ๆ ด้วย quality ที่ไม่อนุญาตจะได้ 400 Bad Request',
+      '[75, 100] และ request จะ redirect ไปค่าที่ใกล้ที่สุด',
     ],
-    answer: 1,
+    answer: 2,
+    explain: 'พิสูจน์ใน probe แล้ว: ด้วย allowlist default curl -> /_next/image?...&q=80 ได้ HTTP/1.1 400 Bad Request การ coerce เป็นค่าที่ใกล้ที่สุดเกิดเฉพาะผ่าน prop <Image quality={...}> เท่านั้น ไม่ใช่การยิง endpoint ตรง ๆ',
   },
   {
-    q: 'next/font ทำอะไรตอน build',
+    q: 'ค่า default ของ minimumCacheTTL ใน Next.js 16 เปลี่ยนเป็นอะไร และยืนยันได้ยังไง',
     options: [
-      'ยิง request ขอ font จาก Google ทุกครั้งที่โหลดหน้า',
-      'self-host font ไว้ จึงไม่มี request ไป Google',
-      'inline font เป็น base64 ในทุก component',
-      'ปิด font ไว้จนกว่า hydration จะเสร็จ',
+      '60 วินาที ยืนยันจาก build log',
+      '4 ชั่วโมง (14400 วินาที) ยืนยันจาก Cache-Control response header ของ next start จริง',
+      '31 วัน ยืนยันจาก type definitions ของ next.config.ts',
+      'ถูกลบออกไปแล้ว หันไปใช้ immutable cache แบบตายตัว',
     ],
     answer: 1,
+    explain: 'curl -sD - ไปที่ /_next/image บน next start ใหม่ (ไม่ override) ได้ Cache-Control: public, max-age=14400, must-revalidate ตรงกับ default ใหม่ 4 ชั่วโมงเป๊ะ (จากเดิม 60 วินาทีก่อน 16)',
+  },
+  {
+    q: `\`\`\`tsx
+<div style={{ position: 'relative', width: 300, height: 200 }}>
+  <Image src="/hero.jpg" alt="" fill style={{ objectFit: 'cover' }} />
+</div>
+\`\`\`
+บน viewport กว้าง 400px browser จะโหลดอะไรให้กล่องนี้ประมาณไหน และเพราะอะไร`,
+    options: [
+      'candidate 300w เพราะ Next.js อ่าน CSS width',
+      'candidate 640w — ตัวเล็กสุดใน deviceSizes ที่ครอบคลุมข้อสมมติ 100vw (400px) จากการไม่มี sizes prop',
+      'ไฟล์ต้นฉบับที่ไม่ resize',
+      'ไม่มีอะไรเลย — build fail ถ้าไม่มี sizes prop',
+    ],
+    answer: 1,
+    explain: 'ไม่มี sizes จะ default เป็น 100vw ซึ่งตัด tier เล็กของ imageSizes (32-384) ออกจาก srcset ทั้งหมด candidate ที่เล็กสุดใน deviceSizes ที่ครอบคลุม viewport 400px คือ 640w ทำให้โหลดพื้นที่ pixel เกินกว่าที่กล่อง 300px ต้องการจริงกว่า 4 เท่า',
+  },
+  {
+    q: 'ติดตั้ง sharp บน deploy target ไม่ได้ วิธีที่ถูกต้องและตรงไปตรงมาในการจัดการ next/image คืออะไร',
+    options: [
+      'ไม่ต้องทำอะไร Next.js จะ error ดัง ๆ บอกให้ติดตั้ง sharp เอง',
+      'ตั้ง images.unoptimized: true ให้ชัดเจน เพราะถ้าไม่มี sharp optimizer จะเสิร์ฟไฟล์ต้นฉบับแบบเงียบ ๆ อยู่ดี',
+      'ตั้ง images.qualities: [] เพื่อปิด optimization',
+      'เปลี่ยน Image ทุกตัวเป็น <img> ดิบ ๆ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ใน probe แล้ว: เอา sharp ออกไม่ทำให้เกิด error — request ขอ image กว้าง 750px กลับมาเป็นขนาดต้นฉบับ 1600×1600 แบบเงียบ ๆ ตั้ง unoptimized: true ทำให้พฤติกรรมนี้เป็นการตัดสินใจที่ชัดเจนแทนที่จะเงียบ ๆ',
   },
 ];
 

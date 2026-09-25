@@ -1,6 +1,6 @@
 ---
 title: 'Script และ Bundle Optimization'
-description: 'โหลด third-party script ด้วย strategy ของ next/script, code-split client component ด้วย next/dynamic, optimizePackageImports และการวิเคราะห์ bundle'
+description: 'โหลด third-party script ด้วย strategy ของ next/script, code-split client component ด้วย next/dynamic, อ่านผลลัพธ์ next experimental-analyze, optimizePackageImports กับ serverExternalPackages และสิ่งที่เกิดขึ้นจริงกับ barrel-file import ภายใต้ Turbopack'
 sidebar:
   order: 3
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
-ส่ง JavaScript ให้น้อยลงด้วยการโหลด third-party script ในจังหวะที่เหมาะสมผ่าน `next/script`, code-split client component ที่หนักด้วย `next/dynamic` และรักษาเส้น Server/Client boundary ให้แคบไว้
+ส่ง JavaScript ให้น้อยลงด้วยการโหลด third-party script ในจังหวะที่เหมาะสมผ่าน `next/script`, code-split client component ที่หนักด้วย `next/dynamic`, รักษาเส้น Server/Client boundary ให้แคบไว้ และรู้วิธีอ่าน bundle จริง ๆ แทนการเดา
 
 ## next/script และ strategy ของตัวเอง
 
@@ -38,7 +39,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
 ## code-split client component ด้วย next/dynamic
 
-`next/dynamic` (สร้างบน `React.lazy`) แยก client component ที่หนักออกเป็น chunk ของตัวเองที่โหลดเฉพาะตอน render สำหรับ component ที่แตะ browser-only API ให้ส่ง `ssr: false` เพื่อไม่ให้ component นั้นรันบน server เลย โปรดจำว่า `ssr: false` ใช้ได้เฉพาะภายใน Client Component
+`next/dynamic` (สร้างบน `React.lazy`) แยก client component ที่หนักออกเป็น chunk ของตัวเองที่โหลดเฉพาะตอน render สำหรับ component ที่แตะ browser-only API ให้ส่ง `ssr: false` เพื่อไม่ให้ component นั้นรันบน server เลย ทำแบบนี้ได้เฉพาะข้างใน Client Component เท่านั้น — พิสูจน์กับ probe แล้วว่าเรียก `dynamic(..., { ssr: false })` จาก Server Component ทำให้ build fail ไม่ใช่แค่ lint warning:
+
+```txt
+Error: `ssr: false` is not allowed with `next/dynamic` in Server Components.
+Please move it into a Client Component.
+```
 
 ```tsx
 'use client'
@@ -55,39 +61,95 @@ export default function Dashboard() {
 }
 ```
 
-## optimizePackageImports และ bundle analyzer
+## อ่านผลลัพธ์ next experimental-analyze
 
-library บางตัวที่มี barrel file ดึงเข้ามามากกว่าที่คุณใช้จริงเยอะ `optimizePackageImports` บอก Next.js ให้ import เฉพาะ module ที่คุณอ้างถึงจริง ทำให้ client bundle เล็กลง
+ทั้ง `optimizePackageImports` และตำนาน barrel import ล้วนเป็นแค่การเดาจนกว่าคุณจะดูจริง ๆ ว่ามีอะไร ship ออกไปบ้าง Next.js 16.1+ มี bundle analyzer แบบ Turbopack-native เป็น subcommand ของตัวเอง (ยังติดป้าย experimental) มันวิเคราะห์ production build โดยไม่สร้าง build จริง แล้วเปิด UI แบบ interactive หรือเขียนไฟล์ static
+
+```bash
+npx next experimental-analyze --port 4181       # interactive UI
+npx next experimental-analyze --output          # write .next/diagnostics/analyze, no server
+```
+
+รันกับ probe จริง `--output` สร้าง tree ที่ตรวจสอบได้จริง — ไม่ใช่ report ไฟล์เดียว แต่เป็น HTML export ต่อ route บวกกับโฟลเดอร์ `data/` ที่มี payload ต่อ route และต่อ module:
+
+```txt
+.next/diagnostics/analyze/
+  index.html                # UI shell
+  data/routes.json          # ["/", "/_not-found", "/lodash-barrel", "/lodash-direct", ...]
+  data/modules.data         # every module Turbopack saw, by ident/path
+  data/<route>/analyze.data # per-route module graph + sizes
+```
+
+เปิด UI แบบ interactive จะเห็น **route picker**, toggle **Client/Server** ของ module type, **file-type filter**, **search box** และส่วนที่สำคัญที่สุดในบทนี้คือ treemap พร้อมยอดรวมของสิ่งที่กำลังแสดงอยู่: ขนาด compressed (ประมาณการ), ขนาด uncompressed และจำนวน module เลือก route ใดตัวหนึ่งจะปรับตัวเลขทั้งสามให้อยู่ในขอบเขตของ client bundle ของ route นั้นเท่านั้น
+
+## optimizePackageImports: มันแก้อะไรจริง ๆ พิสูจน์ด้วยตัวเลขจริง
+
+คำกล่าวอ้างคลาสสิกคือ "barrel import (`import { X } from 'big-package'`) ทำ production bundle บวมแน่ ๆ เพิ่ม package เข้า `optimizePackageImports` แล้วจะเห็นมันเล็กลง" ทดสอบตรง ๆ กับ probe ด้วย `lodash` (package ที่**ไม่**อยู่ใน default-optimized list ของ Next.js เอง) — barrel import กับ deep import ของฟังก์ชันเดียวกันเป๊ะ:
+
+```tsx
+// app/lodash-barrel/page.tsx — needs lodash installed (not in the shared harness probe)
+'use client'
+import { debounce } from 'lodash'
+
+const log = debounce(() => console.log('typed'), 200)
+
+export default function Page() {
+  return <input onChange={log} placeholder="barrel import" />
+}
+```
+
+```tsx
+// app/lodash-direct/page.tsx — needs lodash installed (not in the shared harness probe)
+'use client'
+import debounce from 'lodash/debounce'
+
+const log = debounce(() => console.log('typed'), 200)
+
+export default function Page() {
+  return <input onChange={log} placeholder="direct import" />
+}
+```
+
+ตัวเลขจริงจาก `next experimental-analyze` production build เดียวกัน ไม่มี `optimizePackageImports` ตั้งไว้เลย:
+
+```txt
+/lodash-barrel:  231.63 KB compressed (est.) · 625.79 KB uncompressed · 176 modules
+/lodash-direct:  231.63 KB compressed (est.) · 625.80 KB uncompressed · 176 modules
+```
+
+เหมือนกันแบบไม่มีนัยสำคัญทางสถิติ เหตุผลอยู่ในตาราง option ของ Turbopack เอง: `turbopackRemoveUnusedExports` กับ `turbopackInferModuleSideEffects` **default เป็น `true` สำหรับ `next build` อยู่แล้ว** (การตัด unused export default ปิดเฉพาะใน `next dev` เท่านั้น) production build ของ Turbopack ตัด unused named export ของ barrel `lodash` ออกไปให้ก่อนที่ `optimizePackageImports` จะเข้ามาเกี่ยวข้องด้วยซ้ำ — สำหรับ barrel แบบ ESM/CJS ธรรมดาไม่มี side effect แบบนี้ ไม่มีอะไรเหลือให้ option ตัวนี้ไปแก้แล้ว
 
 ```ts
-// next.config.ts
+// next.config.ts — configuring it anyway is still correct for packages Turbopack can't safely infer
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   experimental: {
-    optimizePackageImports: ['lucide-react'],
+    optimizePackageImports: ['lodash'],
   },
 }
 
 export default nextConfig
 ```
 
-จะดูว่าจริง ๆ มีอะไรอยู่ใน bundle ให้รัน Turbopack bundle analyzer (Next.js 16.1+ ยังติดป้าย experimental) มันวิเคราะห์ production build โดยไม่สร้าง build จริง แล้วเปิด treemap แบบ interactive พร้อม import chain เต็ม ๆ ของทุก module ส่วน `--output` เขียนไฟล์ static ลง `.next/diagnostics/analyze` แทนการเปิด server
+แล้วมันช่วยจริงตรงไหน? สองที่ ทั้งคู่มาจาก docs ที่ bundle มาตรง ๆ ไม่ใช่ตัวเลข production ข้างบน:
 
-```bash
-npx next experimental-analyze            # interactive UI on http://localhost:4000
-npx next experimental-analyze --output   # write .next/diagnostics/analyze for sharing/diffing
-```
+1. **default list ยาว ๆ ครอบคลุมตัวยอดฮิตไว้แล้ว** `lucide-react`, `date-fns`, `react-icons/*`, `@mui/material`, `@mui/icons-material`, `antd`, `rxjs` และอีกหลายตัวถูก optimize **โดย default** ไม่ต้องตั้งค่าอะไร — นี่คือเหตุผลที่ถ้าทดสอบตั้งแต่แรกด้วย `lucide-react` (แทน `lodash`) ก็จะไม่เห็นความต่างเช่นกัน แต่ด้วยเหตุผลคนละอย่าง: option ถูกเปิดใช้แบบเงียบ ๆ อยู่แล้ว
+2. **จำนวน module ตอน dev** ซึ่ง docs พูดถึงตรง ๆ: "Some packages can export hundreds or thousands of modules, which can cause performance issues in development and production" `turbopackRemoveUnusedExports` ปิดโดย default ใน `next dev` ดังนั้น barrel ที่มี re-export เป็นพัน ๆ ตัวทำให้ cold start กับ HMR ช้าลงจริงได้ที่นั่น แม้ production bundle ที่ ship ออกไปจะออกมาเหมือนกันก็ตาม
 
-plugin `@next/bundle-analyzer` ตัวเก่าใช้ได้กับ webpack เท่านั้น ภายใต้ Turbopack build ที่เป็น default มัน exit 0 แต่พิมพ์ `The Next Bundle Analyzer is not compatible with Turbopack builds, no report will be generated.` — ดังนั้นถ้ายังใช้อยู่ ให้ build ด้วย `--webpack`
+## serverExternalPackages: อีกฝั่งของฝั่ง server
 
-```js
-// next.config.js — webpack only: run ANALYZE=true next build --webpack
-const withBundleAnalyzer = require('@next/bundle-analyzer')({
-  enabled: process.env.ANALYZE === 'true',
-})
+`optimizePackageImports` พูดถึง client bundle ส่วน `serverExternalPackages` คือทิศทางตรงข้าม: มันบอก Next.js ให้เอา dependency ตัวนั้น**ออก**จากการ bundle ฝั่ง server ทั้งหมด แล้วโหลดด้วย native Node `require` แทน — เหมาะกับ native addon หรือ package ที่ทำงานกับการ bundle ไม่ดี (Next.js ตัดออกให้อัตโนมัติแล้วสำหรับ package ยอดฮิตบางตัว เช่น `@prisma/client` และ `@aws-sdk/*` หลายตัว)
 
-module.exports = withBundleAnalyzer({})
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  serverExternalPackages: ['@acme/native-image-lib'],
+}
+
+export default nextConfig
 ```
 
 ## รักษา Server/Client boundary ให้แคบ
@@ -98,55 +160,118 @@ module.exports = withBundleAnalyzer({})
 
 export const diagramBundleTh = `flowchart TD
   Page["Server Component (0 KB client JS)"] --> Leaf["'use client' leaf"]
-  Page --> Split["next/dynamic chunk"]
+  Page --> Split["next/dynamic chunk (ssr:false only from a Client Component)"]
   Leaf --> JS[Client bundle]
   Split -->|loads on demand| JS
-  Page --> Script["next/script (strategy-timed)"]`;
+  Page --> Script["next/script (strategy-timed)"]
+  JS --> Analyze["next experimental-analyze reads this"]`;
+
+## Mental Model
+
+มอง client bundle เป็น shipping manifest แล้ว `next experimental-analyze` คือทางเดียวที่จะอ่านมันจริง ๆ แทนการเดาจาก packing list `optimizePackageImports` กับความกังวลเรื่อง barrel file พูดถึงสิ่งที่ใส่ *เข้า* กล่องก่อนจะปิดผนึก — แต่ Turbopack ยุคใหม่ทำ pass "จริง ๆ แล้วเราแพ็กของชิ้นนี้ไปหรือเปล่า" (`turbopackRemoveUnusedExports`) ให้กับ production build โดย default อยู่แล้ว ต้นทุนที่เหลือของ barrel file ยักษ์ไม่ได้อยู่ในกล่องที่ ship เสมอไป — บ่อยครั้งมันอยู่ที่ *โกดัง* (dev server, HMR) ต้องใช้เวลานานแค่ไหนในการเรียงของทุกชิ้นก่อนตัดสินใจว่าจะแพ็กอะไร
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| strategy ของ `next/script` | third-party script ไม่ block สิ่งที่สำคัญกว่า | เลือก strategy ผิดสำหรับ script วิกฤต ทำให้สิ่งที่ user ต้องการก่อนถูกหน่วง |
+| `next/dynamic` + `ssr: false` | ไม่มีต้นทุนฝั่ง server สำหรับโค้ดที่ใช้ได้แค่ใน browser | ใช้ได้เฉพาะข้างใน Client Component เท่านั้น — ไม่งั้น build error จริง |
+| `optimizePackageImports` | แก้ปัญหา dev-mode ช้าจาก barrel ยักษ์ package ยอดฮิตหลายตัวได้ฟรี | สำหรับ production Turbopack build ของ barrel ธรรมดาไม่มี side effect อาจวัดออกมาว่าไม่มีผลอะไรเลย — ต้องตรวจก่อนให้เครดิต |
+| `serverExternalPackages` | native addon และ package ที่ bundle ไม่ได้ดี โหลดถูกต้องผ่าน native `require` | เมื่อ opt out จากการ bundle คุณต้องแบกรับ footprint ของ dependency นั้นตามสภาพเดิม |
+| ดัน `"use client"` ลงไป | ต้นไม้ส่วนใหญ่ ship client JS เป็นศูนย์ | ต้องมีวินัยไม่ใส่ `"use client"` ทั้ง subtree เพราะใบ interactive ใบเดียว |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"barrel import ไหน ๆ (`{ X } from 'big-lib'`) ก็ทำ production bundle บวมแน่นอน"** พิสูจน์แล้วว่าไม่จริงอย่างน้อยหนึ่งเคสทั่วไปบน Next.js 16.3 + Turbopack ของคอร์สนี้: `turbopackRemoveUnusedExports`/`turbopackInferModuleSideEffects` default เป็น `true` สำหรับ `next build` ดังนั้น barrel ธรรมดาไม่มี side effect วัดได้เหมือนกับ deep import เป๊ะ — 625.79 KB เทียบกับ 625.80 KB uncompressed, 176 modules เท่ากัน
+- **"`optimizePackageImports` คือสิ่งที่ทำให้ lucide-react/react-icons tree-shake ได้ดี"** สำหรับ package พวกนี้มันเป็นพฤติกรรม default อยู่แล้วโดยไม่ต้องตั้งค่าอะไร — พวกมันอยู่ใน default-optimized list ของ Next.js เอง
+- **"`ssr: false` ใน `next/dynamic` เป็นแค่ hint จะ degrade อย่างนุ่มนวลใน Server Component"** มันเป็น build error จริง พิสูจน์กับ probe แล้ว ไม่ใช่แค่ warning
+- **"`@next/bundle-analyzer` ตัวเก่ากับ `next experimental-analyze` คือเครื่องมือเดียวกันแค่เปลี่ยนชื่อ"** เป็นคนละเครื่องมือสำหรับคนละ bundler — ตัวแรก webpack เท่านั้น (แล้ว print ข้อความ no-op เมื่อ default เป็น Turbopack) ตัวหลังเป็น Turbopack-native
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะเรื่อง bundling เช็กสิ่งเหล่านี้ก่อนเชื่อ:
+
+- มันอ้างว่า barrel import ทำ bundle บวมแน่ ๆ โดยไม่ได้รัน `next experimental-analyze` เช็กจริงหรือเปล่า? Turbopack default `turbopackRemoveUnusedExports` อาจจัดการไปแล้วก็ได้
+- `ssr: false` ถูกส่งให้ `next/dynamic` จากไฟล์ที่ไม่ใช่ Client Component (ไม่มี `'use client'` บนสุด หรือ `.tsx` ใต้ Server Component tree) หรือเปล่า? นั่นคือ build fail ไม่ใช่แค่ style nit
+- `optimizePackageImports` ถูกเพิ่มให้ package ที่อยู่ใน default-optimized list ของ Next.js อยู่แล้วหรือเปล่า (ซ้ำซ้อน แม้จะไม่เป็นอันตราย)?
+- dependency ที่เป็น native หรือ bundle ไม่ดี (database driver, native addon) ถูก import โดยไม่มี `serverExternalPackages` เสี่ยง bundling fail หรือ server output บวม หรือเปล่า?
+- โค้ดสมมติว่า `@next/bundle-analyzer` ทำงานได้ภายใต้ default Turbopack build หรือเปล่า? มันจะ no-op เงียบ ๆ ที่นั่น — ต้องใช้ `--webpack`
+
+<SpotTheBug code={`// app/dashboard/page.tsx — no 'use client' directive
+import dynamic from 'next/dynamic'
+
+const Chart = dynamic(() => import('./chart'), { ssr: false })
+
+export default function Dashboard() {
+  return <Chart />
+}`}>
+`app/dashboard/page.tsx` ไม่มี `'use client'` directive จึงเป็น Server Component โดย default — และ `ssr: false` ใน `next/dynamic` ใช้ได้เฉพาะข้างใน Client Component เท่านั้น พิสูจน์กับ probe แล้วว่ารูปแบบนี้ทำให้ build fail ด้วย `Error: \`ssr: false\` is not allowed with \`next/dynamic\` in Server Components. Please move it into a Client Component.` วิธีแก้คือเพิ่ม `'use client'` ให้ไฟล์นี้ หรือย้าย `dynamic(...)` ไปไว้ใน Client Component เล็ก ๆ ที่ Server Component นี้ render แทน
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-จับจังหวะ third-party script ด้วย strategy ของ `next/script`, แยกโค้ด client ที่หนักด้วย `next/dynamic`, ตัด barrel import ด้วย `optimizePackageImports` และดัน `"use client"` ให้ต่ำ ต้นไม้ส่วนใหญ่จึงส่ง JavaScript เป็นศูนย์
+จับจังหวะ third-party script ด้วย strategy ของ `next/script`, แยกโค้ด client ที่หนักด้วย `next/dynamic` (`ssr: false` ใช้ได้เฉพาะจาก Client Component — ไม่งั้น build error จริง), อ่าน `next experimental-analyze` แทนการสมมติว่า barrel import ทำ bundle บวม (Turbopack default `turbopackRemoveUnusedExports` อาจแก้ให้แล้ว), ใช้ `optimizePackageImports`/`serverExternalPackages` กับ package ที่ต้องการจริง ๆ และดัน `"use client"` ให้ต่ำ ต้นไม้ส่วนใหญ่จึงส่ง JavaScript เป็นศูนย์
 </Callout>
 
 export const quizBundleTh = [
   {
     q: 'strategy ไหนของ next/script เป็นค่า default สำหรับ analytics',
-    options: [
-      'beforeInteractive',
-      'afterInteractive',
-      'lazyOnload',
-      'workerThread',
-    ],
+    options: ['beforeInteractive', 'afterInteractive', 'lazyOnload', 'workerThread'],
     answer: 1,
+    explain: 'afterInteractive เป็น default — โหลดหลัง hydration เริ่ม เหมาะกับ analytics ที่ไม่ต้องรันก่อนหน้าจะ interactive',
   },
   {
-    q: 'ssr: false ใน next/dynamic ทำอะไร',
+    q: 'ถ้าเรียก next/dynamic ด้วย ssr: false จาก Server Component (ไม่มี "use client") จะเกิดอะไรขึ้น',
     options: [
-      'render component บน server เท่านั้น',
-      'กันไม่ให้ component render บน server',
-      'ปิด code-splitting',
-      'cache ผลลัพธ์ของ component',
+      'ทำงานได้ปกติ แค่ข้ามการ render บน server สำหรับ component นั้น',
+      'build fail พร้อม error ชัดเจน — ssr: false ใช้ได้เฉพาะใน Client Component',
+      'ข้าม option ssr ไปแบบเงียบ ๆ',
+      'แปลงไฟล์นั้นเป็น Client Component ให้อัตโนมัติ',
     ],
     answer: 1,
+    explain: 'พิสูจน์กับ probe แล้ว: error ตรงตัวคือ "`ssr: false` is not allowed with `next/dynamic` in Server Components. Please move it into a Client Component." — เป็น build fail ไม่ใช่ fallback แบบนุ่มนวล',
   },
   {
-    q: 'optimizePackageImports ช่วยเรื่องอะไร',
+    q: `\`\`\`ts
+/lodash-barrel:  625.79 KB uncompressed · 176 modules
+/lodash-direct:  625.80 KB uncompressed · 176 modules
+\`\`\`
+นี่คือตัวเลข next experimental-analyze จริงของฟังก์ชันเดียวกันที่ import แบบ barrel เทียบกับ deep import ไม่มี optimizePackageImports ตั้งไว้ ตัวเลขนี้แสดงอะไร`,
     options: [
-      'import เฉพาะ module ที่คุณใช้จาก package',
-      'preload remote image',
-      'สร้าง sitemap',
-      'จับจังหวะ third-party script',
+      'ต้องมี optimizePackageImports ถึงจะมี tree-shaking เลย',
+      'barrel import ใหญ่กว่าอย่างมีนัยสำคัญ พิสูจน์ pitfall คลาสสิก',
+      'เหมือนกันแบบไม่มีนัยสำคัญทางสถิติ — production build ของ Turbopack ตัด unused export ให้โดย default อยู่แล้วสำหรับเคสนี้',
+      'ตัวเลขไม่มีความหมายถ้าไม่มี webpack build มาเทียบ',
     ],
-    answer: 0,
+    answer: 2,
+    explain: 'turbopackRemoveUnusedExports กับ turbopackInferModuleSideEffects ของ Turbopack default เป็น true สำหรับ next build ดังนั้น barrel ธรรมดาไม่มี side effect ก็ถูกตัด unused export ให้แล้วโดยไม่ต้องตั้งค่าเพิ่ม',
   },
   {
-    q: 'ทำไมต้องดัน "use client" ลงไปให้ลึกที่สุด',
+    q: 'package ไหนต่อไปนี้อยู่ใน default-optimized list ของ Next.js สำหรับ optimizePackageImports อยู่แล้ว (ไม่ต้องตั้งค่า)',
+    options: ['lodash', 'lucide-react', 'package ภายใน monorepo แบบสุ่ม', 'ทุก package บน npm อัตโนมัติ'],
+    answer: 1,
+    explain: 'lucide-react (พร้อมกับ date-fns, react-icons/* , @mui/material และอื่น ๆ) อยู่ใน default-optimized list ที่ Next.js ติดมาให้ — lodash ไม่อยู่ในนั้น ซึ่งเป็นเหตุผลที่มันเป็นเคสทดสอบที่สะอาดกว่าสำหรับวัดผลจริงของ option นี้',
+  },
+  {
+    q: 'docs Next.js ที่ bundle มาบอกว่า optimizePackageImports ช่วยตรงไหนบ้าง นอกเหนือจากขนาด production bundle',
     options: [
-      'ทำให้ server render เร็วขึ้นอย่างเดียว',
-      'ทุกอย่างที่ผ่านเส้น boundary กลายเป็น client JavaScript',
-      'จำเป็นสำหรับ metadata',
-      'ปิด Suspense',
+      'ส่งผลแค่เวลา compile ของ TypeScript เท่านั้น',
+      'แก้ปัญหา performance ตอน development สำหรับ package ที่ export module เป็นร้อยเป็นพันตัว',
+      'ไม่มีผลอะไรเลยนอกจากค่าใช้จ่ายตอน deploy',
+      'จำเป็นต้องมีถึงจะ build แอปได้',
     ],
     answer: 1,
+    explain: 'docs ระบุว่า "Some packages can export hundreds or thousands of modules, which can cause performance issues in development and production" เพราะ next dev default ปิด turbopackRemoveUnusedExports ไว้ barrel ยักษ์จึงทำ dev compile/HMR ช้าลงจริงได้ แม้ production build จะวัดออกมาเหมือนกันก็ตาม',
+  },
+  {
+    q: '@next/bundle-analyzer ทำอะไรภายใต้ default Turbopack build และถ้ายังต้องใช้อยู่ต้องแก้ยังไง',
+    options: [
+      'ทำงานเหมือน next experimental-analyze เป๊ะ',
+      'exit 0 แต่พิมพ์ข้อความว่าจะไม่สร้าง report ให้ เพราะมันใช้ได้กับ webpack เท่านั้น ใช้ --webpack เพื่อให้ยังใช้ได้ต่อ',
+      'ทำให้ build crash ด้วย fatal error',
+      'สลับ build ไปใช้ webpack ให้อัตโนมัติ',
+    ],
+    answer: 1,
+    explain: 'plugin ตัวเก่าเข้าใจแค่ output ของ webpack ภายใต้ default build ที่เป็น Turbopack มัน no-op พร้อมข้อความแจ้ง next experimental-analyze คือตัวแทนแบบ Turbopack-native หรือใส่ --webpack เพื่อให้ plugin ตัวเก่ายังใช้งานได้',
   },
 ];
 

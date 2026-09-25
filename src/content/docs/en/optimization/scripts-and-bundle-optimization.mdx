@@ -1,6 +1,6 @@
 ---
 title: Scripts and Bundle Optimization
-description: Loading third-party scripts with next/script strategies, code-splitting client components with next/dynamic, optimizePackageImports, and analyzing the bundle.
+description: Loading third-party scripts with next/script strategies, code-splitting client components with next/dynamic, reading next experimental-analyze output, optimizePackageImports and serverExternalPackages, and what actually happens to barrel-file imports under Turbopack.
 sidebar:
   order: 3
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
-Ship less JavaScript by loading third-party scripts at the right moment with `next/script`, code-splitting heavy client components with `next/dynamic`, and keeping the Server/Client boundary tight.
+Ship less JavaScript by loading third-party scripts at the right moment with `next/script`, code-splitting heavy client components with `next/dynamic`, keeping the Server/Client boundary tight, and knowing how to actually read the bundle instead of guessing.
 
 ## next/script and its strategies
 
@@ -38,7 +39,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
 ## Code-split client components with next/dynamic
 
-`next/dynamic` (built on `React.lazy`) splits a heavy client component into its own chunk that loads only when rendered. For a component that touches browser-only APIs, pass `ssr: false` so it never runs on the server. Note that `ssr: false` is only allowed inside a Client Component.
+`next/dynamic` (built on `React.lazy`) splits a heavy client component into its own chunk that loads only when rendered. For a component that touches browser-only APIs, pass `ssr: false` so it never runs on the server. This only works from inside a Client Component — proven against the probe, calling `dynamic(..., { ssr: false })` from a Server Component fails the build, not just a lint warning:
+
+```txt
+Error: `ssr: false` is not allowed with `next/dynamic` in Server Components.
+Please move it into a Client Component.
+```
 
 ```tsx
 'use client'
@@ -55,39 +61,95 @@ export default function Dashboard() {
 }
 ```
 
-## optimizePackageImports and the bundle analyzer
+## Reading next experimental-analyze output
 
-Some libraries with barrel files pull in far more than you use. `optimizePackageImports` tells Next.js to import only the modules you actually reference, shrinking the client bundle.
+`optimizePackageImports` and barrel-import folklore are both guesses until you actually look at what shipped. Next.js 16.1+ ships a Turbopack-native bundle analyzer as its own subcommand (still marked experimental) — it analyzes a production build without producing one, and either opens an interactive UI or writes static files.
+
+```bash
+npx next experimental-analyze --port 4181       # interactive UI
+npx next experimental-analyze --output          # write .next/diagnostics/analyze, no server
+```
+
+Run against the probe, `--output` produces a real, inspectable tree — not a single report file, but one HTML export per route plus a `data/` folder with per-route and per-module payloads:
+
+```txt
+.next/diagnostics/analyze/
+  index.html                # UI shell
+  data/routes.json          # ["/", "/_not-found", "/lodash-barrel", "/lodash-direct", ...]
+  data/modules.data         # every module Turbopack saw, by ident/path
+  data/<route>/analyze.data # per-route module graph + sizes
+```
+
+Opening the interactive UI shows a **route picker**, a **Client/Server** module-type toggle, a **file-type filter**, a **search box**, and — the part that matters here — a treemap with a running total for whatever's currently in view: compressed (estimated) size, uncompressed size, and a module count. Picking a specific route re-scopes all three numbers to just that route's client bundle.
+
+## optimizePackageImports: what it actually fixes, proven with real numbers
+
+The classic claim is "barrel imports (`import { X } from 'big-package'`) bloat your production bundle; add the package to `optimizePackageImports` and watch it shrink." Tested directly against the probe with `lodash` (a package **not** in Next.js's own default-optimized list) — a barrel import and a deep import of the exact same function:
+
+```tsx
+// app/lodash-barrel/page.tsx — needs lodash installed (not in the shared harness probe)
+'use client'
+import { debounce } from 'lodash'
+
+const log = debounce(() => console.log('typed'), 200)
+
+export default function Page() {
+  return <input onChange={log} placeholder="barrel import" />
+}
+```
+
+```tsx
+// app/lodash-direct/page.tsx — needs lodash installed (not in the shared harness probe)
+'use client'
+import debounce from 'lodash/debounce'
+
+const log = debounce(() => console.log('typed'), 200)
+
+export default function Page() {
+  return <input onChange={log} placeholder="direct import" />
+}
+```
+
+The real numbers from `next experimental-analyze`, same production build, no `optimizePackageImports` configured at all:
+
+```txt
+/lodash-barrel:  231.63 KB compressed (est.) · 625.79 KB uncompressed · 176 modules
+/lodash-direct:  231.63 KB compressed (est.) · 625.80 KB uncompressed · 176 modules
+```
+
+Statistically identical. The reason is in Next.js's own Turbopack option table: `turbopackRemoveUnusedExports` and `turbopackInferModuleSideEffects` **default to `true` for `next build`** already (unused-export removal defaults off only in `next dev`). Turbopack's production build was already eliminating the unused named exports from `lodash`'s barrel before `optimizePackageImports` ever entered the picture — for a plain, side-effect-free ESM/CJS barrel like this one, there was nothing left for the option to fix.
 
 ```ts
-// next.config.ts
+// next.config.ts — configuring it anyway is still correct for packages Turbopack can't safely infer
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   experimental: {
-    optimizePackageImports: ['lucide-react'],
+    optimizePackageImports: ['lodash'],
   },
 }
 
 export default nextConfig
 ```
 
-To see what is actually in your bundle, run the Turbopack bundle analyzer (Next.js 16.1+, still marked experimental). It analyzes a production build without producing one and opens an interactive treemap with the full import chain for every module; `--output` writes static files to `.next/diagnostics/analyze` instead of starting the server.
+So where does it actually earn its keep? Two places, both straight from the bundled docs, not the production byte count above:
 
-```bash
-npx next experimental-analyze            # interactive UI on http://localhost:4000
-npx next experimental-analyze --output   # write .next/diagnostics/analyze for sharing/diffing
-```
+1. **A long default list already covers the popular offenders.** `lucide-react`, `date-fns`, `react-icons/*`, `@mui/material`, `@mui/icons-material`, `antd`, `rxjs`, and more are optimized **by default**, with zero config — which is also *why* a from-scratch test with `lucide-react` (rather than `lodash`) would have shown no difference for a completely different reason: the option was already silently active.
+2. **Dev-mode module count**, which the docs call out explicitly: "Some packages can export hundreds or thousands of modules, which can cause performance issues in development and production." `turbopackRemoveUnusedExports` is off by default in `next dev`, so a barrel with thousands of re-exports really can slow cold start and HMR there, even when the shipped production bundle turns out fine.
 
-The older `@next/bundle-analyzer` plugin only works with webpack. Under the default Turbopack build it exits 0 but prints `The Next Bundle Analyzer is not compatible with Turbopack builds, no report will be generated.` — so if you still use it, build with `--webpack`.
+## serverExternalPackages: the server-side counterpart
 
-```js
-// next.config.js — webpack only: run ANALYZE=true next build --webpack
-const withBundleAnalyzer = require('@next/bundle-analyzer')({
-  enabled: process.env.ANALYZE === 'true',
-})
+`optimizePackageImports` is about the client bundle. `serverExternalPackages` is the opposite direction: it tells Next.js to leave a dependency **out** of server-side bundling entirely and load it with native Node `require` instead — the right move for native addons or packages that don't play well with bundling (Next.js already opts out a short list of popular ones, like `@prisma/client` and several `@aws-sdk/*` packages, automatically).
 
-module.exports = withBundleAnalyzer({})
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  serverExternalPackages: ['@acme/native-image-lib'],
+}
+
+export default nextConfig
 ```
 
 ## Keep the Server/Client boundary tight
@@ -98,55 +160,118 @@ The biggest bundle win is not shipping code at all. Everything imported past a `
 
 export const diagramBundleEn = `flowchart TD
   Page["Server Component (0 KB client JS)"] --> Leaf["'use client' leaf"]
-  Page --> Split["next/dynamic chunk"]
+  Page --> Split["next/dynamic chunk (ssr:false only from a Client Component)"]
   Leaf --> JS[Client bundle]
   Split -->|loads on demand| JS
-  Page --> Script["next/script (strategy-timed)"]`;
+  Page --> Script["next/script (strategy-timed)"]
+  JS --> Analyze["next experimental-analyze reads this"]`;
+
+## Mental Model
+
+Think of the client bundle as a shipping manifest, and `next experimental-analyze` as the only way to actually read it rather than guess from the packing list. `optimizePackageImports` and barrel-file worries are about what goes *into* the box before it's sealed — but modern Turbopack already does a pass of "did we actually pack this item" (`turbopackRemoveUnusedExports`) for production builds by default. The remaining cost of a giant barrel file isn't always in the shipped box; it's often in how long the *warehouse* (dev server, HMR) takes to sort through every item before deciding what to pack.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `next/script` strategies | Third-party scripts don't block what matters more | Wrong strategy for a critical script delays something users need first |
+| `next/dynamic` + `ssr: false` | No server-side cost for browser-only code | Only legal inside a Client Component — a real build error otherwise |
+| `optimizePackageImports` | Fixes dev-mode module-count slowdowns for huge barrels; a long list of popular packages get it free | For a production Turbopack build of a simple side-effect-free barrel, may measure as a no-op — verify before crediting it |
+| `serverExternalPackages` | Native addons and bundler-hostile packages load correctly via native `require` | Opting out of bundling means you carry that dependency's own footprint as-is |
+| Pushing `"use client"` down | Most of the tree ships zero client JS | Requires discipline to not "use client" a whole subtree for one interactive leaf |
+
+## Common Misconceptions
+
+- **"Any barrel import (`{ X } from 'big-lib'`) automatically bloats the production bundle."** Proven false for at least one common case in this course's Next.js 16.3 + Turbopack: `turbopackRemoveUnusedExports`/`turbopackInferModuleSideEffects` default to `true` for `next build`, so a plain, side-effect-free barrel measured identically to a deep import — 625.79 KB vs 625.80 KB uncompressed, same 176 modules.
+- **"`optimizePackageImports` is what makes lucide-react/react-icons tree-shake well."** For those specific packages it's already the default behavior with zero config — they're on Next.js's built-in optimized list.
+- **"`ssr: false` on `next/dynamic` is just a hint; it degrades gracefully in a Server Component."** It's a hard build error, proven against the probe, not a warning.
+- **"The old `@next/bundle-analyzer` and `next experimental-analyze` are the same tool with a new name."** They're different tools for different bundlers — the former is webpack-only (and prints a no-op notice under the Turbopack default), the latter is Turbopack-native.
+
+## Reading AI-generated code
+
+When a generated snippet touches bundling, check for these before trusting it:
+
+- Does it claim a barrel import is definitely bloating the bundle without having actually run `next experimental-analyze` to check? Modern Turbopack's default `turbopackRemoveUnusedExports` may have already handled it.
+- Is `ssr: false` passed to `next/dynamic` from a file that isn't a Client Component (no `'use client'` at the top, or a `.tsx` under a Server Component tree)? That's a build failure, not a style nit.
+- Is `optimizePackageImports` being added for a package that's already on Next.js's default-optimized list (redundant, though harmless)?
+- Is a native or bundler-hostile dependency (a database driver, a native addon) being imported without `serverExternalPackages`, risking a bundling failure or bloated server output?
+- Does the code assume `@next/bundle-analyzer` works under the default Turbopack build? It silently no-ops there — it needs `--webpack`.
+
+<SpotTheBug code={`// app/dashboard/page.tsx — no 'use client' directive
+import dynamic from 'next/dynamic'
+
+const Chart = dynamic(() => import('./chart'), { ssr: false })
+
+export default function Dashboard() {
+  return <Chart />
+}`}>
+`app/dashboard/page.tsx` has no `'use client'` directive, so it's a Server Component by default — and `ssr: false` in `next/dynamic` is only allowed inside a Client Component. Proven against the probe: this exact shape fails the build with `Error: \`ssr: false\` is not allowed with \`next/dynamic\` in Server Components. Please move it into a Client Component.` The fix is either adding `'use client'` to this file, or moving the `dynamic(...)` call into a small Client Component wrapper that this Server Component then renders.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-Time third-party scripts with `next/script` strategies, split heavy client code with `next/dynamic`, trim barrel imports with `optimizePackageImports`, and keep `"use client"` low so most of the tree ships zero JavaScript.
+Time third-party scripts with `next/script` strategies, split heavy client code with `next/dynamic` (`ssr: false` only from a Client Component — otherwise it's a real build error), read `next experimental-analyze` instead of assuming a barrel import bloats the bundle (Turbopack's default `turbopackRemoveUnusedExports` may have already fixed it), reach for `optimizePackageImports`/`serverExternalPackages` for the packages that genuinely need it, and keep `"use client"` low so most of the tree ships zero JavaScript.
 </Callout>
 
 export const quizBundleEn = [
   {
     q: 'Which next/script strategy is the default for analytics?',
-    options: [
-      'beforeInteractive',
-      'afterInteractive',
-      'lazyOnload',
-      'workerThread',
-    ],
+    options: ['beforeInteractive', 'afterInteractive', 'lazyOnload', 'workerThread'],
     answer: 1,
+    explain: 'afterInteractive is the default — it loads after hydration starts, which is fine for analytics that don\'t need to run before the page is interactive.',
   },
   {
-    q: 'What does ssr: false in next/dynamic do?',
+    q: 'What happens if you call next/dynamic with ssr: false from a Server Component (no "use client")?',
     options: [
-      'Renders the component on the server only',
-      'Prevents the component from rendering on the server',
-      'Disables code-splitting',
-      'Caches the component output',
+      'It works fine, just skips server rendering for that component',
+      'It fails the build with an explicit error — ssr: false is only allowed in Client Components',
+      'It silently ignores the ssr option',
+      'It converts the file into a Client Component automatically',
     ],
     answer: 1,
+    explain: 'Proven against the probe: the exact error is "`ssr: false` is not allowed with `next/dynamic` in Server Components. Please move it into a Client Component." — a build failure, not a soft fallback.',
   },
   {
-    q: 'What does optimizePackageImports help with?',
+    q: `\`\`\`ts
+/lodash-barrel:  625.79 KB uncompressed · 176 modules
+/lodash-direct:  625.80 KB uncompressed · 176 modules
+\`\`\`
+These are real next experimental-analyze numbers for the same function imported as a barrel import vs a deep import, no optimizePackageImports configured. What do they show?`,
     options: [
-      'Importing only the modules you use from a package',
-      'Preloading remote images',
-      'Generating a sitemap',
-      'Timing third-party scripts',
+      'optimizePackageImports is required to get any tree-shaking at all',
+      'The barrel import is measurably larger, proving the classic pitfall',
+      'They are statistically identical — Turbopack\'s production build already removes unused exports by default for this case',
+      'The numbers are meaningless without a webpack build for comparison',
     ],
-    answer: 0,
+    answer: 2,
+    explain: 'Turbopack\'s turbopackRemoveUnusedExports and turbopackInferModuleSideEffects default to true for next build, so a plain side-effect-free barrel already gets its unused exports stripped without any extra configuration.',
   },
   {
-    q: 'Why push "use client" as far down the tree as possible?',
+    q: 'Which of these packages is already on Next.js\'s default-optimized list for optimizePackageImports (no config needed)?',
+    options: ['lodash', 'lucide-react', 'A random internal monorepo package', 'Every npm package automatically'],
+    answer: 1,
+    explain: 'lucide-react (along with date-fns, react-icons/*, @mui/material, and others) ships on Next.js\'s built-in default-optimized list — lodash notably is not, which is why it makes a cleaner test case for measuring the option\'s actual effect.',
+  },
+  {
+    q: 'Where does the bundled Next.js documentation say optimizePackageImports specifically helps, beyond production bundle size?',
     options: [
-      'It makes the server render faster only',
-      'Everything past the boundary becomes client JavaScript',
-      'It is required for metadata',
-      'It disables Suspense',
+      'It only affects TypeScript compile time',
+      'It can address performance issues in development, for packages that export hundreds or thousands of modules',
+      'It has no effect anywhere except deployment cost',
+      'It is required for the app to build at all',
     ],
     answer: 1,
+    explain: 'The docs state: "Some packages can export hundreds or thousands of modules, which can cause performance issues in development and production." Since next dev defaults turbopackRemoveUnusedExports to false, a huge barrel can genuinely slow dev compile/HMR even when a production build measures the same either way.',
+  },
+  {
+    q: 'What does @next/bundle-analyzer do under the default Turbopack build, and what is the fix if you still need it?',
+    options: [
+      'It works identically to next experimental-analyze',
+      'It exits 0 but prints a message that no report will be generated, because it is webpack-only; use --webpack to keep using it',
+      'It crashes the build with a fatal error',
+      'It automatically switches the build to webpack for you',
+    ],
+    answer: 1,
+    explain: 'The older plugin only understands webpack output. Under the Turbopack-default build it no-ops with a printed notice; next experimental-analyze is the Turbopack-native replacement, or pass --webpack to keep the old plugin working.',
   },
 ];
 

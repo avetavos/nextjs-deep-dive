@@ -1,6 +1,6 @@
 ---
 title: 'Turbopack และ Build Performance'
-description: 'Turbopack bundler ที่เขียนด้วย Rust และตอนนี้เป็น default ของ next dev และ next build — incremental compilation, HMR และ cold start ที่เร็วขึ้น, ต่างจาก webpack ยังไง และ build caching'
+description: 'Turbopack bundler ที่เขียนด้วย Rust และตอนนี้เป็น default ของ next dev และ next build — incremental compilation, ย้าย webpack loader ด้วย resolveAlias/rules, ต้นทุนจริงของ React Compiler, flag debug build อย่าง --debug-prerender กับ --profile และ build caching'
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -46,9 +47,14 @@ Turbopack คือ bundler ของ Next.js ที่เขียนด้ว�
 
 แก่นคือ incremental compilation Turbopack สร้าง dependency graph แล้วคำนวณใหม่เฉพาะส่วนที่ได้รับผลจากการเปลี่ยนแปลง cold start จึงเร็วขึ้นและ Hot Module Replacement ยังเกือบทันทีแม้แอปจะโตขึ้น เมื่อคุณ save ไฟล์ Turbopack จะ recompile เฉพาะ module นั้นกับตัวที่ขึ้นกับ module นั้น ไม่ใช่ทั้ง route
 
-## ต่างจาก webpack ยังไง
+## ย้าย webpack loader: resolveAlias และ rules
 
-webpack คือ JavaScript bundler ที่สุกงอมและมี plugin ecosystem มหาศาล แต่แก่น JavaScript และแนวโน้มที่จะ rebuild ทั้งก้อนกลายเป็นคอขวดในแอปใหญ่ Turbopack เขียนด้วย Rust ออกแบบมาให้ทำงาน multi-core และถือว่างาน incremental แบบละเอียดเป็น default ไม่ใช่ของเสริม plugin และ loader ของ webpack บางตัวใช้ไม่ได้ — Next.js มีตัวเทียบเท่าให้เอง และคุณตั้งค่า Turbopack ใต้ key `turbopack`
+webpack คือ JavaScript bundler ที่สุกงอมและมี plugin ecosystem มหาศาล แต่แก่น JavaScript และแนวโน้มที่จะ rebuild ทั้งก้อนกลายเป็นคอขวดในแอปใหญ่ Turbopack เขียนด้วย Rust ออกแบบมาให้ทำงาน multi-core และถือว่างาน incremental แบบละเอียดเป็น default ไม่ใช่ของเสริม Turbopack **ไม่**รองรับ webpack plugin เลย — รองรับแค่ **loader** ของ webpack ที่ทดสอบแล้วบางส่วนเท่านั้น — และคุณตั้งค่ามันใต้ key `turbopack` ระดับบนสุด (ชื่อเดิมคือ `experimental.turbo` ยังใช้ได้เป็น alias แต่ config ใหม่ควรใช้ key ระดับบนสุด)
+
+สอง option ที่ครอบคลุม webpack `resolve` config ที่คนใช้จริงเกือบทุกกรณี:
+
+- **`resolveAlias`** — เทียบเท่า `resolve.alias` ของ webpack ตรง ๆ สำหรับ map import specifier ไปยัง module อื่น
+- **`rules`** — เทียบเท่า `module.rules` ของ webpack สำหรับใช้ loader (เช่น `@svgr/webpack`, `yaml-loader`, `raw-loader`) กับไฟล์ที่ตรงกับ glob
 
 ```ts
 // next.config.ts — Turbopack-specific configuration
@@ -56,13 +62,63 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   turbopack: {
-    // e.g. custom rules for importing SVGs as components
-    rules: {},
+    resolveAlias: {
+      underscore: 'lodash', // same shape as webpack's resolve.alias
+    },
+    resolveExtensions: ['.mdx', '.tsx', '.ts', '.jsx', '.js', '.json'],
+    // rules: { '*.svg': { loaders: ['@svgr/webpack'], as: '*.js' } }
   },
 }
 
 export default nextConfig
 ```
+
+ช่องว่างที่ต้องระวังตอนย้าย: loader runner ของ Turbopack (`loader-runner`) รองรับ API ของ loader มาตรฐานส่วนใหญ่ แต่ไม่ทั้งหมด — `this.importModule`/`this.loadModule` ไม่รองรับเลย, `this.emitFile` ไม่รองรับเลย และ `this.fs` รองรับแค่ `readFile` เท่านั้น loader ที่พึ่งพา API พวกนี้ต้องหาทางเลือกที่เข้ากับ Turbopack ได้ ไม่ใช่แค่เพิ่ม entry ใน `rules`
+
+## React Compiler: ต้นทุนจริง และต้องมี Babel plugin หรือเปล่า
+
+`reactCompiler: true` เปิด automatic memoization ตัดงาน `useMemo`/`useCallback` ด้วยมือไปเยอะ จุดที่ docs พูดตรง ๆ คือ: compiler รันผ่าน **Babel plugin** — Next.js ใส่ SWC pass แบบ custom มาก่อนเพื่อจำกัดว่าไฟล์ไหนจะถูกส่งเข้า Babel บ้าง แต่คุณก็ยังจ่ายต้นทุนตอน build จริง แม้จะจำกัดขอบเขต และต้องติดตั้ง `babel-plugin-react-compiler` เอง
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactCompiler: true, // requires: npm install -D babel-plugin-react-compiler
+}
+
+export default nextConfig
+```
+
+Next.js 16.3 เพิ่มทางออกจากต้นทุน Babel นั้น: `experimental.turbopackRustReactCompiler` รัน native Rust port ของ compiler ข้างใน Turbopack ตรง ๆ — ไม่ต้องผ่าน Babel pass บน Node.js และ**ไม่ต้องติดตั้ง `babel-plugin-react-compiler` เลย** มันยังต้องมี `reactCompiler: true` ตั้งไว้อยู่ดี (มันแค่เลือกว่า *implementation ไหน* จะรัน) และใช้ได้เฉพาะกับ Turbopack เท่านั้น
+
+```ts
+// next.config.ts — 16.3+: skip the Babel plugin entirely
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+  experimental: {
+    turbopackRustReactCompiler: true, // native Rust port, Turbopack-only, no babel-plugin-react-compiler needed
+  },
+}
+
+export default nextConfig
+```
+
+## debug build: --debug-prerender กับ --profile
+
+flag ของ `next build` สองตัว ทั้งคู่มีจริงและอยู่ใน Next.js เวอร์ชันนี้เป๊ะ (`npx next build --help`):
+
+- **`--debug-prerender`** — "Enables debug mode for prerendering. Not for production use!" — สำหรับ trace ว่าเกิดอะไรขึ้นจริง ๆ ตอน route ถูก prerender เมื่อการแบ่ง static/dynamic ไม่ทำงานตามที่คาด
+- **`--profile`** — "Enables production profiling for React" สำหรับจับ React profiler trace ของ production build
+
+```bash
+next build --debug-prerender   # trace prerendering decisions, dev-only diagnostic
+next build --profile           # React production profiling
+```
+
+`next build --experimental-analyze` ก็มีอยู่จริงเป็น flag ตอน build เทียบเท่ากับ command แยก `next experimental-analyze` ที่พูดถึงในบทก่อนหน้า
 
 ## build caching
 
@@ -89,52 +145,113 @@ export const diagramTurboTh = `flowchart LR
   Graph --> Changed[Recompile changed module + dependents]
   Graph --> Cache[Reuse unchanged from cache]
   Changed --> HMR[Fast HMR / build]
-  Cache --> HMR`;
+  Cache --> HMR
+  Compiler["reactCompiler: true"] -->|Babel plugin, default| Slow[Localized build cost]
+  Compiler -->|turbopackRustReactCompiler: true, 16.3+| Fast[Native Rust, no babel-plugin-react-compiler]`;
+
+## Mental Model
+
+`rules`/`resolveAlias` ของ Turbopack คือชั้นแปลภาษา ไม่ใช่การเขียนใหม่ทั้งหมด — คุณกำลังบอก Turbopack ว่า "นี่คือ webpack loader ที่คุณเชื่อถืออยู่แล้ว รันมันแบบที่เคยรัน" นั่นคือเหตุผลที่ขอบเขต API ของ loader (ไม่ใช่พฤติกรรมแกนของ bundler) คือจุดที่การย้ายมักพังจริง การแยก React Compiler (Babel เทียบกับ Rust port ใต้ `turbopackRustReactCompiler`) ก็เป็นทางเลือกรูปแบบเดียวกับ Turbopack เทียบกับ webpack เอง: ทางหนึ่งสุกงอมใช้ได้ทุกที่แต่ต้องมี dependency เพิ่ม ทางใหม่ตัด dependency นั้นออกแต่จำกัดแค่ Turbopack เท่านั้น
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| Turbopack default (`next dev`/`next build`) | cold start เร็วขึ้น HMR เกือบทันที | webpack plugin ใช้ไม่ได้เลย รองรับแค่ loader บางส่วนที่ทดสอบแล้ว |
+| `turbopack.resolveAlias`/`rules` | เทียบเท่า `resolve.alias`/loader ของ webpack ตรง ๆ | loader ที่ใช้ `importModule`, `emitFile` หรือ `this.fs` ส่วนใหญ่ต้องหาวิธีอื่น |
+| `reactCompiler: true` (Babel, ทาง default) | automatic memoization ตัดงาน `useMemo`/`useCallback` ด้วยมือ | ต้นทุน build จริงจาก Babel plugin ต้องติดตั้ง `babel-plugin-react-compiler` เอง |
+| `+ turbopackRustReactCompiler: true` (16.3+) | ไม่ต้องผ่าน Babel ไม่ต้องติดตั้ง dependency เพิ่ม | ยัง experimental และใช้ได้เฉพาะ Turbopack |
+| `--debug-prerender` / `--profile` | diagnostic จริงสำหรับ prerendering และ React profiling | `--debug-prerender` ระบุตรง ๆ ว่า "not for production use" |
+| Turbopack FS cache (เปิด default) | run `dev`/`build` ซ้ำเร็วขึ้น | ช่วยใน CI ได้ก็ต่อเมื่อ `.next/cache` ถูก restore จริงระหว่าง run |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Turbopack รองรับ webpack plugin เหมือนที่รองรับ loader"** ไม่จริง — plugin ไม่รองรับเลย รองรับแค่ loader บางส่วนที่ทดสอบแล้วผ่าน `turbopack.rules`
+- **"`reactCompiler: true` มีแค่นี้ก็พอ Next.js รันแบบ native ให้เอง"** โดย default มันยังรันผ่าน Babel plugin ที่คุณต้องติดตั้งเอง (`babel-plugin-react-compiler`) มีแค่ `turbopackRustReactCompiler: true` (16.3+, Turbopack เท่านั้น) เท่านั้นที่ข้าม dependency นั้นได้
+- **"`--debug-prerender` ปลอดภัยที่จะเปิดค้างไว้เพื่อ troubleshoot production build"** help text ของ CLI เองบอกตรง ๆ ว่า "Not for production use!"
+- **"Turbopack filesystem cache เร่ง CI build ทุกครั้งอัตโนมัติ"** มันช่วยได้ก็ต่อเมื่อ CI ของคุณ restore `.next/cache` จริงระหว่าง run — ไม่งั้นทุก build ก็ยังเริ่มจากศูนย์เหมือนเดิมไม่ว่า flag จะเปิด default อยู่หรือไม่
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะ Turbopack หรือ build configuration เช็กสิ่งเหล่านี้ก่อนเชื่อ:
+
+- มันตั้งค่า webpack **plugin** ใต้ `turbopack.rules` หรือเปล่า? ที่นั่นรองรับแค่ loader เท่านั้น — plugin ไม่มีตัวเทียบเท่าผ่าน key นี้
+- มันเปิด `reactCompiler: true` โดยไม่ทั้งติดตั้ง `babel-plugin-react-compiler` และไม่ทั้งตั้ง `turbopackRustReactCompiler: true` หรือเปล่า? ต้องมีอย่างใดอย่างหนึ่ง
+- มันแนะนำ `--debug-prerender` สำหรับ production deployment แทนที่จะเป็นการ debug บนเครื่อง local หรือเปล่า?
+- มีฟังก์ชัน `webpack()` แบบ custom อยู่โดยไม่มี key `turbopack` แล้วสมมติว่า `next build` default จะเมินมันไปเฉย ๆ หรือเปล่า? ความจริงมันทำให้ build fail
+- มันสมมติว่า build cache ช่วย CI ได้โดยที่ pipeline ไม่ได้ restore `.next/cache` ระหว่าง run จริง ๆ หรือเปล่า?
+
+<SpotTheBug code={`// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+}
+
+export default nextConfig`}>
+บรรทัดนี้เปิด React Compiler แต่โดย default มันรันผ่าน **Babel plugin** ที่ไม่ได้ bundle มากับ Next.js — คุณต้อง `npm install -D babel-plugin-react-compiler` แยกต่างหาก ไม่งั้น build จะ fail เพราะหา package นั้นไม่เจอ วิธีแก้มีสองทาง: ติดตั้ง Babel plugin เอง หรือ (Next.js 16.3+, Turbopack เท่านั้น) เพิ่ม `experimental: { turbopackRustReactCompiler: true }` ไว้ข้าง `reactCompiler: true` เพื่อใช้ native Rust port แทน ซึ่งไม่ต้องมี dependency เพิ่มเลย
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-Turbopack คือ bundler ที่เขียนด้วย Rust ทำงาน incremental และเป็น default แล้วของ `next dev` และ `next build` — cold start และ HMR เร็วขึ้น ใช้ `--webpack` เพื่อ opt out และมี filesystem cache ที่เปิดโดย default ทั้ง dev และ build
+Turbopack คือ bundler ที่เขียนด้วย Rust ทำงาน incremental และเป็น default แล้วของ `next dev` และ `next build` — ย้าย webpack loader (ไม่ใช่ plugin) ผ่าน `turbopack.resolveAlias`/`rules`, `reactCompiler: true` ต้องมี `babel-plugin-react-compiler` ติดตั้งไว้ เว้นแต่จะตั้ง `turbopackRustReactCompiler: true` ของ 16.3+ ด้วย, ใช้ `--debug-prerender`/`--profile` สำหรับ diagnostic ของ build จริง (ไม่ใช่ production) และ filesystem cache เปิด default ทั้ง dev และ build
 </Callout>
 
 export const quizTurboTh = [
   {
     q: 'Turbopack เขียนด้วยภาษาอะไร',
-    options: [
-      'JavaScript',
-      'Go',
-      'Rust',
-      'C++',
-    ],
+    options: ['JavaScript', 'Go', 'Rust', 'C++'],
     answer: 2,
+    explain: 'Turbopack เขียนด้วย Rust ซึ่งเป็นส่วนหนึ่งที่ทำให้มันออกแบบมาให้ทำงาน multi-core และเร็วกว่าโมเดล full-rebuild บน JavaScript ของ webpack',
   },
   {
-    q: 'ใน Next.js ปัจจุบัน Turbopack เป็น default bundler ของอะไร',
+    q: 'Turbopack รองรับ webpack plugin เหมือนที่รองรับ loader บางส่วนที่ทดสอบแล้วหรือเปล่า',
     options: [
-      'เฉพาะ next dev',
-      'เฉพาะ next build',
-      'ทั้ง next dev และ next build',
-      'ไม่ใช่ทั้งคู่ ต้อง opt-in เอง',
-    ],
-    answer: 2,
-  },
-  {
-    q: 'จะ opt กลับไปใช้ webpack สำหรับ production build ยังไง',
-    options: [
-      'ลบ next.config ทิ้ง',
-      'สั่ง next build --webpack',
-      'เซ็ต NODE_ENV=webpack',
-      'ทำไม่ได้',
+      'ใช่ ทั้งคู่ทำงานเหมือนกันผ่าน key rules',
+      'ไม่ — Turbopack ไม่รองรับ webpack plugin เลย รองรับแค่ loader บางส่วนที่ทดสอบแล้วเท่านั้น',
+      'plugin ใช้ได้แต่ loader ใช้ไม่ได้',
+      'ใช้ไม่ได้ทั้งคู่ Turbopack ต้องใช้ format config ใหม่ทั้งหมดสำหรับทั้งสองอย่าง',
     ],
     answer: 1,
+    explain: 'docs ระบุตรง ๆ ว่า Turbopack ไม่รองรับ webpack plugin แต่รองรับ loader บางส่วนที่ทดสอบแล้ว (babel-loader, @svgr/webpack, sass-loader และอื่น ๆ) ผ่าน turbopack.rules',
   },
   {
-    q: 'อะไรทำให้ Turbopack เร็วเมื่อทำงานซ้ำ',
+    q: 'โดย default reactCompiler: true ต้องติดตั้งอะไร และมีอะไรเปลี่ยนใน 16.3',
     options: [
-      'rebuild ทั้งแอปทุกครั้ง',
-      'incremental compilation บวกกับ filesystem cache',
-      'ข้ามการ type-check',
-      'รันบน core เดียว',
+      'ไม่ต้องติดตั้งอะไร — มันเป็น native ของ Next.js และ Turbopack เต็มรูปแบบ',
+      'babel-plugin-react-compiler เพราะ compiler รันผ่าน Babel โดย default 16.3 เพิ่ม turbopackRustReactCompiler ให้รัน native Rust port แทน ไม่ต้องมี Babel plugin',
+      'package @next/react-compiler แยกต่างหากที่แทนที่ reactCompiler ทั้งหมด',
+      'ไม่มีอะไรเปลี่ยนใน 16.3 — Babel plugin เป็น optional มาตลอด',
     ],
     answer: 1,
+    explain: 'docs ที่ bundle มาระบุว่า compiler "runs through a Babel plugin" ต้องติดตั้ง babel-plugin-react-compiler เอง turbopackRustReactCompiler (16.3+, Turbopack เท่านั้น) รัน native Rust port แทนและไม่ต้องมี package นั้น',
+  },
+  {
+    q: 'output ของ next build --help บอกอะไรเกี่ยวกับ --debug-prerender',
+    options: [
+      '"Recommended for all production builds"',
+      '"Enables debug mode for prerendering. Not for production use!"',
+      'ไม่มี flag นี้ใน Next.js เวอร์ชันนี้',
+      '"Deprecated in favor of --profile"',
+    ],
+    answer: 1,
+    explain: 'ยืนยันตรงจาก npx next build --help บน Next.js 16.3.6 probe นี้: flag มีอยู่จริง และคำอธิบายของมันเองเตือนตรง ๆ ว่าไม่ใช่สำหรับ production',
+  },
+  {
+    q: 'อะไรคือตัวเทียบเท่าแบบ Turbopack-native ของ resolve.alias ใน webpack',
+    options: ['turbopack.rules', 'turbopack.resolveAlias', 'experimental.optimizePackageImports', 'ฟังก์ชัน webpack() ใน next.config'],
+    answer: 1,
+    explain: 'turbopack.resolveAlias map import ที่ถูก alias ไปยัง module อื่นที่จะโหลดแทน — เป็นตัวเทียบเท่าที่ระบุไว้ตรง ๆ ของ resolve.alias ใน webpack',
+  },
+  {
+    q: 'CI pipeline รัน next build ใหม่ทุกครั้งและไม่เคย restore .next/cache ระหว่าง run เลย turbopackFileSystemCacheForBuild ที่เปิด default เป็น true ให้อะไรกับพวกเขาจริง ๆ',
+    options: [
+      'build เร็วขึ้นเสมอ เพราะ cache อยู่ใน memory ระหว่าง run',
+      'แทบไม่มีผลอะไรที่วัดได้ — cache บน disk ที่ .next/cache/turbopack ช่วยได้ก็ต่อเมื่อ build ครั้งถัดไปอ่านสิ่งที่ build ก่อนหน้าเขียนไว้ได้จริง',
+      'ทำให้ build fail เพราะโฟลเดอร์ cache ยังไม่มีอยู่',
+      'ปิดการใช้ Turbopack ให้อัตโนมัติสำหรับ build นั้น',
+    ],
+    answer: 1,
+    explain: 'build cache เป็น filesystem cache ใต้ .next/cache/turbopack เปิด default อยู่ แต่จะคุ้มค่าก็ต่อเมื่อ build ถัดไปอ่าน cache ที่ build ก่อนหน้าเขียนไว้ได้จริง ซึ่งต้องให้ CI restore โฟลเดอร์นั้นระหว่าง run',
   },
 ];
 

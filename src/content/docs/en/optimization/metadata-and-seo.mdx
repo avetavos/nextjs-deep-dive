@@ -1,6 +1,6 @@
 ---
 title: Metadata and SEO
-description: The Metadata API — static export const metadata and dynamic generateMetadata, title templates, and file-based metadata like opengraph-image, sitemap, and robots.
+description: The Metadata API — static export const metadata and dynamic generateMetadata, metadataBase, alternates.languages, viewport/generateViewport separated from metadata, and file-based metadata like opengraph-image (ImageResponse), sitemap, and robots.
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -33,7 +34,31 @@ export default function AboutPage() {
 }
 ```
 
-## Dynamic metadata and title templates
+## metadataBase: the missing setting that silently breaks Open Graph images
+
+That `openGraph.images: ['/og.png']` above is a **relative** path. Open Graph and Twitter crawlers need an absolute URL, so Next.js needs a base to resolve it against — `metadataBase`. Skip it and the framework doesn't fail the build; it falls back to `http://localhost:3000` and warns. Proven against the probe's root layout (which, like this course's example, has no `metadataBase` set):
+
+```txt
+⚠ metadataBase property in metadata export is not set for resolving social open
+  graph or twitter images, using "http://localhost:3000". See
+  https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+```
+
+That means every relative `og:image` in production silently resolves to a `localhost` URL unless you set it — social platforms fetching the tag get an unreachable image.
+
+```tsx
+// app/layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://acme.com'),
+  title: { template: '%s | Acme', default: 'Acme' },
+}
+```
+
+`metadataBase` is only needed once, in the root layout (or wherever the root `metadata` lives) — every relative URL in `openGraph.images`, `twitter.images`, and `alternates.canonical` anywhere in the tree resolves against it.
+
+## Dynamic metadata, title templates, and alternates.languages
 
 When the tags depend on data — a blog post, a product — export `generateMetadata` instead. It receives the route `params`, runs on the server, and returns the same `Metadata` shape. Fetches here are deduplicated against the ones in your page, so you do not pay twice. Since 15.2 its output is **streamed**: for regular browsers Next.js sends the page without waiting for `generateMetadata` and appends the resulting tags to the `<body>` once it resolves; for HTML-limited bots that cannot run JavaScript (Twitterbot, Slackbot, Bingbot — the default `htmlLimitedBots` list) it blocks and places them in `<head>`. Static `metadata` always lands in `<head>`.
 
@@ -66,7 +91,66 @@ export const metadata: Metadata = {
 }
 ```
 
-## File-based metadata
+A course that ships every lesson in two languages is exactly the case `alternates.languages` exists for — it emits `hreflang` links so search engines know the `/en` and `/th` versions are translations of one another, not duplicate content.
+
+```tsx
+// app/[lang]/lesson/[slug]/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://learn.example.com'),
+  alternates: {
+    languages: {
+      en: '/en/lesson/images-and-fonts',
+      th: '/th/lesson/images-and-fonts',
+    },
+  },
+}
+```
+
+Rendered head output — one `link rel="alternate"` per language, resolved against `metadataBase`:
+
+```html
+<link rel="alternate" hreflang="en" href="https://learn.example.com/en/lesson/images-and-fonts" />
+<link rel="alternate" hreflang="th" href="https://learn.example.com/th/lesson/images-and-fonts" />
+```
+
+## generateViewport and viewport are separate from metadata
+
+`viewport` (or `generateViewport` for a dynamic version) is its **own** export — it is not a field inside `metadata`, even though older Next.js versions had you set `viewport` that way. Put it inside `metadata` today and Next.js does not silently merge it; it drops it and warns. Proven against the probe:
+
+```tsx
+// app/viewport-bug/page.tsx — @expect-error viewport does not belong inside metadata
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Viewport bug demo',
+  viewport: 'width=device-width, initial-scale=1',
+}
+```
+
+```txt
+⚠ Unsupported metadata viewport is configured in metadata export in /viewport-bug.
+  Please move it to viewport export instead.
+Read more: https://nextjs.org/docs/app/api-reference/functions/generate-viewport
+```
+
+The fix is a sibling export, not a field:
+
+```tsx
+// app/layout.tsx | page.tsx
+import type { Viewport } from 'next'
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: 'black',
+}
+```
+
+`viewport`/`generateViewport` are also only supported in Server Components, and a route segment cannot export both `viewport` and `generateViewport` at once — pick one.
+
+## File-based metadata, including opengraph-image built with ImageResponse
 
 Some metadata is a file, not a field. Drop a specially named file into a route segment and Next.js wires it up: `opengraph-image.tsx` generates a social preview, `icon.png` becomes the favicon, and `sitemap.ts` and `robots.ts` become their respective routes. These special routes are cached by default.
 
@@ -82,6 +166,19 @@ export default function Image() {
 }
 ```
 
+Built and served against the probe, this is a real generated file, not a placeholder — `curl` against the resulting route returns exactly the declared `size` and `contentType`:
+
+```txt
+$ curl -sD - -o /tmp/og.png http://localhost:3181/opengraph-image
+HTTP/1.1 200 OK
+content-type: image/png
+cache-control: public, max-age=0, must-revalidate
+$ file /tmp/og.png
+/tmp/og.png: PNG image data, 1200 x 630, 8-bit/color RGBA, non-interlaced
+```
+
+Because it's a file-based route generated by `ImageResponse` (which renders JSX to an image using Satori, not a browser), it needs `metadataBase` too if it references anything relative — the same setting from earlier covers it.
+
 ```ts
 // app/sitemap.ts — becomes /sitemap.xml
 import type { MetadataRoute } from 'next'
@@ -96,14 +193,60 @@ Because everything is data or a file, there is no `<head>` to keep in sync by ha
 <Mermaid title="How the Metadata API builds the head" code={diagramMetaEn} />
 
 export const diagramMetaEn = `flowchart TD
-  A["metadata object"] --> M[Merge parent + child]
+  A["metadata object (needs metadataBase for relative URLs)"] --> M[Merge parent + child]
   B["generateMetadata(params)"] --> M
-  C["opengraph-image / sitemap / robots files"] --> M
+  V["viewport / generateViewport (separate export)"] --> Head
+  C["opengraph-image (ImageResponse) / sitemap / robots files"] --> M
   M --> Static["static metadata: tags in head"]
-  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]`;
+  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]
+  Static --> Head[head]
+  Stream --> Head`;
+
+## Mental Model
+
+Treat `metadata` the way you'd treat a form with a required field the validator doesn't enforce: `metadataBase` is that field. Nothing stops you from shipping without it — the framework fills in a placeholder (`localhost:3000`) and moves on — but every relative image URL downstream is now silently wrong in production. `viewport` living outside `metadata` is the same shape of trap in reverse: the old, combined API still *parses*, so nothing looks broken until you notice the tag never rendered.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `metadataBase` set once, in the root | Every relative OG/Twitter/canonical URL anywhere resolves correctly | Easy to forget — the fallback hides the mistake instead of failing loudly |
+| `generateMetadata` (streamed) | Page ships without waiting on it; fetches dedupe with the page's own | HTML-limited bots still block on it, so slow metadata fetches still matter for SEO |
+| `alternates.languages` | Crawlers treat translated lessons as one entity, not duplicates | Must stay in sync with the actual route structure per language |
+| `opengraph-image.tsx` + `ImageResponse` | Generated, cached, no manual asset pipeline | Renders via Satori (not a full browser) — CSS support is a subset |
+
+## Common Misconceptions
+
+- **"If I forget `metadataBase`, the build fails so I'll notice."** It doesn't — it warns and falls back to `http://localhost:3000`, which is only visible if you read build output or inspect the rendered tag in production.
+- **"`viewport` is just another field on the `metadata` object, like `title`."** It used to be; today it's a separate export (`viewport` or `generateViewport`), and putting it inside `metadata` produces a real, visible warning and the tag is dropped.
+- **"`alternates.languages` is only for fully separate domains."** It works fine for path-based locales (`/en/...`, `/th/...`) like this course — the values just need to be resolvable URLs (relative ones resolve against `metadataBase`).
+- **"`opengraph-image.tsx` runs in a real browser, so any CSS works."** It renders through Satori, not a browser engine — layout support is closer to a constrained flexbox subset than full CSS.
+
+## Reading AI-generated code
+
+When a generated snippet touches metadata, check for these before trusting it:
+
+- Is there a relative `openGraph.images` or `twitter.images` URL anywhere without a `metadataBase` set in the root metadata? That silently resolves to `localhost` in production.
+- Is `viewport` (or `themeColor`, `width`, `initialScale`) sitting inside the `metadata` object instead of its own `viewport`/`generateViewport` export?
+- Does a route segment export both `viewport` and `generateViewport`? Only one is allowed.
+- For a bilingual or multi-locale route, is `alternates.languages` present and pointing at the actual sibling routes?
+- Does `generateMetadata` duplicate a `fetch` call the page already makes, assuming it isn't deduplicated? (It is — but only if the fetch is genuinely identical.)
+
+<SpotTheBug code={`// app/layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Acme',
+  viewport: 'width=device-width, initial-scale=1',
+  openGraph: {
+    images: ['/og.png'],
+  },
+}`}>
+Two real bugs here, both silent. First, `viewport` is a field inside `metadata` — that's the pre-16 shape; today it must be its own `export const viewport` (or `generateViewport`), and Next.js drops it with a build-time warning ("Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead") rather than applying it. Second, `openGraph.images: ['/og.png']` is relative and there is no `metadataBase` anywhere in this layout — proven in the probe, that combination produces "metadataBase property in metadata export is not set... using \"http://localhost:3000\"", meaning the real production OG image tag points at a URL that doesn't exist outside a developer's machine. The fix: move `viewport` to its own export, and add `metadataBase: new URL('https://acme.com')` next to `title`.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-Describe the head as data with `metadata` or `generateMetadata`, add file-based routes like `opengraph-image` and `sitemap`, and Next.js renders correct, merged tags on the server — no manual `<head>`.
+Describe the head as data with `metadata` or `generateMetadata`, always set `metadataBase` so relative OG/Twitter/canonical URLs resolve in production instead of silently falling back to `localhost`, keep `viewport`/`generateViewport` as their own export (not a field on `metadata`), use `alternates.languages` for this course's `/en`/`/th` pairing, and generate social images with `opengraph-image.tsx` + `ImageResponse` — no manual `<head>`.
 </Callout>
 
 export const quizMetaEn = [
@@ -116,36 +259,68 @@ export const quizMetaEn = [
       'When you want to skip server rendering',
     ],
     answer: 1,
+    explain: 'generateMetadata receives params (and can fetch data), so it is the right choice whenever the tags depend on something the static object cannot know ahead of time, like a blog post title.',
   },
   {
-    q: 'What does a title.template require alongside it?',
+    q: 'What happens if metadataBase is missing and openGraph.images uses a relative path?',
     options: [
-      'A robots.ts file',
-      'A title.default value',
-      'A priority flag',
-      'A generateMetadata function',
+      'The build fails immediately',
+      'Next.js warns and falls back to using http://localhost:3000 to resolve the URL',
+      'The image tag is silently omitted from the head entirely',
+      'Next.js automatically detects the production domain from the request',
     ],
     answer: 1,
+    explain: 'Proven in the probe: without metadataBase set, next build printed exactly "metadataBase property in metadata export is not set for resolving social open graph or twitter images, using \\"http://localhost:3000\\"" — a warning, not a build failure, which is why it is easy to ship unnoticed.',
   },
   {
-    q: 'How do you add a sitemap in the App Router?',
+    q: 'Where does viewport configuration belong in current Next.js, and what happens if you put it inside metadata instead?',
     options: [
-      'Write public/sitemap.xml by hand',
-      'Export a default function from app/sitemap.ts',
-      'Return it from generateMetadata',
-      'Add it to next.config',
+      'It belongs inside metadata.viewport, same as title — this is unchanged',
+      'It must be its own export (viewport or generateViewport); inside metadata it produces a real warning and gets dropped',
+      'It belongs in next.config.ts',
+      'It belongs in generateStaticParams',
     ],
     answer: 1,
+    explain: 'Proven in the probe: a metadata.viewport field produced "Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead" and the tag was not applied.',
   },
   {
-    q: 'Why does the Metadata API beat hand-managing the head?',
+    q: 'What is alternates.languages for, and does it require separate domains per language?',
     options: [
-      'It runs only on the client',
-      'It renders merged tags on the server and cannot drift apart',
-      'It disables crawlers',
-      'It removes the need for a title',
+      'It only works with separate domains, not path-based locales',
+      'It emits hreflang alternate links so crawlers treat translated pages as one entity; path-based locales like /en and /th work fine',
+      'It is only for the Pages Router',
+      'It replaces the need for a title.template',
     ],
     answer: 1,
+    explain: 'The values just need to be resolvable URLs — relative ones resolve against metadataBase — so path-based locales like this course\'s /en and /th lessons are a standard use case.',
+  },
+  {
+    q: 'What does opengraph-image.tsx with ImageResponse actually render with?',
+    options: [
+      'A real headless browser instance (Chromium)',
+      'Satori, a JSX-to-image renderer with a constrained CSS/flexbox subset — not a full browser engine',
+      'A static PNG you must supply yourself',
+      'The same renderer used for generateMetadata',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe: building app/opengraph-image.tsx and requesting the route returned a real 1200x630 PNG (confirmed with `file`), generated via Satori rather than a browser — so its CSS support is a subset, not the full spec.',
+  },
+  {
+    q: `\`\`\`tsx
+export const metadata: Metadata = {
+  title: 'Acme',
+  viewport: 'width=device-width, initial-scale=1',
+}
+\`\`\`
+What is wrong with this export, and what does Next.js do about it?`,
+    options: [
+      'Nothing — viewport as a string inside metadata is valid and gets applied',
+      'viewport does not belong inside metadata; Next.js warns and drops it instead of rendering the tag',
+      'It causes an immediate TypeScript compile error',
+      'It silently converts viewport into a generateViewport function',
+    ],
+    answer: 1,
+    explain: 'This is the pre-16 shape. Proven in the probe: next build printed "Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead" — the viewport meta tag is never emitted.',
   },
 ];
 

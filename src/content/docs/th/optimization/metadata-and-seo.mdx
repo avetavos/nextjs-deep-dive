@@ -1,6 +1,6 @@
 ---
 title: 'Metadata และ SEO'
-description: 'Metadata API — static export const metadata และ dynamic generateMetadata, title template และ file-based metadata อย่าง opengraph-image, sitemap และ robots'
+description: 'Metadata API — static export const metadata และ dynamic generateMetadata, metadataBase, alternates.languages, viewport/generateViewport ที่แยกจาก metadata และ file-based metadata อย่าง opengraph-image (ImageResponse), sitemap และ robots'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -33,7 +34,31 @@ export default function AboutPage() {
 }
 ```
 
-## metadata แบบ dynamic และ title template
+## metadataBase: setting ที่หายไปแล้วทำ Open Graph image พังแบบเงียบ ๆ
+
+`openGraph.images: ['/og.png']` ข้างบนเป็น path แบบ **relative** crawler ของ Open Graph กับ Twitter ต้องการ absolute URL ดังนั้น Next.js ต้องมี base ไว้ resolve ค่านั้น — คือ `metadataBase` ถ้าไม่ตั้งไว้ framework ไม่ทำให้ build fail แต่ fallback ไปที่ `http://localhost:3000` แล้วเตือน พิสูจน์กับ root layout ของ probe (ซึ่งเหมือนตัวอย่างของคอร์สนี้ ไม่มี `metadataBase` ตั้งไว้):
+
+```txt
+⚠ metadataBase property in metadata export is not set for resolving social open
+  graph or twitter images, using "http://localhost:3000". See
+  https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metadatabase
+```
+
+หมายความว่า `og:image` แบบ relative ทุกตัวใน production จะ resolve ไปที่ URL `localhost` แบบเงียบ ๆ จนกว่าคุณจะตั้งค่าเอง — social platform ที่มา fetch tag นี้จะได้ image ที่เข้าถึงไม่ได้
+
+```tsx
+// app/layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://acme.com'),
+  title: { template: '%s | Acme', default: 'Acme' },
+}
+```
+
+`metadataBase` ต้องตั้งแค่ครั้งเดียวใน root layout (หรือที่ไหนก็ตามที่ root `metadata` อยู่) — URL แบบ relative ทุกตัวใน `openGraph.images`, `twitter.images` และ `alternates.canonical` ทั้งต้นไม้จะ resolve เทียบกับค่านี้
+
+## metadata แบบ dynamic, title template และ alternates.languages
 
 เมื่อ tag ขึ้นกับ data — blog post หรือ product — ให้ export `generateMetadata` แทน function นี้รับ `params` ของ route รันบน server และ return รูปแบบ `Metadata` เดียวกัน การ fetch ตรงนี้ถูก dedupe กับที่อยู่ในหน้าของคุณ คุณจึงไม่จ่ายซ้ำสองครั้ง ตั้งแต่ 15.2 ผลลัพธ์ของมันถูก **stream** — สำหรับ browser ทั่วไป Next.js ส่งหน้าไปก่อนโดยไม่รอ `generateMetadata` แล้วต่อ tag ที่ได้เข้าไปใน `<body>` เมื่อ resolve เสร็จ ส่วน HTML-limited bot ที่รัน JavaScript ไม่ได้ (Twitterbot, Slackbot, Bingbot — list default ของ `htmlLimitedBots`) จะถูก block และได้ tag ใน `<head>` ส่วน `metadata` แบบ static ลง `<head>` เสมอ
 
@@ -66,7 +91,66 @@ export const metadata: Metadata = {
 }
 ```
 
-## file-based metadata
+คอร์สที่ส่งทุกบทเป็นสองภาษาแบบนี้คือเคสที่ `alternates.languages` มีไว้พอดี — มันสร้าง `hreflang` link ให้ search engine รู้ว่าหน้า `/en` กับ `/th` เป็นคำแปลของกันและกัน ไม่ใช่ content ซ้ำ
+
+```tsx
+// app/[lang]/lesson/[slug]/page.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://learn.example.com'),
+  alternates: {
+    languages: {
+      en: '/en/lesson/images-and-fonts',
+      th: '/th/lesson/images-and-fonts',
+    },
+  },
+}
+```
+
+head output ที่ render ออกมา — `link rel="alternate"` หนึ่งอันต่อภาษา resolve เทียบกับ `metadataBase`:
+
+```html
+<link rel="alternate" hreflang="en" href="https://learn.example.com/en/lesson/images-and-fonts" />
+<link rel="alternate" hreflang="th" href="https://learn.example.com/th/lesson/images-and-fonts" />
+```
+
+## generateViewport กับ viewport แยกออกจาก metadata
+
+`viewport` (หรือ `generateViewport` สำหรับเวอร์ชัน dynamic) เป็น export **ของตัวเอง** — ไม่ใช่ field ข้างใน `metadata` ทั้งที่ Next.js เวอร์ชันเก่าเคยให้ตั้ง `viewport` แบบนั้น วางไว้ข้างใน `metadata` วันนี้ Next.js ไม่ merge ให้แบบเงียบ ๆ — มันตัดทิ้งแล้วเตือน พิสูจน์กับ probe จริง:
+
+```tsx
+// app/viewport-bug/page.tsx — @expect-error viewport does not belong inside metadata
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Viewport bug demo',
+  viewport: 'width=device-width, initial-scale=1',
+}
+```
+
+```txt
+⚠ Unsupported metadata viewport is configured in metadata export in /viewport-bug.
+  Please move it to viewport export instead.
+Read more: https://nextjs.org/docs/app/api-reference/functions/generate-viewport
+```
+
+วิธีแก้คือ export พี่น้องกัน ไม่ใช่ field:
+
+```tsx
+// app/layout.tsx | page.tsx
+import type { Viewport } from 'next'
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: 'black',
+}
+```
+
+`viewport`/`generateViewport` รองรับเฉพาะใน Server Component เท่านั้น และ route segment เดียวจะ export ทั้ง `viewport` และ `generateViewport` พร้อมกันไม่ได้ — เลือกอย่างใดอย่างหนึ่ง
+
+## file-based metadata รวมถึง opengraph-image ที่สร้างด้วย ImageResponse
 
 metadata บางอย่างเป็นไฟล์ ไม่ใช่ field วางไฟล์ที่ตั้งชื่อแบบพิเศษลงใน route segment แล้ว Next.js ต่อให้เอง `opengraph-image.tsx` สร้าง social preview, `icon.png` กลายเป็น favicon ส่วน `sitemap.ts` และ `robots.ts` กลายเป็น route ของตัวเอง route พิเศษเหล่านี้ถูก cache โดย default
 
@@ -82,6 +166,19 @@ export default function Image() {
 }
 ```
 
+build แล้วเสิร์ฟบน probe จริง นี่คือไฟล์ที่ถูกสร้างขึ้นจริง ไม่ใช่ placeholder — `curl` ไปที่ route ที่ได้คืนค่า `size` กับ `contentType` ตรงตามที่ประกาศเป๊ะ:
+
+```txt
+$ curl -sD - -o /tmp/og.png http://localhost:3181/opengraph-image
+HTTP/1.1 200 OK
+content-type: image/png
+cache-control: public, max-age=0, must-revalidate
+$ file /tmp/og.png
+/tmp/og.png: PNG image data, 1200 x 630, 8-bit/color RGBA, non-interlaced
+```
+
+เพราะเป็น file-based route ที่สร้างด้วย `ImageResponse` (ซึ่ง render JSX เป็น image ผ่าน Satori ไม่ใช่ browser) มันก็ต้องการ `metadataBase` เหมือนกันถ้าอ้าง path แบบ relative — setting เดียวกันจากก่อนหน้าครอบคลุมตรงนี้ด้วย
+
 ```ts
 // app/sitemap.ts — becomes /sitemap.xml
 import type { MetadataRoute } from 'next'
@@ -96,14 +193,60 @@ export default function sitemap(): MetadataRoute.Sitemap {
 <Mermaid title="Metadata API สร้าง head ยังไง" code={diagramMetaTh} />
 
 export const diagramMetaTh = `flowchart TD
-  A["metadata object"] --> M[Merge parent + child]
+  A["metadata object (needs metadataBase for relative URLs)"] --> M[Merge parent + child]
   B["generateMetadata(params)"] --> M
-  C["opengraph-image / sitemap / robots files"] --> M
+  V["viewport / generateViewport (separate export)"] --> Head
+  C["opengraph-image (ImageResponse) / sitemap / robots files"] --> M
   M --> Static["static metadata: tags in head"]
-  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]`;
+  M --> Stream["generateMetadata: streamed into body (HTML-limited bots: blocking, in head)"]
+  Static --> Head[head]
+  Stream --> Head`;
+
+## Mental Model
+
+มอง `metadata` เหมือนฟอร์มที่มี field จำเป็นตัวหนึ่งที่ validator ไม่บังคับ: `metadataBase` คือ field นั้น ไม่มีอะไรห้ามคุณ ship โดยไม่ตั้งมัน — framework เติม placeholder (`localhost:3000`) ให้แล้วผ่านไป — แต่ทุก relative image URL ที่ตามมาจะผิดแบบเงียบ ๆ ใน production ส่วน `viewport` ที่อยู่นอก `metadata` คือกับดักรูปแบบเดียวกันแต่กลับด้าน: API แบบรวมเดิม ๆ ยังคง *parse* ผ่าน ดังนั้นดูเหมือนไม่มีอะไรพังจนกว่าคุณจะสังเกตว่า tag ไม่เคย render ออกมาเลย
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| ตั้ง `metadataBase` ครั้งเดียวที่ root | URL แบบ relative ของ OG/Twitter/canonical ทุกตัวทุกที่ resolve ถูกต้อง | ลืมง่าย — fallback ซ่อนความผิดพลาดแทนที่จะ fail ดัง ๆ |
+| `generateMetadata` (stream) | หน้าถูกส่งโดยไม่ต้องรอ fetch dedupe กับของหน้าเอง | HTML-limited bot ยัง block รอมันอยู่ ดังนั้น fetch ที่ช้ายังส่งผลต่อ SEO |
+| `alternates.languages` | crawler มองบทที่แปลแล้วเป็น entity เดียวกัน ไม่ใช่ของซ้ำ | ต้อง sync กับโครงสร้าง route จริงของแต่ละภาษาตลอด |
+| `opengraph-image.tsx` + `ImageResponse` | สร้างให้อัตโนมัติ cache ให้ ไม่ต้องมี asset pipeline เอง | render ผ่าน Satori (ไม่ใช่ browser เต็มรูปแบบ) — CSS ที่รองรับเป็นแค่ subset |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ถ้าลืม `metadataBase` build จะ fail ให้เห็นเอง"** ไม่จริง — มันแค่เตือนแล้ว fallback ไปที่ `http://localhost:3000` ซึ่งจะเห็นก็ต่อเมื่ออ่าน build output หรือตรวจ tag ที่ render จริงใน production
+- **"`viewport` ก็แค่ field อีกตัวใน object `metadata` เหมือน `title`"** เคยเป็นแบบนั้น แต่ตอนนี้เป็น export แยก (`viewport` หรือ `generateViewport`) วางไว้ข้างใน `metadata` จะได้ warning ที่เห็นจริงและ tag ถูกตัดทิ้ง
+- **"`alternates.languages` ใช้ได้เฉพาะ domain แยกกันเท่านั้น"** มันใช้ได้ดีกับ locale แบบ path (`/en/...`, `/th/...`) แบบคอร์สนี้ — ค่าแค่ต้องเป็น URL ที่ resolve ได้ (relative ก็ resolve เทียบกับ `metadataBase`)
+- **"`opengraph-image.tsx` รันใน browser จริง ดังนั้น CSS ใช้ได้ทุกอย่าง"** มัน render ผ่าน Satori ไม่ใช่ browser engine — การรองรับ layout ใกล้เคียง flexbox subset ที่จำกัดมากกว่า CSS เต็มรูปแบบ
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อโค้ดที่ AI สร้างแตะ metadata เช็กสิ่งเหล่านี้ก่อนเชื่อ:
+
+- มี `openGraph.images` หรือ `twitter.images` แบบ relative URL ที่ไหนสักที่โดยไม่มี `metadataBase` ตั้งไว้ใน root metadata ไหม? มันจะ resolve ไป `localhost` แบบเงียบ ๆ ใน production
+- `viewport` (หรือ `themeColor`, `width`, `initialScale`) อยู่ข้างใน object `metadata` แทนที่จะเป็น export `viewport`/`generateViewport` ของตัวเองไหม?
+- route segment export ทั้ง `viewport` และ `generateViewport` พร้อมกันไหม? อนุญาตแค่อย่างเดียว
+- สำหรับ route แบบสองภาษาหรือหลาย locale มี `alternates.languages` อยู่และชี้ไปที่ route พี่น้องจริงไหม?
+- `generateMetadata` fetch ซ้ำกับที่หน้า fetch ไปแล้วโดยสมมติว่าไม่ถูก dedupe หรือเปล่า? (มันถูก dedupe จริง — แต่แค่ตอนที่ fetch นั้นเหมือนกันเป๊ะเท่านั้น)
+
+<SpotTheBug code={`// app/layout.tsx
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Acme',
+  viewport: 'width=device-width, initial-scale=1',
+  openGraph: {
+    images: ['/og.png'],
+  },
+}`}>
+มี bug จริงสองตัวที่นี่ ทั้งคู่เงียบ อันแรก `viewport` เป็น field ข้างใน `metadata` — นี่คือรูปแบบก่อน 16 วันนี้มันต้องเป็น `export const viewport` ของตัวเอง (หรือ `generateViewport`) และ Next.js จะตัดมันทิ้งพร้อม warning ตอน build ("Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead") แทนที่จะเอาไปใช้ อันที่สอง `openGraph.images: ['/og.png']` เป็น relative และไม่มี `metadataBase` อยู่ใน layout นี้เลย — พิสูจน์ใน probe แล้วว่าคู่นี้ทำให้เกิด "metadataBase property in metadata export is not set... using \"http://localhost:3000\"" หมายความว่า tag OG image จริงใน production จะชี้ไป URL ที่มีอยู่แค่ในเครื่อง dev เท่านั้น วิธีแก้: ย้าย `viewport` ไปเป็น export ของตัวเอง แล้วเพิ่ม `metadataBase: new URL('https://acme.com')` ไว้ข้าง `title`
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-อธิบาย head เป็น data ด้วย `metadata` หรือ `generateMetadata` เพิ่ม file-based route อย่าง `opengraph-image` และ `sitemap` แล้ว Next.js render tag ที่ถูกต้องและ merge แล้วบน server โดยไม่ต้องแตะ `<head>` เอง
+อธิบาย head เป็น data ด้วย `metadata` หรือ `generateMetadata` ตั้ง `metadataBase` เสมอเพื่อให้ URL แบบ relative ของ OG/Twitter/canonical resolve ถูกต้องใน production แทนที่จะ fallback ไป `localhost` แบบเงียบ ๆ เก็บ `viewport`/`generateViewport` เป็น export ของตัวเอง (ไม่ใช่ field ใน `metadata`) ใช้ `alternates.languages` สำหรับคู่ `/en`/`/th` ของคอร์สนี้ และสร้าง social image ด้วย `opengraph-image.tsx` + `ImageResponse` — ไม่ต้องแตะ `<head>` เอง
 </Callout>
 
 export const quizMetaTh = [
@@ -116,36 +259,68 @@ export const quizMetaTh = [
       'เมื่ออยากข้ามการ render บน server',
     ],
     answer: 1,
+    explain: 'generateMetadata รับ params (และ fetch data ได้) จึงเหมาะเมื่อ tag ขึ้นกับสิ่งที่ object แบบ static รู้ล่วงหน้าไม่ได้ เช่น title ของ blog post',
   },
   {
-    q: 'title.template ต้องมีอะไรคู่กัน',
+    q: 'ถ้าไม่มี metadataBase แล้ว openGraph.images ใช้ path แบบ relative จะเกิดอะไรขึ้น',
     options: [
-      'ไฟล์ robots.ts',
-      'ค่า title.default',
-      'flag priority',
-      'ฟังก์ชัน generateMetadata',
+      'build fail ทันที',
+      'Next.js เตือนแล้ว fallback ไปใช้ http://localhost:3000 เพื่อ resolve URL',
+      'image tag ถูกตัดออกจาก head ไปเลยแบบเงียบ ๆ',
+      'Next.js เดา production domain จาก request ให้อัตโนมัติ',
     ],
     answer: 1,
+    explain: 'พิสูจน์ใน probe แล้ว: ไม่ตั้ง metadataBase next build พิมพ์ตรงตัวว่า "metadataBase property in metadata export is not set for resolving social open graph or twitter images, using \\"http://localhost:3000\\"" — เป็น warning ไม่ใช่ build fail จึงหลุดไปโดยไม่มีใครสังเกตได้ง่าย',
   },
   {
-    q: 'เพิ่ม sitemap ใน App Router ยังไง',
+    q: 'viewport ควรอยู่ตรงไหนใน Next.js ปัจจุบัน และถ้าใส่ไว้ข้างใน metadata แทนจะเกิดอะไรขึ้น',
     options: [
-      'เขียน public/sitemap.xml ด้วยมือ',
-      'export default function จาก app/sitemap.ts',
-      'return sitemap จาก generateMetadata',
-      'เพิ่ม sitemap ใน next.config',
+      'อยู่ข้างใน metadata.viewport เหมือน title — เหมือนเดิมไม่เปลี่ยน',
+      'ต้องเป็น export ของตัวเอง (viewport หรือ generateViewport) ถ้าอยู่ข้างใน metadata จะได้ warning จริงและถูกตัดทิ้ง',
+      'อยู่ใน next.config.ts',
+      'อยู่ใน generateStaticParams',
     ],
     answer: 1,
+    explain: 'พิสูจน์ใน probe แล้ว: field metadata.viewport ทำให้เกิด "Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead" และ tag ไม่ถูกนำไปใช้',
   },
   {
-    q: 'ทำไม Metadata API ดีกว่าการจัดการ head ด้วยมือ',
+    q: 'alternates.languages มีไว้ทำอะไร และต้องใช้ domain แยกกันต่อภาษาไหม',
     options: [
-      'รันบน client เท่านั้น',
-      'render tag ที่ merge แล้วบน server และเพี้ยนออกจากกันไม่ได้',
-      'ปิดการทำงานของ crawler',
-      'ตัดความจำเป็นของ title ออก',
+      'ใช้ได้เฉพาะ domain แยกกันเท่านั้น ไม่ใช่ locale แบบ path',
+      'มันสร้าง hreflang alternate link ให้ crawler มองหน้าที่แปลแล้วเป็น entity เดียวกัน locale แบบ path อย่าง /en กับ /th ใช้ได้ปกติ',
+      'ใช้ได้เฉพาะ Pages Router',
+      'มันแทนที่ความจำเป็นของ title.template',
     ],
     answer: 1,
+    explain: 'ค่าแค่ต้องเป็น URL ที่ resolve ได้ — relative ก็ resolve เทียบกับ metadataBase — ดังนั้น locale แบบ path อย่างบท /en กับ /th ของคอร์สนี้เป็น use case มาตรฐาน',
+  },
+  {
+    q: 'opengraph-image.tsx กับ ImageResponse ใช้อะไร render จริง ๆ',
+    options: [
+      'headless browser instance จริง (Chromium)',
+      'Satori ตัว render JSX เป็น image ที่รองรับ CSS/flexbox แบบจำกัด — ไม่ใช่ browser engine เต็มรูปแบบ',
+      'PNG แบบ static ที่คุณต้องเตรียมเอง',
+      'renderer ตัวเดียวกับที่ generateMetadata ใช้',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ใน probe แล้ว: build app/opengraph-image.tsx แล้วยิง route คืนค่า PNG จริงขนาด 1200x630 (ยืนยันด้วย `file`) สร้างผ่าน Satori ไม่ใช่ browser — การรองรับ CSS จึงเป็นแค่ subset ไม่ใช่ spec เต็มรูปแบบ',
+  },
+  {
+    q: `\`\`\`tsx
+export const metadata: Metadata = {
+  title: 'Acme',
+  viewport: 'width=device-width, initial-scale=1',
+}
+\`\`\`
+export นี้ผิดตรงไหน และ Next.js จัดการกับมันยังไง`,
+    options: [
+      'ไม่มีอะไรผิด — viewport เป็น string ข้างใน metadata ใช้ได้และถูกนำไปใช้',
+      'viewport ไม่ควรอยู่ข้างใน metadata Next.js จะเตือนแล้วตัดทิ้งแทนที่จะ render tag',
+      'ทำให้เกิด TypeScript compile error ทันที',
+      'Next.js แปลง viewport เป็นฟังก์ชัน generateViewport ให้แบบเงียบ ๆ',
+    ],
+    answer: 1,
+    explain: 'นี่คือรูปแบบก่อน 16 พิสูจน์ใน probe แล้ว: next build พิมพ์ "Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead" — viewport meta tag ไม่เคยถูกสร้างออกมาเลย',
   },
 ];
 

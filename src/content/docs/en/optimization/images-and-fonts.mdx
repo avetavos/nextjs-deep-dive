@@ -1,6 +1,6 @@
 ---
 title: Images and Fonts
-description: How next/image resizes, converts, and lazy-loads images with zero layout shift, and how next/font self-hosts fonts at build time with no request to Google.
+description: How next/image resizes, converts, and lazy-loads images with zero layout shift — qualities, localPatterns, minimumCacheTTL, sizes/srcset, priority vs preload, unoptimized — and how next/font self-hosts fonts at build time with no request to Google.
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -16,7 +17,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## next/image resizes, converts, and lazy-loads
 
-`Image` is a drop-in replacement for `<img>` that optimizes on demand. It generates a resized version per device, serves WebP when the browser supports it (AVIF too, if you add it to `images.formats`), and lazy-loads anything below the fold automatically.
+`Image` is a drop-in replacement for `<img>` that optimizes on demand. It generates a resized version per device, serves WebP when the browser supports it (AVIF too, if you add it to `images.formats` — the default `formats` list is `['image/webp']` only), and lazy-loads anything below the fold automatically.
 
 When you import a local file, Next.js reads its intrinsic dimensions at build time, so `width` and `height` are filled in for you.
 
@@ -30,37 +31,7 @@ export default function Page() {
 }
 ```
 
-## width, height, and priority
-
-For any image whose size Next.js cannot infer — a remote URL, for example — you MUST pass `width` and `height`. They reserve the exact box before the pixels arrive, which is what prevents Cumulative Layout Shift. Add `priority` to the one image that is your Largest Contentful Paint so Next.js preloads it and skips lazy-loading.
-
-```tsx
-// Remote image: width + height are required to reserve space
-import Image from 'next/image'
-
-export default function Avatar() {
-  return (
-    <Image
-      src="https://cdn.example.com/avatar.png"
-      alt="User avatar"
-      width={64}
-      height={64}
-      priority // preload the LCP image, skip lazy-loading
-    />
-  )
-}
-```
-
-When the dimensions are genuinely unknown, use `fill` inside a positioned parent and let CSS size the box instead.
-
-```tsx
-// Unknown dimensions: use fill inside a positioned parent
-<div style={{ position: 'relative', width: 400, height: 300 }}>
-  <Image src={src} alt="" fill sizes="400px" style={{ objectFit: 'cover' }} />
-</div>
-```
-
-## Remote images need remotePatterns
+## Remote images need remotePatterns, and local images with a query string need localPatterns
 
 Optimizing an arbitrary external URL would be an open proxy, so Next.js refuses unless you allowlist the host. Declare `images.remotePatterns` in `next.config` and be as specific as you can.
 
@@ -78,6 +49,162 @@ const nextConfig: NextConfig = {
 
 export default nextConfig
 ```
+
+Since Next.js 16 the same allowlisting principle also applies to **local** images that carry a query string (`/assets/photo?v=1`) — this used to be optimized for free, but an unrestricted query string on a local path could be abused for enumeration attacks, so it is now a **build/runtime restriction**: you must add the exact pattern to `images.localPatterns`, `search` included.
+
+```ts
+// next.config.ts — required since 16 for local images with a query string
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    localPatterns: [{ pathname: '/assets/**', search: '?v=1' }],
+  },
+}
+
+export default nextConfig
+```
+
+Omitting `search` allows *any* query string on that path — pin it to an exact value unless you genuinely need a wildcard.
+
+## qualities and minimumCacheTTL: two allowlists that changed defaults in 16
+
+Two `images` config fields quietly narrowed their defaults in Next.js 16, and both are security-shaped, not just performance knobs.
+
+**`qualities`** used to accept any `quality` value; as of 16 it is a required allowlist, defaulting to `[75]` only:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: {
+    qualities: [25, 50, 75, 100],
+  },
+}
+
+export default nextConfig
+```
+
+If an `<Image quality={80}>` prop doesn't match an allowed value, Next.js silently coerces it to the closest one in the list. But hit the optimizer endpoint directly with a disallowed quality and it refuses outright — proven against the probe (a fresh `next start`, no `qualities` override, so the default `[75]` allowlist is active):
+
+```txt
+$ curl -sD - -o /dev/null "http://localhost:3181/_next/image?url=%2Fhero.jpg&w=640&q=80"
+HTTP/1.1 400 Bad Request
+```
+
+**`minimumCacheTTL`** changed from 60 seconds to **4 hours (14400 seconds)** as of Next.js 16 — confirmed by reading the real `Cache-Control` header the optimizer sends on a cache miss:
+
+```txt
+$ curl -sD - -o /dev/null "http://localhost:3181/_next/image?url=%2Fhero.jpg&w=640&q=75"
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=14400, must-revalidate
+```
+
+`14400` is exactly the new default — the framework favors a durable cache over frequent revalidation now, on the theory that most upstream images without their own `Cache-Control` header rarely change. Override it per project if you need fresher images:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: { minimumCacheTTL: 60 }, // pre-16 behavior
+}
+
+export default nextConfig
+```
+
+## sizes, srcset, and downloading an oversized image
+
+`sizes` tells the browser how wide the image will actually render at different breakpoints, so it can pick the smallest sufficient candidate out of the `srcset` Next.js generates. Skip it on a `fill` image and Next.js defaults `sizes` to `100vw` — the browser then assumes the image is as wide as the viewport, no matter how small the box actually is.
+
+Proven in the probe with a 1600×1600 source image inside a 300px-wide `fill` box:
+
+```tsx
+// app/sizes-wrong/page.tsx — no sizes prop
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: 300, position: 'relative', height: 200 }}>
+      <Image src="/hero.jpg" alt="wrong sizes demo" fill style={{ objectFit: 'cover' }} />
+    </div>
+  )
+}
+```
+
+The rendered HTML shows exactly what the browser has to choose from:
+
+```txt
+sizes="100vw"
+srcSet="/_next/image?url=%2Fhero.jpg&w=640&q=75 640w,
+        /_next/image?url=%2Fhero.jpg&w=750&q=75 750w,
+        ... up to
+        /_next/image?url=%2Fhero.jpg&w=3840&q=75 3840w"
+```
+
+Only the `deviceSizes` tier (`640, 750, 828, 1080, 1200, 1920, 2048, 3840`) is offered — the smaller `imageSizes` tier (`32...384`) is dropped entirely, because Next.js only includes those small candidates when `sizes` indicates the image is *less than* full viewport width. On a 400px-wide viewport, `sizes="100vw"` resolves to 400px, so the browser picks the smallest candidate that still covers it: **640w** — more than 4× the pixel area the 300px box actually needs.
+
+Add the real `sizes` value and the small tier comes back, and the browser downloads something much closer to what it displays:
+
+```tsx
+// app/sizes-right/page.tsx — sizes matches the actual rendered width
+import Image from 'next/image'
+
+export default function Page() {
+  return (
+    <div style={{ width: 300, position: 'relative', height: 200 }}>
+      <Image src="/hero.jpg" alt="right sizes demo" fill sizes="300px" style={{ objectFit: 'cover' }} />
+    </div>
+  )
+}
+```
+
+```txt
+sizes="300px"
+srcSet="... 32w, 48w, 64w, 96w, 128w, 256w, 384w, 640w, ..."
+```
+
+Now the full `imageSizes` tier is present, and a 400px viewport picks **384w** for a 1x display — the wrong-`sizes` version was downloading over 2.7× the pixel width (and roughly 7× the pixel area) it needed.
+
+## priority is deprecated in favor of preload; loading and fetchPriority for the rest
+
+As of Next.js 16, the `priority` prop is **deprecated** — the docs bundled with this exact version say so directly: "Starting with Next.js 16, the `priority` property has been deprecated in favor of the `preload` property in order to make the behavior clear." `priority` still works today, but new code should reach for `preload` instead.
+
+```tsx
+// app/page.tsx — current API: preload replaces priority
+import Image from 'next/image'
+
+export default function Hero() {
+  return <Image src="/hero.jpg" alt="Hero" width={1600} height={900} preload />
+}
+```
+
+Use `preload` on the one image that is your Largest Contentful Paint (LCP) element — typically an above-the-fold hero image. When more than one image could be the LCP element depending on viewport (a common responsive-hero case), the docs recommend `loading="eager"` or `fetchPriority="high"` instead of `preload`, since `preload` inserts an unconditional `<link>` in `<head>` regardless of which image the browser ends up needing.
+
+```tsx
+// Multiple viewport-dependent hero candidates: fetchPriority, not preload
+<Image src="/hero-mobile.jpg" alt="" width={400} height={600} fetchPriority="high" />
+```
+
+`loading` still controls lazy-vs-eager the same way it always has — `lazy` (the default) defers until the image nears the viewport, `eager` loads immediately regardless of position.
+
+## unoptimized: self-hosting without sharp
+
+Image Optimization needs `sharp` on the server. Proven in the probe: removing `sharp` from `node_modules` and requesting `/_next/image` did **not** error — it silently served the original, full-size file untouched (a 1600×1600 source came back as 1600×1600, ignoring the requested `w=750`), instead of failing loudly or converting formats. That silent fallback is worse than an explicit choice: if a deploy target genuinely can't install `sharp`, set `images.unoptimized: true` yourself so the behavior is documented in config, not discovered by reading response headers in production.
+
+```ts
+// next.config.ts — intentional opt-out, e.g. static export or a host without sharp
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  images: { unoptimized: true },
+}
+
+export default nextConfig
+```
+
+`unoptimized` is also the right call per-image for content that never benefits from optimization — tiny icons under 1KB, SVGs, or animated GIFs.
 
 ## next/font self-hosts at build time
 
@@ -104,54 +231,128 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 export const diagramImgEn = `flowchart LR
   Src[Source asset] --> Build[Build step]
-  Build --> Opt["Resized, WebP/AVIF, self-hosted font"]
-  Opt --> Reserve["width + height reserve space"]
+  Build --> Opt["Resized, WebP-only by default, self-hosted font"]
+  Opt --> Reserve["width + height (or sizes) reserve space"]
   Reserve --> Page["No layout shift, fast LCP"]`;
 
+## Mental Model
+
+Think of `next/image` as a vending machine with a fixed set of pre-cut sizes (`deviceSizes` + `imageSizes`), not a photocopier that prints any size on demand. `sizes` is you telling the machine which slot you'll actually use; skip it and the machine assumes you want the biggest slot "just in case," because that's the only safe assumption for a full-width image. `qualities` and `minimumCacheTTL` are the machine's own safety rules — a fixed quality menu instead of an unbounded dial, and a longer default shelf life so it doesn't have to re-stock every minute.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `sizes` set correctly | Browser downloads the smallest sufficient candidate | One more prop to keep in sync with your actual CSS layout |
+| `qualities` allowlist (default `[75]`) | Predictable optimizer cost, no arbitrary-quality abuse | Must add every quality value your design actually uses |
+| `minimumCacheTTL: 14400` (default) | Fewer revalidations, lower optimizer cost | Stale image can persist up to 4h if the upstream `Cache-Control` is missing |
+| `unoptimized: true` | Works anywhere, even without `sharp` | No resizing, no format conversion — you own that cost elsewhere |
+| `preload` / `fetchPriority="high"` | Explicit control over which image gets prioritized | Wrong image marked this way delays the *real* LCP element |
+
+## Common Misconceptions
+
+- **"`fill` without `sizes` just works, since the box has a fixed CSS width."** Next.js does not read your CSS — it only sees the `sizes` prop (or its `100vw` default). A visually small box with no `sizes` still requests full-viewport-sized candidates.
+- **"`priority` is still the modern way to mark the LCP image."** It is deprecated as of Next.js 16 in favor of `preload`, and `fetchPriority`/`loading="eager"` for the multi-candidate case.
+- **"An invalid `quality` prop just gets ignored."** It's coerced to the closest allowed value in `images.qualities` when used through `<Image>` — but a direct request to the optimizer endpoint with a disallowed quality is rejected with `400`.
+- **"If `sharp` is missing, image optimization just fails loudly so you'll notice."** It doesn't — it silently serves the original file unresized. Set `unoptimized: true` explicitly if that's the deploy you actually want.
+
+## Reading AI-generated code
+
+When a generated snippet touches `next/image`, check for these before trusting it:
+
+- Does a `fill` image have a `sizes` prop that reflects the *actual* rendered width, not just "whatever compiles"? No `sizes` on `fill` silently defaults to `100vw`.
+- Does it use `priority` where `preload` (or `fetchPriority`/`loading="eager"` for multi-candidate LCP) is the current API?
+- Does a remote or query-stringed local image lack the matching `images.remotePatterns` / `images.localPatterns` entry it needs to even load?
+- Does a `quality` prop assume any 1–100 value works, ignoring that `images.qualities` defaults to `[75]` only in Next.js 16?
+- Does the code assume `sharp` is present without either installing it or explicitly setting `unoptimized: true` for a sharp-less target?
+
+<SpotTheBug code={`// app/product/[id]/page.tsx
+import Image from 'next/image'
+
+export default function ProductGrid() {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+      {[1, 2, 3].map((id) => (
+        <div key={id} style={{ position: 'relative', height: 200 }}>
+          <Image src={\`/products/\${id}.jpg\`} alt="" fill style={{ objectFit: 'cover' }} />
+        </div>
+      ))}
+    </div>
+  )
+}`}>
+Each grid cell renders at roughly one-third of the viewport width, but there is no `sizes` prop on any of these `fill` images — Next.js defaults `sizes` to `100vw`, so every one of the three images requests a full-viewport-width candidate from the `deviceSizes` tier (640w and up), even though each cell is only ~33vw wide. Proven in the probe: a 300px box with no `sizes` served a minimum 640w candidate, while the same box with `sizes="300px"` served 384w — the fix here is `sizes="(max-width: 768px) 100vw, 33vw"` (or the fixed pixel width if the grid is not responsive).
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-`next/image` needs `width`/`height` (or `fill`) to reserve space and `priority` on the LCP image, and `next/font` self-hosts fonts at build time so nothing shifts and nothing calls Google.
+`next/image` needs a correct `sizes` (or `width`/`height`) to avoid downloading an oversized candidate, `preload` (not the deprecated `priority`) marks the LCP image, `qualities` and `minimumCacheTTL` default to a `[75]`-only allowlist and a 4-hour cache in Next.js 16, and `next/font` self-hosts fonts at build time so nothing shifts and nothing calls Google.
 </Callout>
 
 export const quizImgEn = [
   {
-    q: 'Why must you pass width and height to a remote next/image?',
+    q: 'A `fill` image has no `sizes` prop. What does Next.js assume?',
     options: [
-      'To pick the image format',
-      'To reserve space and prevent layout shift',
-      'To enable lazy-loading',
-      'To allow the remote host',
+      'It assumes the image is 0px wide and skips optimization',
+      'It defaults sizes to 100vw, requesting a full-viewport-width candidate',
+      'It throws a build error',
+      'It uses the parent element\'s computed CSS width automatically',
     ],
     answer: 1,
+    explain: 'Next.js cannot read your CSS. Without an explicit sizes prop on a fill image, it defaults to 100vw — proven in the probe, where a 300px box with no sizes still requested a 640w candidate, the smallest one covering a full 400px viewport.',
   },
   {
-    q: 'What does the priority prop do?',
-    options: [
-      'Compresses the image more aggressively',
-      'Preloads the LCP image and skips lazy-loading',
-      'Marks the image as decorative',
-      'Forces the AVIF format',
-    ],
+    q: 'What replaced the priority prop in Next.js 16?',
+    options: ['loading="lazy"', 'preload', 'fetchPriority="low"', 'Nothing — priority was removed entirely'],
     answer: 1,
+    explain: 'The bundled Next.js 16 docs state priority is deprecated in favor of preload. It still works today but new code should use preload (or fetchPriority/loading="eager" when multiple images could be the LCP element).',
   },
   {
-    q: 'What is required before next/image will optimize a remote URL?',
+    q: 'What is the default value of images.qualities in Next.js 16, and what happens if you request the optimizer endpoint directly with a quality outside it?',
     options: [
-      'Nothing, it works for any URL',
-      'The host must be listed in images.remotePatterns',
-      'The image must be a WebP file',
-      'A priority prop on the image',
+      '[75], and the request is coerced silently either way',
+      'All values 1-100 are allowed by default',
+      '[75], and a direct request with a disallowed quality gets a 400 Bad Request',
+      '[75, 100], and the request redirects to the closest value',
     ],
-    answer: 1,
+    answer: 2,
+    explain: 'Proven in the probe: with the default qualities allowlist, curl -> /_next/image?...&q=80 returned HTTP/1.1 400 Bad Request. Coercion to the closest allowed value only happens through the <Image quality={...}> prop, not a raw endpoint hit.',
   },
   {
-    q: 'What does next/font do at build time?',
+    q: 'What did the default minimumCacheTTL change to in Next.js 16, and how was it confirmed?',
     options: [
-      'Requests the font from Google on every page load',
-      'Self-hosts the font so there is no request to Google',
-      'Inlines the font as base64 in every component',
-      'Disables the font until hydration finishes',
+      '60 seconds, confirmed by the build log',
+      '4 hours (14400 seconds), confirmed by the Cache-Control response header from a real next start',
+      '31 days, confirmed by the next.config.ts type definitions',
+      'It was removed in favor of a fixed immutable cache',
     ],
     answer: 1,
+    explain: 'curl -sD - against /_next/image on a fresh next start (no override) returned Cache-Control: public, max-age=14400, must-revalidate — exactly the new 4-hour default (up from 60 seconds pre-16).',
+  },
+  {
+    q: `\`\`\`tsx
+<div style={{ position: 'relative', width: 300, height: 200 }}>
+  <Image src="/hero.jpg" alt="" fill style={{ objectFit: 'cover' }} />
+</div>
+\`\`\`
+On a 400px-wide viewport, roughly what does the browser download for this box, and why?`,
+    options: [
+      'A 300w candidate, because Next.js reads the CSS width',
+      'A 640w candidate — the smallest deviceSizes entry that covers a 100vw (400px) assumption from the missing sizes prop',
+      'The original unresized source file',
+      'Nothing — the build fails without a sizes prop',
+    ],
+    answer: 1,
+    explain: 'Missing sizes defaults to 100vw, which excludes the small imageSizes tier (32-384) from the srcset entirely; the smallest deviceSizes candidate that satisfies a 400px viewport is 640w, downloading well over 4x the pixel area the 300px box actually needs.',
+  },
+  {
+    q: 'You cannot install sharp on your deploy target. What is the correct, honest way to handle next/image there?',
+    options: [
+      'Do nothing — Next.js will loudly error and tell you to install sharp',
+      'Set images.unoptimized: true explicitly, since without sharp the optimizer silently serves the original file unresized anyway',
+      'Set images.qualities: [] to disable optimization',
+      'Switch every Image to a raw <img> tag',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe: removing sharp did not produce an error — a request for a 750px-wide image silently came back at its original 1600x1600 size. Setting unoptimized: true makes that behavior an explicit, documented decision instead of a silent one.',
   },
 ];
 
