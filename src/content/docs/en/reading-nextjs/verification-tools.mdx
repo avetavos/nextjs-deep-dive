@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-Next.js has no in-browser playground — the only way to prove a claim about it is a real project, a real `tsc`/`next build` run, or a real browser. Every output below is real, captured against Next.js 16.3.6 and React 19.2.8. None of these tools overlap perfectly, and none is close to complete on its own — the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s "Caught by" line for each of its 25 entries names exactly which one (if any) of the tools below would have caught it.
+Next.js has no in-browser playground — the only way to prove a claim about it is a real project, a real `tsc`/`next build` run, or a real browser. Every output below is real, captured against Next.js 16.3.6 and React 19.2.8. None of these tools overlap perfectly, and none is close to complete on its own — the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**'s "Caught by" line for each of its 25 entries names exactly which one (if any) of the tools below would have caught it.
 
 ## `tsc --noEmit` — the fast, first pass
 
@@ -45,7 +45,7 @@ Route (app)
 └ ƒ /catalog/11-cookies-static
 ```
 
-`◐` Partial Prerender only appears once **[Cache Components](/en/data-fetching-and-caching/use-cache-and-cache-components/)** is on (`cacheComponents: true`) — real output from the bundled `next build` guide, adding `generateStaticParams` to a dynamic product page:
+`◐` Partial Prerender only appears once **[Cache Components](/nextjs/en/data-fetching-and-caching/use-cache-and-cache-components/)** is on (`cacheComponents: true`) — real output from the bundled `next build` guide, adding `generateStaticParams` to a dynamic product page:
 
 ```text
 Route (app)
@@ -58,7 +58,7 @@ Route (app)
   └ ◐ /products/3
 ```
 
-Without Cache Components, reading a route's cache behavior means checking `cookies()`/`headers()`/`fetch` calls by eye — the table itself just prints `ƒ` the moment any of them run, silently, as the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 11 shows.
+Without Cache Components, reading a route's cache behavior means checking `cookies()`/`headers()`/`fetch` calls by eye — the table itself just prints `ƒ` the moment any of them run, silently, as the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**'s entry 11 shows.
 
 The warnings worth reading past the route table, not just the pass/fail exit code:
 
@@ -103,7 +103,7 @@ npx next experimental-analyze --output
 To explore the analyze results interactively, run `next experimental-analyze` without `--output`.
 ```
 
-Without `--output`, it starts a local server with an interactive treemap instead of writing static files — useful for the exact kind of comparison the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 1 makes (an 8,967-byte chunk versus a 287-byte one, depending on where `'use client'` sits).
+Without `--output`, it starts a local server with an interactive treemap instead of writing static files — useful for the exact kind of comparison the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**'s entry 1 makes (an 8,967-byte chunk versus a 287-byte one, depending on where `'use client'` sits).
 
 ## `next typegen` — route types without a full build
 
@@ -150,11 +150,11 @@ Every navigation and every initial page load carries a React Server Components p
 0:{"P":null,"c":["","bug-public-env"],"q":"","i":false,"f":[[["",{"children":["bug-public-env",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},"$undefined","$undefined",4608]},"$undefined","$undefined",4624], ...
 ```
 
-You will not read this format character by character in practice — the point of loading it in the Network tab is confirming *that* a navigation triggered a real RSC fetch at all (versus a full page reload from a stray `<a>`, per the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 25), and roughly how large it is relative to the actual content on screen.
+You will not read this format character by character in practice — the point of loading it in the Network tab is confirming *that* a navigation triggered a real RSC fetch at all (versus a full page reload from a stray `<a>`, per the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**'s entry 25), and roughly how large it is relative to the actual content on screen.
 
 ## A Playwright smoke test
 
-A single Playwright test that loads the real, built app and asserts on the final DOM state catches an entire class of bug this page's static tools cannot: anything that only manifests after hydration, after a client-side navigation, or after a Server Action round-trip. This course's own probe used exactly this technique to prove the `NEXT_PUBLIC_` dynamic-access bug in the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**'s entry 19 — the static-literal read was correct in the initial server-rendered HTML, and only a real browser, after hydration, exposed the dynamic read's `undefined`.
+A single Playwright test that loads the real, built app and asserts on the final DOM state catches an entire class of bug this page's static tools cannot: anything that only manifests after hydration, after a client-side navigation, or after a Server Action round-trip. This course's own probe used exactly this technique to prove the `NEXT_PUBLIC_` dynamic-access bug in the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**'s entry 19 — the static-literal read was correct in the initial server-rendered HTML, and only a real browser, after hydration, exposed the dynamic read's `undefined`.
 
 ```ts
 // A Playwright test file (tests/smoke.spec.ts) — illustrative, not a
@@ -170,7 +170,7 @@ test('renders the real client-side value, not the SSR one', async ({ page }) => 
 
 ## `instrumentation.ts` in development, not just production
 
-`register()` in `instrumentation.ts` runs once for *every* new Next.js server instance — including `next dev` — not only in a deployed production build. Wiring `onRequestError` early, even just to `console.error` during local development, surfaces a server error the moment it happens instead of only after a report reaches production. See **[Deployment and Self-Hosting](/en/production-and-ecosystem/deployment-and-self-hosting/)** for the full, real `onRequestError` example this course builds against a production observability provider.
+`register()` in `instrumentation.ts` runs once for *every* new Next.js server instance — including `next dev` — not only in a deployed production build. Wiring `onRequestError` early, even just to `console.error` during local development, surfaces a server error the moment it happens instead of only after a report reaches production. See **[Deployment and Self-Hosting](/nextjs/en/production-and-ecosystem/deployment-and-self-hosting/)** for the full, real `onRequestError` example this course builds against a production observability provider.
 
 ## This course's own harness: compile every snippet
 
@@ -188,7 +188,7 @@ Per-module fence summary (collected / skipped-no-path / expect-error):
   ...
 ```
 
-A fence deliberately showing broken code (like most of the "wrong code" examples in the **[AI Bug Catalog](/en/reading-nextjs/ai-bug-catalog/)**) starts with `// @expect-error <reason>` so the harness skips it — the lesson prose carries the real, separately-captured build/`tsc` output instead of asking the harness to reproduce a deliberate failure on every run.
+A fence deliberately showing broken code (like most of the "wrong code" examples in the **[AI Bug Catalog](/nextjs/en/reading-nextjs/ai-bug-catalog/)**) starts with `// @expect-error <reason>` so the harness skips it — the lesson prose carries the real, separately-captured build/`tsc` output instead of asking the harness to reproduce a deliberate failure on every run.
 
 ## Mental Model
 

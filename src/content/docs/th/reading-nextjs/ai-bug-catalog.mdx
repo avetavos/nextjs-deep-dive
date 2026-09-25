@@ -10,7 +10,7 @@ import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-ทุก pattern ด้านล่างถูกเขียนให้เหมือนโค้ด Next.js ที่ AI assistant เขียนออกมาจริงๆ ทุกประการ แล้วนำไป build, type-check, หรือโหลดใน browser จริง — กับ Next.js 16.3.6 และ React 19.2.8 compiler error, `tsc` diagnostic, และ output จาก browser ที่ยกมาคือของจริงที่คัดลอกมาตรงๆ ไม่ได้เขียนจากความจำ 25 pattern ถูกจัดกลุ่มตามลำดับการอ่านเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/th/reading-nextjs/)**: boundary, caching model, auth, error/redirect path, config และ env — บวกกลุ่มปิดท้ายเรื่อง rendering กับ navigation ดู **[Review Checklist](/th/reading-nextjs/review-checklist/)** ที่ตามหลังบทนี้สำหรับเวอร์ชันหน้าเดียวของคำถามทั้ง 25 ข้อเดียวกัน
+ทุก pattern ด้านล่างถูกเขียนให้เหมือนโค้ด Next.js ที่ AI assistant เขียนออกมาจริงๆ ทุกประการ แล้วนำไป build, type-check, หรือโหลดใน browser จริง — กับ Next.js 16.3.6 และ React 19.2.8 compiler error, `tsc` diagnostic, และ output จาก browser ที่ยกมาคือของจริงที่คัดลอกมาตรงๆ ไม่ได้เขียนจากความจำ 25 pattern ถูกจัดกลุ่มตามลำดับการอ่านเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/nextjs/th/reading-nextjs/)**: boundary, caching model, auth, error/redirect path, config และ env — บวกกลุ่มปิดท้ายเรื่อง rendering กับ navigation ดู **[Review Checklist](/nextjs/th/reading-nextjs/review-checklist/)** ที่ตามหลังบทนี้สำหรับเวอร์ชันหน้าเดียวของคำถามทั้ง 25 ข้อเดียวกัน
 
 ## Boundaries
 
@@ -42,7 +42,7 @@ export default function HeavyLayout({ children }: { children: React.ReactNode })
 
 `"use client"` ไม่ได้ทำเครื่องหมายแค่ component เดียว — มันทำเครื่องหมาย entry point ของทั้ง subtree ใน module graph และทุกอย่างที่ `import` ไปถึงจากจุดนั้นจะถูกส่งไปที่ browser ไม่ว่ามันจะใช้ hook สักตัวหรือไม่
 
-**อาการ — ตัวเลข bundle ที่วัดจริง** (พิสูจน์แล้วใน **[Server and Client Components](/th/foundations/server-and-client-components/)** โดยรวม chunk ที่อ้างถึงใน client-reference manifest เพราะ `next build` ไม่พิมพ์คอลัมน์ bundle-size ต่อ route แล้วตั้งแต่ v16.0.0):
+**อาการ — ตัวเลข bundle ที่วัดจริง** (พิสูจน์แล้วใน **[Server and Client Components](/nextjs/th/foundations/server-and-client-components/)** โดยรวม chunk ที่อ้างถึงใน client-reference manifest เพราะ `next build` ไม่พิมพ์คอลัมน์ bundle-size ต่อ route แล้วตั้งแต่ v16.0.0):
 
 ```text
 --- /heavy/high (directive on the layout) ---
@@ -202,7 +202,7 @@ export default function Page() {
 
 `useFormStatus` อ่านสถานะจาก `<form>` ที่เป็น **parent** ที่ใกล้ที่สุด — มันถูกออกแบบมาให้เรียกจาก component ที่ nest อยู่ *ข้างใน* form ที่มันรายงานสถานะ เพื่อให้ปุ่ม submit แสดงสถานะ pending ของตัวเองได้โดยไม่ต้องให้ parent ส่ง prop ลงมา เมื่อเรียกจาก component เดียวกับที่ render `<form>` เอง จะไม่มี parent form อยู่ใน scope เลย ทำให้ `pending` เป็น `false` ตลอดช่วงชีวิตของการ submit — ไม่มี error ไม่มี warning มีแค่ปุ่มที่ไม่เคย disable ให้เห็น
 
-**วิธีแก้:** ย้ายส่วนที่อ่าน `useFormStatus` ไปเป็น child component ที่ render ข้างใน `<form>` (ตาม **[Forms and Progressive Enhancement](/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
+**วิธีแก้:** ย้ายส่วนที่อ่าน `useFormStatus` ไปเป็น child component ที่ render ข้างใน `<form>` (ตาม **[Forms and Progressive Enhancement](/nextjs/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
 
 ```ts
 // app/catalog/04-formstatus-same-component/actions.ts
@@ -307,7 +307,7 @@ export default function Page() {
 
 ไม่มีอะไรพังตอน build ที่นี่ — นี่เป็น bug ทางสถาปัตยกรรมล้วนๆ และเป็น pattern ที่พบบ่อยที่สุดของ "AI เขียน React ไม่ใช่ Next.js": data fetch ที่รันบน server ครั้งเดียว, cache, และ stream เป็น HTML ได้ กลับส่ง shell เปล่าไปก่อน แล้วค่อย fetch ฝั่ง client หลัง hydration (มี loading กะพริบทุกครั้งที่เข้า, มี client-server round trip ที่ Server Component จะข้ามไปได้เลย, และมี loading/error state ที่เขียนเองซ้ำอีกชุด)
 
-**วิธีแก้:** fetch ตรงๆ ใน Server Component; ไม่มี client-side loading state ไม่มี network waterfall เพิ่ม (ดู **[Fetching in Server Components](/th/data-fetching-and-caching/fetching-in-server-components/)**):
+**วิธีแก้:** fetch ตรงๆ ใน Server Component; ไม่มี client-side loading state ไม่มี network waterfall เพิ่ม (ดู **[Fetching in Server Components](/nextjs/th/data-fetching-and-caching/fetching-in-server-components/)**):
 
 ```tsx
 // app/catalog/06-useeffect-fetch/fixed-page.tsx
@@ -399,7 +399,7 @@ export default async function Page() {
 }
 ```
 
-**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error ไม่มี warning มีแค่คำอธิบายค่าเริ่มต้นปัจจุบันใน **[The Four Caching Layers](/th/data-fetching-and-caching/the-four-caching-layers/)** หรือสังเกตว่าทุก request ยิง network เท่านั้นที่เผยให้เห็น
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติ — ไม่มี build error ไม่มี warning มีแค่คำอธิบายค่าเริ่มต้นปัจจุบันใน **[The Four Caching Layers](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/)** หรือสังเกตว่าทุก request ยิง network เท่านั้นที่เผยให้เห็น
 
 ### 9. Route Segment Config ผสมกับ `cacheComponents`
 
@@ -426,7 +426,7 @@ export default nextConfig
 
 Route Segment Config (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, `experimental_ppr`) คือ model ที่ tutorial ก่อน 16 ทุกอันสอน `cacheComponents` คือ model ใหม่ที่ใช้ร่วมกันไม่ได้ โค้ดจาก AI ที่ train ด้วย model เก่าเป็นหลักยังเขียน export พวกนี้ลงไปใน project ที่เปิด Cache Components ไปแล้ว
 
-**อาการ — พิสูจน์แล้วใน build ของคอร์สนี้เอง** (ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**):
+**อาการ — พิสูจน์แล้วใน build ของคอร์สนี้เอง** (ดู **[Route Segment Config and Runtimes](/nextjs/th/rendering/route-segment-config-and-runtimes/)**):
 
 ```text
 Route segment config "dynamic" is not compatible with nextConfig.cacheComponents. Please remove it.
@@ -505,7 +505,7 @@ Route (app)
 ƒ  (Dynamic)  server-rendered on demand
 ```
 
-ภายใต้ `cacheComponents: true` มันจะกลายเป็น build error แข็งๆ แทน (`Next.js encountered uncached or runtime data during prerendering`) ซึ่งพิสูจน์แล้วใน **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)** — model เก่าพังแบบเงียบๆ ส่วน model ใหม่พังแบบดังๆ
+ภายใต้ `cacheComponents: true` มันจะกลายเป็น build error แข็งๆ แทน (`Next.js encountered uncached or runtime data during prerendering`) ซึ่งพิสูจน์แล้วใน **[Static and Dynamic Rendering](/nextjs/th/rendering/static-and-dynamic-rendering/)** — model เก่าพังแบบเงียบๆ ส่วน model ใหม่พังแบบดังๆ
 
 **วิธีแก้:** ห่อส่วนที่พึ่ง `cookies()` ด้วย `<Suspense>` เพื่อให้เฉพาะส่วนนั้น dynamic หรือ (ภายใต้ Cache Components) cache ส่วนที่เหลือของหน้าด้วย `'use cache'` แล้วปล่อยการอ่าน cookie ไว้ข้างนอก
 
@@ -686,9 +686,9 @@ export const db = {
 
 ไม่มีอะไรพังตอน build, type-check, หรือแม้แต่พังตอนคนที่เขียนมันทดสอบด้วยมือแบบไม่เป็นทางการ — กดลบโพสต์ของตัวเองก็ทำงานตามที่คาดไว้ทุกประการ bug นี้มองไม่เห็นจนกว่าจะมีใครส่ง action ID เดียวกันพร้อม `id` ที่ต่างออกไป
 
-ตามที่ยืนยันไว้ใน **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)**: Server Action compile ออกมาเป็น public POST endpoint ที่เข้าถึงได้ด้วย action ID ของมัน ไม่ขึ้นกับว่า form หรือปุ่มไหนใน UI ของคุณเรียกมัน `deletePost` ที่นี่ลบโพสต์ *ไหนก็ได้* ด้วย ID สำหรับใครก็ตามที่เข้าถึงแอปได้ — ไม่ต้อง login เลยด้วยซ้ำ ไม่ต้องพูดถึงความเป็นเจ้าของโพสต์นั้น
+ตามที่ยืนยันไว้ใน **[Server Actions คืออะไร](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)**: Server Action compile ออกมาเป็น public POST endpoint ที่เข้าถึงได้ด้วย action ID ของมัน ไม่ขึ้นกับว่า form หรือปุ่มไหนใน UI ของคุณเรียกมัน `deletePost` ที่นี่ลบโพสต์ *ไหนก็ได้* ด้วย ID สำหรับใครก็ตามที่เข้าถึงแอปได้ — ไม่ต้อง login เลยด้วยซ้ำ ไม่ต้องพูดถึงความเป็นเจ้าของโพสต์นั้น
 
-**วิธีแก้:** ตรวจสอบสิทธิ์ผู้เรียกก่อน แล้วจำกัด mutation ให้อยู่แค่ row ของตัวเอง — รูปแบบเดียวกับ Data Access Layer แบบ `verifySession()` ที่ใช้ตลอดทั้งโมดูล Server Actions ของคอร์สนี้ (ดู **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)** สำหรับ DAL จริงเต็มรูปแบบที่ stub นี้แทนอยู่):
+**วิธีแก้:** ตรวจสอบสิทธิ์ผู้เรียกก่อน แล้วจำกัด mutation ให้อยู่แค่ row ของตัวเอง — รูปแบบเดียวกับ Data Access Layer แบบ `verifySession()` ที่ใช้ตลอดทั้งโมดูล Server Actions ของคอร์สนี้ (ดู **[Authentication Patterns](/nextjs/th/production-and-ecosystem/authentication-patterns/)** สำหรับ DAL จริงเต็มรูปแบบที่ stub นี้แทนอยู่):
 
 ```ts
 // app/catalog/16-action-no-auth/lib/session.ts
@@ -712,7 +712,7 @@ export async function deletePost(id: string) {
 }
 ```
 
-**จับได้โดย:** ไม่มีอะไรอัตโนมัติเลย นี่คือ entry ที่ส่งผลกระทบมากที่สุดในแคตตาล็อกนี้ที่ไม่มีเครื่องมือรองรับเลยสักชนิด — ไม่มี linter ไม่มี type error ไม่มี build warning มีแค่การรีวิวด้วยมือ (ส่วน auth ของ **[Review Checklist](/th/reading-nextjs/review-checklist/)**) หรือ request `curl` ที่ไม่ได้รับอนุญาตจริงๆ เท่านั้นที่จับได้
+**จับได้โดย:** ไม่มีอะไรอัตโนมัติเลย นี่คือ entry ที่ส่งผลกระทบมากที่สุดในแคตตาล็อกนี้ที่ไม่มีเครื่องมือรองรับเลยสักชนิด — ไม่มี linter ไม่มี type error ไม่มี build warning มีแค่การรีวิวด้วยมือ (ส่วน auth ของ **[Review Checklist](/nextjs/th/reading-nextjs/review-checklist/)**) หรือ request `curl` ที่ไม่ได้รับอนุญาตจริงๆ เท่านั้นที่จับได้
 
 <SpotTheBug code={`// app/catalog/16b-action-checks-flag-only/actions.ts
 'use server'
@@ -756,7 +756,7 @@ export async function loadPost(id: string) {
 
 `redirect()` และ `notFound()` ทั้งคู่ **throw** error ควบคุม flow ภายในของ Next.js (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) ที่ framework ดักจับสูงขึ้นไปในต้นไม้เพื่อทำ redirect หรือ render segment `not-found` จริงๆ `catch` block ที่ไม่มีเงื่อนไขตรงไหนก็ตามระหว่างทางจะดักจับ throw นั้นเหมือน error ทั่วไป
 
-**อาการ — พิสูจน์แล้วกับ server ที่รันจริง** ใน **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)**: pattern เดียวกันข้างบน build และ deploy จริง ตอบด้วย **HTTP 200 และ body เป็น `null`** แทนที่จะเป็น 404 — `catch` block log internal error แล้ว return `null` และผู้เรียกไม่มีทางแยกแยะสิ่งนั้นจาก "โพสต์นี้เป็น null จริงๆ" ได้เลย
+**อาการ — พิสูจน์แล้วกับ server ที่รันจริง** ใน **[Mutations and Revalidation](/nextjs/th/server-actions-and-mutations/mutations-and-revalidation/)**: pattern เดียวกันข้างบน build และ deploy จริง ตอบด้วย **HTTP 200 และ body เป็น `null`** แทนที่จะเป็น 404 — `catch` block log internal error แล้ว return `null` และผู้เรียกไม่มีทางแยกแยะสิ่งนั้นจาก "โพสต์นี้เป็น null จริงๆ" ได้เลย
 
 **วิธีแก้:** เก็บ `redirect()`/`notFound()` ไว้นอก `try/catch` ใดๆ ที่ไม่ re-throw อย่างชัดเจน หรือ re-throw error ควบคุม flow ของ Next.js เองเป็นบรรทัดแรกของ `catch`:
 
@@ -826,7 +826,7 @@ export function proxy() {
 }
 ```
 
-สังเกตด้วยว่า: runtime `edge` **ไม่** รองรับข้างใน `proxy.ts` เลย — `proxy` รันบน runtime `nodejs` เสมอและกำหนดค่าไม่ได้ ต่างจาก `middleware.ts` เดิมที่เลือกใช้ edge ได้ ดู **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
+สังเกตด้วยว่า: runtime `edge` **ไม่** รองรับข้างใน `proxy.ts` เลย — `proxy` รันบน runtime `nodejs` เสมอและกำหนดค่าไม่ได้ ต่างจาก `middleware.ts` เดิมที่เลือกใช้ edge ได้ ดู **[Middleware and the Request Lifecycle](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
 
 **จับได้โดย:** build warning จริง บวก codemod (`npx @next/codemod@canary upgrade latest` ก็ migrate เรื่องนี้ให้อัตโนมัติด้วย)
 
@@ -1012,7 +1012,7 @@ export default async function Page() {
 }
 ```
 
-พิสูจน์แล้วใน **[Streaming and Suspense](/th/rendering/streaming-and-suspense/)**: ถ้าไม่มี `<Suspense>` boundary เลย server จะกัก response ทั้งหมดไว้จนกว่าทุก `await` ในต้นไม้จะ resolve — ผู้เข้าชมเห็นแท็บว่างเปล่าเต็ม 1.5 วินาที แล้วทุกอย่างมาพร้อมกันทีเดียว การเพิ่ม `<Suspense>` boundary ที่ห่อ *ทั้งหน้า* ก็ไม่เปลี่ยนอะไรเช่นกัน เพราะ fallback จะกลายเป็นสิ่งเดียวที่ stream เร็ว และไม่มีเนื้อหาจริงเหลืออยู่นอกมันที่จะมาถึงเร็วกว่าได้
+พิสูจน์แล้วใน **[Streaming and Suspense](/nextjs/th/rendering/streaming-and-suspense/)**: ถ้าไม่มี `<Suspense>` boundary เลย server จะกัก response ทั้งหมดไว้จนกว่าทุก `await` ในต้นไม้จะ resolve — ผู้เข้าชมเห็นแท็บว่างเปล่าเต็ม 1.5 วินาที แล้วทุกอย่างมาพร้อมกันทีเดียว การเพิ่ม `<Suspense>` boundary ที่ห่อ *ทั้งหน้า* ก็ไม่เปลี่ยนอะไรเช่นกัน เพราะ fallback จะกลายเป็นสิ่งเดียวที่ stream เร็ว และไม่มีเนื้อหาจริงเหลืออยู่นอกมันที่จะมาถึงเร็วกว่าได้
 
 **วิธีแก้:** `await` เฉพาะข้างในส่วนที่ช้าจริงๆ ห่อด้วย `<Suspense>` ของตัวเอง ปล่อยให้ส่วนที่เหลือของหน้า stream ทันที:
 
@@ -1057,7 +1057,7 @@ export default function Page() {
 
 `Date.now()` รันครั้งหนึ่งบน server (ได้ timestamp หนึ่งค่าใน HTML แรก) แล้วรันอีกครั้งบน client ตอน hydration (ได้ timestamp ที่ต่างออกไปอีกไม่กี่มิลลิวินาทีต่อมา) — React คาดหวังว่าสอง render นี้จะตรงกันเป๊ะ
 
-**หลักฐาน — React 19 console error จริง คำต่อคำ ที่บันทึกไว้แล้วกับหน้า `next dev` จริง** ใน **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**:
+**หลักฐาน — React 19 console error จริง คำต่อคำ ที่บันทึกไว้แล้วกับหน้า `next dev` จริง** ใน **[Static and Dynamic Rendering](/nextjs/th/rendering/static-and-dynamic-rendering/)**:
 
 ```text
 Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:

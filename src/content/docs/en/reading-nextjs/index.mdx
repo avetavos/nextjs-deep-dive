@@ -27,7 +27,7 @@ Before you read what a component *does*, read which side of the network it runs 
 
 - **What to look for:** the file (or the nearest parent) that has `'use client'` or `'use server'` as its first line; every prop that crosses from a Server Component into a Client Component; every hook (`useState`, `useRouter`, `useFormStatus`) and confirm the file that calls it is actually a Client Component.
 - **The question to ask:** does this directive sit as low in the tree as it needs to, or did it get put on a layout / page near the root because that was the easiest place to make the error go away?
-- **Which lesson explains it:** **[Server and Client Components](/en/foundations/server-and-client-components/)** for the subtree rule and the serialization boundary; **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)** for why every action is a public endpoint the moment it is exported.
+- **Which lesson explains it:** **[Server and Client Components](/nextjs/en/foundations/server-and-client-components/)** for the subtree rule and the serialization boundary; **[What Are Server Actions?](/nextjs/en/server-actions-and-mutations/what-are-server-actions/)** for why every action is a public endpoint the moment it is exported.
 
 ## 2. The caching model this project actually runs
 
@@ -35,7 +35,7 @@ Next.js has shipped two different caching models across its life, and a single p
 
 - **What to look for:** open `next.config.ts` first and check for `cacheComponents: true` before you read a single route. Then check whether the routes use `export const dynamic = ...` / `export const revalidate = ...` (old model) or `'use cache'` / `cacheLife(...)` / `cacheTag(...)` (new model).
 - **The question to ask:** does every file agree with what `next.config.ts` says, or does this file assume the *other* model?
-- **Which lesson explains it:** **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)** for the old model and the exact incompatibility error; **[`use cache` and Cache Components](/en/data-fetching-and-caching/use-cache-and-cache-components/)** and **[Partial Prerendering](/en/rendering/partial-prerendering/)** for the new one.
+- **Which lesson explains it:** **[Route Segment Config and Runtimes](/nextjs/en/rendering/route-segment-config-and-runtimes/)** for the old model and the exact incompatibility error; **[`use cache` and Cache Components](/nextjs/en/data-fetching-and-caching/use-cache-and-cache-components/)** and **[Partial Prerendering](/nextjs/en/rendering/partial-prerendering/)** for the new one.
 
 ## 3. Auth inside every action and every route handler
 
@@ -43,7 +43,7 @@ A Server Action is a POST endpoint; a Route Handler is whatever HTTP method you 
 
 - **What to look for:** the first lines of every function body inside `app/actions.ts`, any `'use server'` file, and every `app/**/route.ts`. Look for a session check (this course's own DAL pattern is `verifySession()`) before any read or write, and look for the mutation filtering by the current user's ID, not only checking that *someone* is logged in.
 - **The question to ask:** if I sent this exact request with `curl` and someone else's session cookie, whose data would move?
-- **Which lesson explains it:** **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)** and **[Security and Patterns](/en/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/en/production-and-ecosystem/authentication-patterns/)** for the DAL itself.
+- **Which lesson explains it:** **[What Are Server Actions?](/nextjs/en/server-actions-and-mutations/what-are-server-actions/)** and **[Security and Patterns](/nextjs/en/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/nextjs/en/production-and-ecosystem/authentication-patterns/)** for the DAL itself.
 
 ## 4. The error and redirect path
 
@@ -51,7 +51,7 @@ A Server Action is a POST endpoint; a Route Handler is whatever HTTP method you 
 
 - **What to look for:** every `try { … } catch { … }` block; does it contain a call to `redirect()` or `notFound()`, directly or through a helper like `verifySession()`? Does the `catch` block log-and-swallow, or does it call `unstable_rethrow(err)` / re-throw?
 - **The question to ask:** if I hit this exact code path against a real running server, does it actually respond with a redirect / a 404 — or with a 200 and the wrong body?
-- **Which lesson explains it:** **[Mutations and Revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/)**, which proves this exact failure against a real server.
+- **Which lesson explains it:** **[Mutations and Revalidation](/nextjs/en/server-actions-and-mutations/mutations-and-revalidation/)**, which proves this exact failure against a real server.
 
 ## 5. Config: `next.config.ts` and environment variables
 
@@ -59,7 +59,7 @@ The last thing to read, because it changes the meaning of everything above it. `
 
 - **What to look for:** `cacheComponents`, `reactCompiler`, `turbopack.*` in `next.config.ts`; every `process.env.*` read inside a file that has (or imports into) `'use client'`; every `NEXT_PUBLIC_`-prefixed variable and what it actually holds.
 - **The question to ask:** does this variable need to reach the browser at all — and if it does, would I still be comfortable if it showed up, in plain text, inside a `.next/static/chunks/*.js` file anyone can download?
-- **Which lesson explains it:** **[Environment and Configuration](/en/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)** for `proxy.ts` and the request-time config that runs before any of the above.
+- **Which lesson explains it:** **[Environment and Configuration](/nextjs/en/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)** for `proxy.ts` and the request-time config that runs before any of the above.
 
 ## Mental Model
 

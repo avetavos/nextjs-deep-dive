@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-นี่คือ checklist ที่ควรไล่ดู — ด้วยตา ในทุก diff ไม่ว่าจะเป็นของคุณหรือของ AI — หลังจากเครื่องมือใน **[Verification Tools](/th/reading-nextjs/verification-tools/)** รันแล้วผ่านสะอาด มันตั้งใจให้อยู่ในกระดาษหน้าเดียวที่ print ได้: checklist ที่ไม่มีใครเปิดดูจริงระหว่างรีวิวไม่มีค่าอะไรเลย ทุกบรรทัดลิงก์ไปบทที่อธิบายว่า *ทำไม* เพื่อให้หน้านี้ยังคงเป็นแค่ list ไม่ใช่การรื้อฟื้นทั้งคอร์สอีกรอบ กลุ่มต่างๆ เรียงตามลำดับเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/th/reading-nextjs/)** บวกกลุ่มปิดท้ายเรื่อง performance
+นี่คือ checklist ที่ควรไล่ดู — ด้วยตา ในทุก diff ไม่ว่าจะเป็นของคุณหรือของ AI — หลังจากเครื่องมือใน **[Verification Tools](/nextjs/th/reading-nextjs/verification-tools/)** รันแล้วผ่านสะอาด มันตั้งใจให้อยู่ในกระดาษหน้าเดียวที่ print ได้: checklist ที่ไม่มีใครเปิดดูจริงระหว่างรีวิวไม่มีค่าอะไรเลย ทุกบรรทัดลิงก์ไปบทที่อธิบายว่า *ทำไม* เพื่อให้หน้านี้ยังคงเป็นแค่ list ไม่ใช่การรื้อฟื้นทั้งคอร์สอีกรอบ กลุ่มต่างๆ เรียงตามลำดับเดียวกับ **[วิธีอ่านโค้ด Next.js ที่คุณไม่ได้เขียนเอง](/nextjs/th/reading-nextjs/)** บวกกลุ่มปิดท้ายเรื่อง performance
 
 <Mermaid title="อะไรจับแต่ละกลุ่มได้จริง ถ้ามี" code={checklistCoverageDiagram} />
 
@@ -25,53 +25,53 @@ export const checklistCoverageDiagram = `flowchart LR
 
 ## Boundaries
 
-- `'use client'` ทุกตัวอยู่ต่ำในต้นไม้เท่าที่จะทำได้ไหม แทนที่จะอยู่ใน layout หรือ page ที่ใช้ร่วมกัน? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
-- prop ทุกตัวที่ข้าม boundary Server → Client ยังเป็น plain data (หรือ Server Action จริงๆ) อยู่ไหม ไม่มี instance ของ class เปล่าๆ หรือ function reference ที่ไม่ได้ห่อ? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
-- `ssr: false` บน `next/dynamic` ถูกใช้เฉพาะข้างใน Client Component เท่านั้นไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 3
-- `useFormStatus` รันใน component ที่ nest อยู่ *ข้างใน* `<form>` ไม่ใช่ component เดียวกับที่ render มันไหม? ดู **[Forms and Progressive Enhancement](/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**
-- hook สำหรับ pending state ทุกตัวเป็น `useActionState` (จาก `react`) ไม่ใช่ `useFormState` (จาก `react-dom`) ที่ deprecate แล้วใช่ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 5
-- การเรียก `useRouter`/`router.push` ทุกครั้งอยู่ข้างใน Client Component ไม่ใช่ Server Component ใช่ไหม? ดู **[Server and Client Components](/th/foundations/server-and-client-components/)**
-- data fetch นี้รันครั้งเดียวใน Server Component แทน `useEffect` ฝั่ง client ได้ไหม? ดู **[Fetching in Server Components](/th/data-fetching-and-caching/fetching-in-server-components/)**
+- `'use client'` ทุกตัวอยู่ต่ำในต้นไม้เท่าที่จะทำได้ไหม แทนที่จะอยู่ใน layout หรือ page ที่ใช้ร่วมกัน? ดู **[Server and Client Components](/nextjs/th/foundations/server-and-client-components/)**
+- prop ทุกตัวที่ข้าม boundary Server → Client ยังเป็น plain data (หรือ Server Action จริงๆ) อยู่ไหม ไม่มี instance ของ class เปล่าๆ หรือ function reference ที่ไม่ได้ห่อ? ดู **[Server and Client Components](/nextjs/th/foundations/server-and-client-components/)**
+- `ssr: false` บน `next/dynamic` ถูกใช้เฉพาะข้างใน Client Component เท่านั้นไหม? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 3
+- `useFormStatus` รันใน component ที่ nest อยู่ *ข้างใน* `<form>` ไม่ใช่ component เดียวกับที่ render มันไหม? ดู **[Forms and Progressive Enhancement](/nextjs/th/server-actions-and-mutations/forms-and-progressive-enhancement/)**
+- hook สำหรับ pending state ทุกตัวเป็น `useActionState` (จาก `react`) ไม่ใช่ `useFormState` (จาก `react-dom`) ที่ deprecate แล้วใช่ไหม? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 5
+- การเรียก `useRouter`/`router.push` ทุกครั้งอยู่ข้างใน Client Component ไม่ใช่ Server Component ใช่ไหม? ดู **[Server and Client Components](/nextjs/th/foundations/server-and-client-components/)**
+- data fetch นี้รันครั้งเดียวใน Server Component แทน `useEffect` ฝั่ง client ได้ไหม? ดู **[Fetching in Server Components](/nextjs/th/data-fetching-and-caching/fetching-in-server-components/)**
 
 ## Data flow และ caching model
 
-- การตั้งค่า `cacheComponents` ใน `next.config.ts` ตรงกับสมมติฐานของทุก route ไหม — export ของ Route Segment Config *หรือ* `'use cache'` ไม่ใช่ผสมกัน? ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**
-- การเรียก `fetch` ทุกครั้งระบุ cache intent ชัดเจนไหม แทนที่จะสมมติพฤติกรรม cached-by-default ของ Next.js 14? ดู **[The Four Caching Layers](/th/data-fetching-and-caching/the-four-caching-layers/)**
-- การเรียก `revalidateTag` ทุกครั้งส่ง profile ของ `cacheLife` เป็น argument ที่สองไหม? ดู **[Revalidation and Cache Invalidation](/th/data-fetching-and-caching/revalidation-and-cache-invalidation/)**
-- การอ่าน `cookies()`/`headers()` อยู่ข้างใน `<Suspense>` boundary ไหม แทนที่จะอยู่บนสุดของหน้าที่ตั้งใจให้เป็น static? ดู **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**
-- การเข้าถึง `params`/`searchParams` ทุกครั้ง `await` แล้ว และ type เป็น `Promise` ไม่ใช่ object หลวมๆ ใช่ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 12
-- `generateStaticParams` ป้องกันการ return array ว่างภายใต้ Cache Components ไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 13
-- `export const runtime = 'edge'` ทุกตัวถูกลบไปแล้ว หรือเป็นข้อยกเว้นที่จงใจและมีเหตุผลรองรับไหม? ดู **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)**
-- มี `getServerSideProps`/`getStaticProps` ตกค้างจาก Pages Router อยู่ข้างใน `app/` หรือเปล่า? ดู **[What is Next.js and the App Router](/th/foundations/what-is-nextjs-and-the-app-router/)**
+- การตั้งค่า `cacheComponents` ใน `next.config.ts` ตรงกับสมมติฐานของทุก route ไหม — export ของ Route Segment Config *หรือ* `'use cache'` ไม่ใช่ผสมกัน? ดู **[Route Segment Config and Runtimes](/nextjs/th/rendering/route-segment-config-and-runtimes/)**
+- การเรียก `fetch` ทุกครั้งระบุ cache intent ชัดเจนไหม แทนที่จะสมมติพฤติกรรม cached-by-default ของ Next.js 14? ดู **[The Four Caching Layers](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/)**
+- การเรียก `revalidateTag` ทุกครั้งส่ง profile ของ `cacheLife` เป็น argument ที่สองไหม? ดู **[Revalidation and Cache Invalidation](/nextjs/th/data-fetching-and-caching/revalidation-and-cache-invalidation/)**
+- การอ่าน `cookies()`/`headers()` อยู่ข้างใน `<Suspense>` boundary ไหม แทนที่จะอยู่บนสุดของหน้าที่ตั้งใจให้เป็น static? ดู **[Static and Dynamic Rendering](/nextjs/th/rendering/static-and-dynamic-rendering/)**
+- การเข้าถึง `params`/`searchParams` ทุกครั้ง `await` แล้ว และ type เป็น `Promise` ไม่ใช่ object หลวมๆ ใช่ไหม? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 12
+- `generateStaticParams` ป้องกันการ return array ว่างภายใต้ Cache Components ไหม? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 13
+- `export const runtime = 'edge'` ทุกตัวถูกลบไปแล้ว หรือเป็นข้อยกเว้นที่จงใจและมีเหตุผลรองรับไหม? ดู **[Route Segment Config and Runtimes](/nextjs/th/rendering/route-segment-config-and-runtimes/)**
+- มี `getServerSideProps`/`getStaticProps` ตกค้างจาก Pages Router อยู่ข้างใน `app/` หรือเปล่า? ดู **[What is Next.js and the App Router](/nextjs/th/foundations/what-is-nextjs-and-the-app-router/)**
 
 ## Auth ในทุก action และ route handler
 
-- Server Action ทุกตัวเรียกการเช็ค session จริงก่อนแตะข้อมูลไหม ไม่ขึ้นกับว่า UI ไหน render ปุ่มที่เรียกมัน? ดู **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)**
-- mutation ทุกตัวกรองด้วย ID ของ user ที่ยืนยันตัวตนแล้วเอง ไม่ใช่แค่ยืนยันว่า *มีใครสักคน* login อยู่ใช่ไหม? ดู **[Security and Patterns](/th/server-actions-and-mutations/security-and-patterns/)**
-- Route Handler ทุกตัวใช้การเช็ค session แบบเดียวกับที่ Server Action ที่เทียบเท่าจะใช้ไหม? ดู **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)**
+- Server Action ทุกตัวเรียกการเช็ค session จริงก่อนแตะข้อมูลไหม ไม่ขึ้นกับว่า UI ไหน render ปุ่มที่เรียกมัน? ดู **[Server Actions คืออะไร](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)**
+- mutation ทุกตัวกรองด้วย ID ของ user ที่ยืนยันตัวตนแล้วเอง ไม่ใช่แค่ยืนยันว่า *มีใครสักคน* login อยู่ใช่ไหม? ดู **[Security and Patterns](/nextjs/th/server-actions-and-mutations/security-and-patterns/)**
+- Route Handler ทุกตัวใช้การเช็ค session แบบเดียวกับที่ Server Action ที่เทียบเท่าจะใช้ไหม? ดู **[Authentication Patterns](/nextjs/th/production-and-ecosystem/authentication-patterns/)**
 
 ## Error และ redirect
 
-- `try/catch` ทุกอันที่อาจมี `redirect()`/`notFound()` อยู่ข้างใน อยู่นอกมันหรือเรียก `unstable_rethrow` ก่อนไหม? ดู **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)**
-- `error.tsx` เป็น Client Component ที่เรียก `reset()` และวางอยู่ที่ segment ซึ่ง *parent* ของมันควรดักจับ error ใช่ไหม? ดู **[Pages, Layouts, and Nested Routing](/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
-- `global-error.tsx` ถ้ามี render `<html>`/`<body>` ของตัวเองไหม? ดู **[Pages, Layouts, and Nested Routing](/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
+- `try/catch` ทุกอันที่อาจมี `redirect()`/`notFound()` อยู่ข้างใน อยู่นอกมันหรือเรียก `unstable_rethrow` ก่อนไหม? ดู **[Mutations and Revalidation](/nextjs/th/server-actions-and-mutations/mutations-and-revalidation/)**
+- `error.tsx` เป็น Client Component ที่เรียก `reset()` และวางอยู่ที่ segment ซึ่ง *parent* ของมันควรดักจับ error ใช่ไหม? ดู **[Pages, Layouts, and Nested Routing](/nextjs/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
+- `global-error.tsx` ถ้ามี render `<html>`/`<body>` ของตัวเองไหม? ดู **[Pages, Layouts, and Nested Routing](/nextjs/th/routing-and-navigation/pages-layouts-and-nested-routing/)**
 
 ## Config และ environment
 
-- `middleware.ts` ถูกเปลี่ยนชื่อเป็น `proxy.ts` แล้วหรือยัง (และ export ของมันเปลี่ยนเป็น `proxy`)? ดู **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
-- ตัวแปร `NEXT_PUBLIC_` ทุกตัวถูกอ่านแบบ static literal `process.env.NEXT_PUBLIC_X` ไหม ไม่ผ่าน computed key หรือ parameter ของ helper function เลย? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 19
-- มีตัวแปรที่ขึ้นต้น `NEXT_PUBLIC_` ตัวไหนเก็บสิ่งที่ควรเป็น secret อยู่จริงไหม? ดู **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** entry 20
-- `metadataBase` ถูกตั้งไว้ครั้งเดียวใน root layout ไหม? ดู **[Metadata and SEO](/th/optimization/metadata-and-seo/)**
+- `middleware.ts` ถูกเปลี่ยนชื่อเป็น `proxy.ts` แล้วหรือยัง (และ export ของมันเปลี่ยนเป็น `proxy`)? ดู **[Middleware and the Request Lifecycle](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)**
+- ตัวแปร `NEXT_PUBLIC_` ทุกตัวถูกอ่านแบบ static literal `process.env.NEXT_PUBLIC_X` ไหม ไม่ผ่าน computed key หรือ parameter ของ helper function เลย? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 19
+- มีตัวแปรที่ขึ้นต้น `NEXT_PUBLIC_` ตัวไหนเก็บสิ่งที่ควรเป็น secret อยู่จริงไหม? ดู **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** entry 20
+- `metadataBase` ถูกตั้งไว้ครั้งเดียวใน root layout ไหม? ดู **[Metadata and SEO](/nextjs/th/optimization/metadata-and-seo/)**
 
 ## Performance
 
-- `next/image` ทุกตัวที่ใช้ `fill` หรือ layout แบบ responsive ประกาศ `sizes` ไหม? ดู **[Images and Fonts](/th/optimization/images-and-fonts/)**
-- `<a>` ทุกตัวที่ชี้ไปยัง route ภายในเป็น `<Link>` จริงๆ ไหม? ดู **[Linking and Navigation](/th/routing-and-navigation/linking-and-navigation/)**
-- มี `await` ตัวไหนอยู่เหนือ `<Suspense>` boundary เดียวของหน้า จนบล็อก response ทั้งหมดไหม? ดู **[Streaming and Suspense](/th/rendering/streaming-and-suspense/)**
-- มี `Date.now()`/`Math.random()` ตัวไหนรันข้างใน render ของ Client Component ไหม — ไม่ใช่ Server Component ที่มันไม่มีทาง mismatch เลย? ดู **[Static and Dynamic Rendering](/th/rendering/static-and-dynamic-rendering/)**
+- `next/image` ทุกตัวที่ใช้ `fill` หรือ layout แบบ responsive ประกาศ `sizes` ไหม? ดู **[Images and Fonts](/nextjs/th/optimization/images-and-fonts/)**
+- `<a>` ทุกตัวที่ชี้ไปยัง route ภายในเป็น `<Link>` จริงๆ ไหม? ดู **[Linking and Navigation](/nextjs/th/routing-and-navigation/linking-and-navigation/)**
+- มี `await` ตัวไหนอยู่เหนือ `<Suspense>` boundary เดียวของหน้า จนบล็อก response ทั้งหมดไหม? ดู **[Streaming and Suspense](/nextjs/th/rendering/streaming-and-suspense/)**
+- มี `Date.now()`/`Math.random()` ตัวไหนรันข้างใน render ของ Client Component ไหม — ไม่ใช่ Server Component ที่มันไม่มีทาง mismatch เลย? ดู **[Static and Dynamic Rendering](/nextjs/th/rendering/static-and-dynamic-rendering/)**
 
 <Callout title="Checklist ช่วยให้ขอบเขตการค้นหาแคบลง ไม่ได้แทนที่การค้นหา">
-ทุกบรรทัดข้างบนตรงกับหนึ่งใน 25 pattern ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** — สิบในนั้นไม่มีเครื่องมือไหนในคอร์สนี้จับได้อัตโนมัติเลย รัน list นี้กับทุก diff ไม่ว่า `tsc` กับ `next build` จะผ่านสะอาดแค่ไหนก็ตาม
+ทุกบรรทัดข้างบนตรงกับหนึ่งใน 25 pattern ใน **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** — สิบในนั้นไม่มีเครื่องมือไหนในคอร์สนี้จับได้อัตโนมัติเลย รัน list นี้กับทุก diff ไม่ว่า `tsc` กับ `next build` จะผ่านสะอาดแค่ไหนก็ตาม
 </Callout>
 
 export const quizReviewChecklist = [

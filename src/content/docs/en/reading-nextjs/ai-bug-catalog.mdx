@@ -10,7 +10,7 @@ import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-Every pattern below was written to look exactly like the Next.js an AI assistant actually produces, then built, type-checked, or loaded in a real browser — against Next.js 16.3.6 and React 19.2.8. The quoted compiler errors, `tsc` diagnostics, and browser output are copied verbatim from those runs, not reconstructed from memory. The 25 patterns are grouped in the same reading order as **[How to read Next.js you did not write](/en/reading-nextjs/)**: boundaries, the caching model, auth, the error/redirect path, config and env — plus a closing group on rendering and navigation. See the **[Review Checklist](/en/reading-nextjs/review-checklist/)** that follows this lesson for a one-page version of the same 25 questions.
+Every pattern below was written to look exactly like the Next.js an AI assistant actually produces, then built, type-checked, or loaded in a real browser — against Next.js 16.3.6 and React 19.2.8. The quoted compiler errors, `tsc` diagnostics, and browser output are copied verbatim from those runs, not reconstructed from memory. The 25 patterns are grouped in the same reading order as **[How to read Next.js you did not write](/nextjs/en/reading-nextjs/)**: boundaries, the caching model, auth, the error/redirect path, config and env — plus a closing group on rendering and navigation. See the **[Review Checklist](/nextjs/en/reading-nextjs/review-checklist/)** that follows this lesson for a one-page version of the same 25 questions.
 
 ## Boundaries
 
@@ -42,7 +42,7 @@ export default function HeavyLayout({ children }: { children: React.ReactNode })
 
 `"use client"` does not mark one component — it marks the entry point to a whole subtree of the module graph, and everything reachable by `import` from there ships to the browser, whether or not it uses a single hook.
 
-**Symptom — real, measured bundle difference** (proven in **[Server and Client Components](/en/foundations/server-and-client-components/)** by summing the referenced chunks in the client-reference manifest, since `next build` no longer prints a per-route bundle-size column as of v16.0.0):
+**Symptom — real, measured bundle difference** (proven in **[Server and Client Components](/nextjs/en/foundations/server-and-client-components/)** by summing the referenced chunks in the client-reference manifest, since `next build` no longer prints a per-route bundle-size column as of v16.0.0):
 
 ```text
 --- /heavy/high (directive on the layout) ---
@@ -202,7 +202,7 @@ export default function Page() {
 
 `useFormStatus` reads status from the closest **parent** `<form>` — it is designed to be called from a component nested *inside* the form it reports on, so a submit button can show its own pending state without the parent needing to pass props down. Called from the same component that renders the `<form>` itself, there is no parent form in scope, so `pending` stays `false` for the entire lifetime of the submission — no error, no warning, just a button that never visibly disables.
 
-**Fix:** move the piece that reads `useFormStatus` into a child component rendered inside the `<form>` (per **[Forms and Progressive Enhancement](/en/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
+**Fix:** move the piece that reads `useFormStatus` into a child component rendered inside the `<form>` (per **[Forms and Progressive Enhancement](/nextjs/en/server-actions-and-mutations/forms-and-progressive-enhancement/)**):
 
 ```ts
 // app/catalog/04-formstatus-same-component/actions.ts
@@ -307,7 +307,7 @@ export default function Page() {
 
 Nothing here fails to build — this is a purely architectural bug, and it is the single most common "AI writes React, not Next.js" pattern: a data fetch that could run once on the server, cached and streamed as HTML, instead ships an empty shell, then fetches client-side after hydration (a loading flash on every visit, a client-server round trip that a Server Component would have skipped entirely, and a second, hand-rolled loading/error state).
 
-**Fix:** fetch directly in a Server Component; no client-side loading state, no extra network waterfall (see **[Fetching in Server Components](/en/data-fetching-and-caching/fetching-in-server-components/)**):
+**Fix:** fetch directly in a Server Component; no client-side loading state, no extra network waterfall (see **[Fetching in Server Components](/nextjs/en/data-fetching-and-caching/fetching-in-server-components/)**):
 
 ```tsx
 // app/catalog/06-useeffect-fetch/fixed-page.tsx
@@ -399,7 +399,7 @@ export default async function Page() {
 }
 ```
 
-**Caught by:** nothing automatic — no build error, no warning. Only **[The Four Caching Layers](/en/data-fetching-and-caching/the-four-caching-layers/)**'s explanation of the current default, or noticing every request hits the network, surfaces this.
+**Caught by:** nothing automatic — no build error, no warning. Only **[The Four Caching Layers](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/)**'s explanation of the current default, or noticing every request hits the network, surfaces this.
 
 ### 9. Route Segment Config mixed with `cacheComponents`
 
@@ -426,7 +426,7 @@ export default nextConfig
 
 Route Segment Config (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, `experimental_ppr`) is the model every pre-16 tutorial teaches. `cacheComponents` is the new, mutually exclusive model. AI code trained mostly on the old model keeps writing these exports into a project that already opted into Cache Components.
 
-**Symptom — real, already proven in this course's own build** (see **[Route Segment Config and Runtimes](/en/rendering/route-segment-config-and-runtimes/)**):
+**Symptom — real, already proven in this course's own build** (see **[Route Segment Config and Runtimes](/nextjs/en/rendering/route-segment-config-and-runtimes/)**):
 
 ```text
 Route segment config "dynamic" is not compatible with nextConfig.cacheComponents. Please remove it.
@@ -505,7 +505,7 @@ Route (app)
 ƒ  (Dynamic)  server-rendered on demand
 ```
 
-Under `cacheComponents: true` this instead becomes a hard build error (`Next.js encountered uncached or runtime data during prerendering`), already proven in **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)** — the old model fails quietly, the new one fails loudly.
+Under `cacheComponents: true` this instead becomes a hard build error (`Next.js encountered uncached or runtime data during prerendering`), already proven in **[Static and Dynamic Rendering](/nextjs/en/rendering/static-and-dynamic-rendering/)** — the old model fails quietly, the new one fails loudly.
 
 **Fix:** wrap the `cookies()`-dependent part in `<Suspense>` so only that part is dynamic, or (under Cache Components) cache the rest of the page with `'use cache'` and leave the cookie read outside it.
 
@@ -686,9 +686,9 @@ export const db = {
 
 Nothing here fails to build, type-check, or even fails a casual manual test by the person who wrote it — clicking delete on their own post works exactly as expected. The bug is invisible until someone sends the same action ID with a different `id`.
 
-As established in **[What Are Server Actions?](/en/server-actions-and-mutations/what-are-server-actions/)**: a Server Action compiles into a public POST endpoint reachable by its action ID, independent of whichever form or button happens to call it in your own UI. `deletePost` here deletes *any* post by ID, for anyone who can reach the app at all — no login required, let alone ownership of that specific post.
+As established in **[What Are Server Actions?](/nextjs/en/server-actions-and-mutations/what-are-server-actions/)**: a Server Action compiles into a public POST endpoint reachable by its action ID, independent of whichever form or button happens to call it in your own UI. `deletePost` here deletes *any* post by ID, for anyone who can reach the app at all — no login required, let alone ownership of that specific post.
 
-**Fix:** authorize the caller, then scope the mutation to their own rows — the same shape as the `verifySession()` Data Access Layer pattern used throughout this course's Server Actions module (see **[Authentication Patterns](/en/production-and-ecosystem/authentication-patterns/)** for the full, real DAL this stub stands in for):
+**Fix:** authorize the caller, then scope the mutation to their own rows — the same shape as the `verifySession()` Data Access Layer pattern used throughout this course's Server Actions module (see **[Authentication Patterns](/nextjs/en/production-and-ecosystem/authentication-patterns/)** for the full, real DAL this stub stands in for):
 
 ```ts
 // app/catalog/16-action-no-auth/lib/session.ts
@@ -712,7 +712,7 @@ export async function deletePost(id: string) {
 }
 ```
 
-**Caught by:** nothing automatic. This is the single most consequential entry in this catalog with zero tooling support of any kind — no linter, no type error, no build warning. Only manual review (the **[Review Checklist](/en/reading-nextjs/review-checklist/)**'s auth section) or an actual unauthorized `curl` request catches it.
+**Caught by:** nothing automatic. This is the single most consequential entry in this catalog with zero tooling support of any kind — no linter, no type error, no build warning. Only manual review (the **[Review Checklist](/nextjs/en/reading-nextjs/review-checklist/)**'s auth section) or an actual unauthorized `curl` request catches it.
 
 <SpotTheBug code={`// app/catalog/16b-action-checks-flag-only/actions.ts
 'use server'
@@ -756,7 +756,7 @@ export async function loadPost(id: string) {
 
 `redirect()` and `notFound()` both **throw** an internal Next.js control-flow error (`NEXT_REDIRECT` / `NEXT_HTTP_ERROR_FALLBACK`) that the framework catches further up the tree to actually perform the redirect or render the `not-found` segment. An unconditional `catch` block anywhere in between intercepts that throw exactly like any other error.
 
-**Symptom — already proven against a real running server** in **[Mutations and Revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/)**: the exact pattern above, built and deployed, answers with **HTTP 200 and a `null` body** instead of a 404 — the `catch` block logs the internal error and returns `null`, and the caller has no way to distinguish that from "the post is genuinely null."
+**Symptom — already proven against a real running server** in **[Mutations and Revalidation](/nextjs/en/server-actions-and-mutations/mutations-and-revalidation/)**: the exact pattern above, built and deployed, answers with **HTTP 200 and a `null` body** instead of a 404 — the `catch` block logs the internal error and returns `null`, and the caller has no way to distinguish that from "the post is genuinely null."
 
 **Fix:** either keep `redirect()`/`notFound()` outside any `try/catch` that does not explicitly re-throw them, or re-throw Next.js's own control-flow errors as the first line of the `catch`:
 
@@ -826,7 +826,7 @@ export function proxy() {
 }
 ```
 
-Also note: the `edge` runtime is **not** supported inside `proxy.ts` at all — `proxy` always runs on the `nodejs` runtime and that cannot be configured, unlike the old `middleware.ts`, which could opt into edge. See **[Middleware and the Request Lifecycle](/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)**.
+Also note: the `edge` runtime is **not** supported inside `proxy.ts` at all — `proxy` always runs on the `nodejs` runtime and that cannot be configured, unlike the old `middleware.ts`, which could opt into edge. See **[Middleware and the Request Lifecycle](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)**.
 
 **Caught by:** a real build warning, plus the codemod (`npx @next/codemod@canary upgrade latest` also migrates this automatically).
 
@@ -1012,7 +1012,7 @@ export default async function Page() {
 }
 ```
 
-Already proven in **[Streaming and Suspense](/en/rendering/streaming-and-suspense/)**: with no `<Suspense>` boundary anywhere, the server holds the entire response until every `await` in the tree resolves — the visitor sees a blank tab for the full 1.5 seconds, then everything at once. Adding a `<Suspense>` boundary that wraps the *entire* page changes nothing either, since the fallback becomes the only thing that streams fast, and there is no real content left outside it to arrive early.
+Already proven in **[Streaming and Suspense](/nextjs/en/rendering/streaming-and-suspense/)**: with no `<Suspense>` boundary anywhere, the server holds the entire response until every `await` in the tree resolves — the visitor sees a blank tab for the full 1.5 seconds, then everything at once. Adding a `<Suspense>` boundary that wraps the *entire* page changes nothing either, since the fallback becomes the only thing that streams fast, and there is no real content left outside it to arrive early.
 
 **Fix:** `await` only inside the specific region that is slow, wrapped in its own `<Suspense>`, leaving the rest of the page to stream immediately:
 
@@ -1057,7 +1057,7 @@ export default function Page() {
 
 `Date.now()` runs once on the server (producing one timestamp in the initial HTML) and again on the client during hydration (producing a different timestamp a moment later) — React expects the two renders to match exactly.
 
-**Evidence — real React 19 console error, verbatim, already captured against a real `next dev` page** in **[Static and Dynamic Rendering](/en/rendering/static-and-dynamic-rendering/)**:
+**Evidence — real React 19 console error, verbatim, already captured against a real `next dev` page** in **[Static and Dynamic Rendering](/nextjs/en/rendering/static-and-dynamic-rendering/)**:
 
 ```text
 Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:

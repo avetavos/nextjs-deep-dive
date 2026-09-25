@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-Next.js ไม่มี playground ให้รันใน browser — วิธีเดียวที่จะพิสูจน์ข้อกล่าวอ้างเกี่ยวกับมันคือ project จริง, การรัน `tsc`/`next build` จริง, หรือ browser จริง ทุก output ด้านล่างเป็นของจริง ที่บันทึกไว้กับ Next.js 16.3.6 และ React 19.2.8 ไม่มีเครื่องมือไหนซ้อนทับกันสมบูรณ์ และไม่มีตัวไหนใกล้เคียงคำว่าครบถ้วนด้วยตัวเอง — บรรทัด "จับได้โดย" ของแต่ละ 25 entry ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** ระบุไว้ชัดว่าเครื่องมือไหน (ถ้ามี) ในหน้านี้ที่จะจับมันได้
+Next.js ไม่มี playground ให้รันใน browser — วิธีเดียวที่จะพิสูจน์ข้อกล่าวอ้างเกี่ยวกับมันคือ project จริง, การรัน `tsc`/`next build` จริง, หรือ browser จริง ทุก output ด้านล่างเป็นของจริง ที่บันทึกไว้กับ Next.js 16.3.6 และ React 19.2.8 ไม่มีเครื่องมือไหนซ้อนทับกันสมบูรณ์ และไม่มีตัวไหนใกล้เคียงคำว่าครบถ้วนด้วยตัวเอง — บรรทัด "จับได้โดย" ของแต่ละ 25 entry ใน **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** ระบุไว้ชัดว่าเครื่องมือไหน (ถ้ามี) ในหน้านี้ที่จะจับมันได้
 
 ## `tsc --noEmit` — ผ่านรอบแรกที่เร็ว
 
@@ -45,7 +45,7 @@ Route (app)
 └ ƒ /catalog/11-cookies-static
 ```
 
-`◐` Partial Prerender จะปรากฏก็ต่อเมื่อ **[Cache Components](/th/data-fetching-and-caching/use-cache-and-cache-components/)** เปิดอยู่ (`cacheComponents: true`) — output จริงจากคู่มือ `next build` ที่ bundle มา ตอนเพิ่ม `generateStaticParams` เข้าไปในหน้า product แบบ dynamic:
+`◐` Partial Prerender จะปรากฏก็ต่อเมื่อ **[Cache Components](/nextjs/th/data-fetching-and-caching/use-cache-and-cache-components/)** เปิดอยู่ (`cacheComponents: true`) — output จริงจากคู่มือ `next build` ที่ bundle มา ตอนเพิ่ม `generateStaticParams` เข้าไปในหน้า product แบบ dynamic:
 
 ```text
 Route (app)
@@ -58,7 +58,7 @@ Route (app)
   └ ◐ /products/3
 ```
 
-ถ้าไม่มี Cache Components การอ่านพฤติกรรม cache ของ route หมายถึงการเช็คการเรียก `cookies()`/`headers()`/`fetch` ด้วยตา — ตารางเองแค่พิมพ์ `ƒ` ทันทีที่มีตัวไหนทำงาน แบบเงียบๆ ตามที่ entry 11 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** แสดงไว้
+ถ้าไม่มี Cache Components การอ่านพฤติกรรม cache ของ route หมายถึงการเช็คการเรียก `cookies()`/`headers()`/`fetch` ด้วยตา — ตารางเองแค่พิมพ์ `ƒ` ทันทีที่มีตัวไหนทำงาน แบบเงียบๆ ตามที่ entry 11 ของ **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** แสดงไว้
 
 **warning ที่ควรอ่านต่อจากตาราง route ไม่ใช่แค่ดู exit code ผ่าน/ไม่ผ่าน:**
 
@@ -103,7 +103,7 @@ npx next experimental-analyze --output
 To explore the analyze results interactively, run `next experimental-analyze` without `--output`.
 ```
 
-ถ้าไม่ใส่ `--output` มันจะเปิด local server พร้อม treemap แบบ interactive แทนการเขียนไฟล์ static — มีประโยชน์สำหรับการเปรียบเทียบแบบที่ entry 1 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** ทำ (chunk 8,967 byte เทียบกับ 287 byte ขึ้นอยู่กับว่า `'use client'` อยู่ตรงไหน)
+ถ้าไม่ใส่ `--output` มันจะเปิด local server พร้อม treemap แบบ interactive แทนการเขียนไฟล์ static — มีประโยชน์สำหรับการเปรียบเทียบแบบที่ entry 1 ของ **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** ทำ (chunk 8,967 byte เทียบกับ 287 byte ขึ้นอยู่กับว่า `'use client'` อยู่ตรงไหน)
 
 ## `next typegen` — type ของ route โดยไม่ต้อง build เต็ม
 
@@ -150,11 +150,11 @@ Error: Route "/products/[id]": Next.js encountered uncached or runtime data duri
 0:{"P":null,"c":["","bug-public-env"],"q":"","i":false,"f":[[["",{"children":["bug-public-env",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},"$undefined","$undefined",4608]},"$undefined","$undefined",4624], ...
 ```
 
-ในทางปฏิบัติคุณจะไม่อ่านรูปแบบนี้ทีละตัวอักษร — จุดประสงค์ของการโหลดมันใน Network tab คือยืนยันว่า *มี* การ fetch RSC จริงเกิดขึ้นตอน navigate หรือเปล่า (เทียบกับ full page reload จาก `<a>` เดี่ยวๆ ตาม entry 25 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)**) และดูคร่าวๆ ว่ามันใหญ่แค่ไหนเทียบกับเนื้อหาจริงบนหน้าจอ
+ในทางปฏิบัติคุณจะไม่อ่านรูปแบบนี้ทีละตัวอักษร — จุดประสงค์ของการโหลดมันใน Network tab คือยืนยันว่า *มี* การ fetch RSC จริงเกิดขึ้นตอน navigate หรือเปล่า (เทียบกับ full page reload จาก `<a>` เดี่ยวๆ ตาม entry 25 ของ **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)**) และดูคร่าวๆ ว่ามันใหญ่แค่ไหนเทียบกับเนื้อหาจริงบนหน้าจอ
 
 ## Playwright smoke test
 
-Playwright test ตัวเดียวที่โหลดแอปที่ build จริงแล้วมาแล้ว assert สถานะ DOM สุดท้าย จับ bug ทั้งกลุ่มที่เครื่องมือ static ในหน้านี้จับไม่ได้: อะไรก็ตามที่ปรากฏหลัง hydration, หลัง client-side navigation, หรือหลัง Server Action round-trip เท่านั้น probe ของคอร์สนี้เองใช้เทคนิคนี้เป๊ะๆ เพื่อพิสูจน์ bug การเข้าถึง `NEXT_PUBLIC_` แบบ dynamic ใน entry 19 ของ **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)** — การอ่านแบบ static literal ถูกต้องใน HTML ที่ server render ตอนแรก และมีแค่ browser จริง หลัง hydration เท่านั้นที่เผยให้เห็น `undefined` ของการอ่านแบบ dynamic
+Playwright test ตัวเดียวที่โหลดแอปที่ build จริงแล้วมาแล้ว assert สถานะ DOM สุดท้าย จับ bug ทั้งกลุ่มที่เครื่องมือ static ในหน้านี้จับไม่ได้: อะไรก็ตามที่ปรากฏหลัง hydration, หลัง client-side navigation, หรือหลัง Server Action round-trip เท่านั้น probe ของคอร์สนี้เองใช้เทคนิคนี้เป๊ะๆ เพื่อพิสูจน์ bug การเข้าถึง `NEXT_PUBLIC_` แบบ dynamic ใน entry 19 ของ **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)** — การอ่านแบบ static literal ถูกต้องใน HTML ที่ server render ตอนแรก และมีแค่ browser จริง หลัง hydration เท่านั้นที่เผยให้เห็น `undefined` ของการอ่านแบบ dynamic
 
 ```ts
 // A Playwright test file (tests/smoke.spec.ts) — illustrative, not a
@@ -170,7 +170,7 @@ test('renders the real client-side value, not the SSR one', async ({ page }) => 
 
 ## `instrumentation.ts` ตอน development ไม่ใช่แค่ production
 
-`register()` ใน `instrumentation.ts` รันครั้งเดียวสำหรับ Next.js server instance *ใหม่ทุกตัว* — รวมถึง `next dev` ด้วย — ไม่ใช่แค่ตอน deploy production เดินสาย `onRequestError` ตั้งแต่เนิ่นๆ แม้จะแค่ `console.error` ตอน development ในเครื่อง ก็เผย server error ทันทีที่มันเกิดขึ้น แทนที่จะรู้หลังรายงานไปถึง production เท่านั้น ดู **[Deployment and Self-Hosting](/th/production-and-ecosystem/deployment-and-self-hosting/)** สำหรับตัวอย่าง `onRequestError` จริงเต็มรูปแบบที่คอร์สนี้สร้างไว้กับ observability provider จริง
+`register()` ใน `instrumentation.ts` รันครั้งเดียวสำหรับ Next.js server instance *ใหม่ทุกตัว* — รวมถึง `next dev` ด้วย — ไม่ใช่แค่ตอน deploy production เดินสาย `onRequestError` ตั้งแต่เนิ่นๆ แม้จะแค่ `console.error` ตอน development ในเครื่อง ก็เผย server error ทันทีที่มันเกิดขึ้น แทนที่จะรู้หลังรายงานไปถึง production เท่านั้น ดู **[Deployment and Self-Hosting](/nextjs/th/production-and-ecosystem/deployment-and-self-hosting/)** สำหรับตัวอย่าง `onRequestError` จริงเต็มรูปแบบที่คอร์สนี้สร้างไว้กับ observability provider จริง
 
 ## Harness ของคอร์สนี้เอง: compile ทุก snippet
 
@@ -188,7 +188,7 @@ Per-module fence summary (collected / skipped-no-path / expect-error):
   ...
 ```
 
-fence ที่ตั้งใจโชว์โค้ดที่พัง (เหมือนตัวอย่าง "โค้ดที่ผิด" ส่วนใหญ่ใน **[AI Bug Catalog](/th/reading-nextjs/ai-bug-catalog/)**) ขึ้นต้นด้วย `// @expect-error <เหตุผล>` เพื่อให้ harness ข้ามมันไป — เนื้อหาบทเรียนพก output จริงของ build/`tsc` ที่บันทึกแยกไว้ต่างหากแทน ไม่ต้องให้ harness reproduce ความล้มเหลวที่ตั้งใจไว้ทุกครั้งที่รัน
+fence ที่ตั้งใจโชว์โค้ดที่พัง (เหมือนตัวอย่าง "โค้ดที่ผิด" ส่วนใหญ่ใน **[AI Bug Catalog](/nextjs/th/reading-nextjs/ai-bug-catalog/)**) ขึ้นต้นด้วย `// @expect-error <เหตุผล>` เพื่อให้ harness ข้ามมันไป — เนื้อหาบทเรียนพก output จริงของ build/`tsc` ที่บันทึกแยกไว้ต่างหากแทน ไม่ต้องให้ harness reproduce ความล้มเหลวที่ตั้งใจไว้ทุกครั้งที่รัน
 
 ## Mental Model
 

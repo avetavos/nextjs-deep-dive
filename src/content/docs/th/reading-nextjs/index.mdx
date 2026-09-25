@@ -27,7 +27,7 @@ export const readingOrderDiagram = `flowchart TD
 
 - **สิ่งที่ต้องมองหา:** ไฟล์ (หรือ parent ที่ใกล้ที่สุด) ที่มี `'use client'` หรือ `'use server'` เป็นบรรทัดแรก; ทุก prop ที่ส่งจาก Server Component ไปยัง Client Component; ทุก hook (`useState`, `useRouter`, `useFormStatus`) และตรวจว่าไฟล์ที่เรียกมันเป็น Client Component จริงหรือไม่
 - **คำถามที่ต้องถาม:** directive นี้อยู่ต่ำในต้นไม้เท่าที่ควรหรือเปล่า หรือมันถูกวางไว้ที่ layout/page ใกล้ราก เพราะเป็นวิธีที่ทำให้ error หายไปง่ายที่สุด
-- **บทที่อธิบายเรื่องนี้:** **[Server and Client Components](/th/foundations/server-and-client-components/)** สำหรับกฎเรื่อง subtree และ serialization boundary; **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)** สำหรับเหตุผลที่ทุก action เป็น public endpoint ทันทีที่มันถูก export
+- **บทที่อธิบายเรื่องนี้:** **[Server and Client Components](/nextjs/th/foundations/server-and-client-components/)** สำหรับกฎเรื่อง subtree และ serialization boundary; **[Server Actions คืออะไร](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)** สำหรับเหตุผลที่ทุก action เป็น public endpoint ทันทีที่มันถูก export
 
 ## 2. Caching model ที่ project นี้ใช้จริง
 
@@ -35,7 +35,7 @@ Next.js มี caching model สองแบบตลอดช่วงอาย
 
 - **สิ่งที่ต้องมองหา:** เปิด `next.config.ts` ก่อนอ่าน route ไหนเลย และเช็คว่ามี `cacheComponents: true` หรือไม่ จากนั้นเช็คว่า route ใช้ `export const dynamic = ...` / `export const revalidate = ...` (model เก่า) หรือ `'use cache'` / `cacheLife(...)` / `cacheTag(...)` (model ใหม่)
 - **คำถามที่ต้องถาม:** ทุกไฟล์สอดคล้องกับสิ่งที่ `next.config.ts` บอกไว้หรือเปล่า หรือไฟล์นี้สมมติว่าใช้ model *อีกแบบ*
-- **บทที่อธิบายเรื่องนี้:** **[Route Segment Config and Runtimes](/th/rendering/route-segment-config-and-runtimes/)** สำหรับ model เก่าและ error ที่บอกว่าใช้ร่วมกันไม่ได้; **[`use cache` และ Cache Components](/th/data-fetching-and-caching/use-cache-and-cache-components/)** และ **[Partial Prerendering](/th/rendering/partial-prerendering/)** สำหรับ model ใหม่
+- **บทที่อธิบายเรื่องนี้:** **[Route Segment Config and Runtimes](/nextjs/th/rendering/route-segment-config-and-runtimes/)** สำหรับ model เก่าและ error ที่บอกว่าใช้ร่วมกันไม่ได้; **[`use cache` และ Cache Components](/nextjs/th/data-fetching-and-caching/use-cache-and-cache-components/)** และ **[Partial Prerendering](/nextjs/th/rendering/partial-prerendering/)** สำหรับ model ใหม่
 
 ## 3. Auth ในทุก action และทุก route handler
 
@@ -43,7 +43,7 @@ Server Action คือ POST endpoint; Route Handler คือ HTTP method อ�
 
 - **สิ่งที่ต้องมองหา:** บรรทัดแรกๆ ของทุกฟังก์ชันใน `app/actions.ts`, ไฟล์ `'use server'` ใดๆ, และทุก `app/**/route.ts` มองหาการเช็ค session (pattern DAL ของคอร์สนี้คือ `verifySession()`) ก่อนอ่านหรือเขียนใดๆ และมองหาว่าการเขียนกรองด้วย ID ของ user ปัจจุบันด้วย ไม่ใช่แค่เช็คว่า *มีใครสักคน* login อยู่
 - **คำถามที่ต้องถาม:** ถ้าฉันส่ง request แบบนี้ด้วย `curl` พร้อม session cookie ของคนอื่น ข้อมูลของใครจะถูกแก้ไข
-- **บทที่อธิบายเรื่องนี้:** **[Server Actions คืออะไร](/th/server-actions-and-mutations/what-are-server-actions/)** และ **[Security and Patterns](/th/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/th/production-and-ecosystem/authentication-patterns/)** สำหรับตัว DAL เอง
+- **บทที่อธิบายเรื่องนี้:** **[Server Actions คืออะไร](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)** และ **[Security and Patterns](/nextjs/th/server-actions-and-mutations/security-and-patterns/)**; **[Authentication Patterns](/nextjs/th/production-and-ecosystem/authentication-patterns/)** สำหรับตัว DAL เอง
 
 ## 4. Error และ redirect path
 
@@ -51,7 +51,7 @@ Server Action คือ POST endpoint; Route Handler คือ HTTP method อ�
 
 - **สิ่งที่ต้องมองหา:** ทุก `try { … } catch { … }` block; มันมีการเรียก `redirect()` หรือ `notFound()` อยู่ข้างในไหม ไม่ว่าจะตรงๆ หรือผ่าน helper อย่าง `verifySession()`; `catch` block log แล้วกลืนไปเลย หรือเรียก `unstable_rethrow(err)` / re-throw
 - **คำถามที่ต้องถาม:** ถ้าฉันยิงเข้า code path นี้กับ server ที่รันจริง มันตอบกลับด้วย redirect / 404 จริงไหม — หรือตอบ 200 พร้อม body ที่ผิด
-- **บทที่อธิบายเรื่องนี้:** **[Mutations and Revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/)** ซึ่งพิสูจน์ความล้มเหลวแบบนี้กับ server จริง
+- **บทที่อธิบายเรื่องนี้:** **[Mutations and Revalidation](/nextjs/th/server-actions-and-mutations/mutations-and-revalidation/)** ซึ่งพิสูจน์ความล้มเหลวแบบนี้กับ server จริง
 
 ## 5. Config: `next.config.ts` และ environment variables
 
@@ -59,7 +59,7 @@ Server Action คือ POST endpoint; Route Handler คือ HTTP method อ�
 
 - **สิ่งที่ต้องมองหา:** `cacheComponents`, `reactCompiler`, `turbopack.*` ใน `next.config.ts`; ทุกการอ่าน `process.env.*` ในไฟล์ที่มี (หรือ import เข้า) `'use client'`; ทุกตัวแปรที่ขึ้นต้น `NEXT_PUBLIC_` และมันเก็บอะไรอยู่จริงๆ
 - **คำถามที่ต้องถาม:** ตัวแปรนี้จำเป็นต้องไปถึง browser จริงไหม — และถ้าจำเป็น ฉันยังสบายใจไหมถ้ามันโผล่เป็น plain text ในไฟล์ `.next/static/chunks/*.js` ที่ใครก็ดาวน์โหลดได้
-- **บทที่อธิบายเรื่องนี้:** **[Environment and Configuration](/th/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)** สำหรับ `proxy.ts` และ config ระดับ request-time ที่รันก่อนทุกอย่างข้างบน
+- **บทที่อธิบายเรื่องนี้:** **[Environment and Configuration](/nextjs/th/production-and-ecosystem/environment-and-configuration/)**; **[Middleware and the Request Lifecycle](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)** สำหรับ `proxy.ts` และ config ระดับ request-time ที่รันก่อนทุกอย่างข้างบน
 
 ## Mental Model
 
