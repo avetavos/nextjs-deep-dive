@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -81,6 +82,119 @@ my-app/
   tsconfig.json      # TypeScript configuration
 ```
 
+## ESLint หรือ Biome — คำถามเรื่อง linter
+
+ขั้นตอน customize ของ `create-next-app` ถาม linter ตรง ๆ — **"Which linter would you like to use? ESLint / Biome / None"** ESLint คือตัวเลือกดั้งเดิม มี rule เฉพาะ Next.js จาก `@next/eslint-plugin-next`; Biome คือ linter+formatter ตัวเดียวจบที่เร็ว รองรับ Next.js/React มาในตัว; None ข้าม linting ไปเลย เพิ่มทีหลังได้ ตั้งแต่ Next.js 16 ทั้ง `next lint` และ option `eslint` ในไฟล์ config ถูกถอดออกทั้งคู่ — ESLint ต้องต่อสายเองด้วยการติดตั้ง `eslint` + `eslint-config-next` แล้วเขียน **flat config** (`eslint.config.mjs`) เอง รันผ่าน ESLint CLI ตรง ๆ —
+
+```js
+// eslint.config.mjs
+import { defineConfig, globalIgnores } from 'eslint/config'
+import nextVitals from 'eslint-config-next/core-web-vitals'
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts']),
+])
+
+export default eslintConfig
+```
+
+```bash
+npx eslint .
+```
+
+## React Compiler
+
+React Compiler (`reactCompiler: true` ใน `next.config.ts`) memoize component ให้อัตโนมัติ ลดการเขียน `useMemo`/`useCallback` เองส่วนใหญ่ ใน Next.js 16.3 มัน**ไม่เปิดเองลอย ๆ ได้** — มันรันผ่าน Babel plugin ที่ Next.js ไม่ได้ bundle มาให้ —
+
+```ts
+// next.config.ts — variant reactCompiler
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+};
+
+export default nextConfig;
+```
+
+เปิดตัวนี้โดยไม่ติดตั้ง plugin ทำให้ build fail จริง พิสูจน์แล้วใน probe —
+
+```text
+Error: Turbopack build failed with 1 error:
+./next.config.ts
+Error: Failed to resolve package babel-plugin-react-compiler while attempting to resolve React Compiler
+React compiler is enabled in next.config.ts. We attempted to resolve React Compiler relative to the next package. Is babel-plugin-react-compiler installed in your node_modules directory?
+```
+
+การติดตั้ง dependency ที่ขาดไปคือทางแก้ทั้งหมด — `npm install -D babel-plugin-react-compiler` แล้ว `next.config.ts` ตัวเดิมเป๊ะก็ build ผ่านสะอาด `create-next-app` เองก็มี flag `--react-compiler` ตรง ๆ (และ prompt ในขั้น customize) ที่ตั้งค่าให้พร้อม plugin เลย
+
+## Typed routes กับ `next typegen`
+
+`typedRoutes: true` ทำให้ `<Link href>` (และ `push`/`replace`/`prefetch` ของ `next/navigation`) ถูก type-check กับ route จริงของ app คุณ — string literal ที่ไม่ใช่ route จริงกลายเป็น type error ไม่ใช่ 404 ที่เจอตอน runtime —
+
+```ts
+// next.config.ts — variant typedRoutes
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  typedRoutes: true,
+};
+
+export default nextConfig;
+```
+
+แต่ก่อน route type จะถูก generate เป็นผลพลอยได้จาก `next dev`/`next build` เท่านั้น ตอนนี้มีคำสั่ง `next typegen` แยกต่างหาก (stable ตั้งแต่ v15.5) ที่ generate มันเองได้ ซึ่งสำคัญสำหรับ type-check ใน CI โดยไม่ต้อง build เต็ม —
+
+```bash
+npx next typegen && npx tsc --noEmit
+```
+
+พิสูจน์แล้วใน probe ด้วย route ที่ไม่มีจริง —
+
+```tsx
+// app/page.tsx
+import Link from 'next/link'
+
+export default function Home() {
+  return (
+    <div>
+      <Link href="/typed-a">Good link</Link>
+      <Link href="/nope-not-a-route">Bad link</Link>
+    </div>
+  )
+}
+```
+
+```text
+app/page.tsx(7,13): error TS2322: Type '"/nope-not-a-route"' is not assignable to type 'UrlObject | RouteImpl<"/nope-not-a-route">'.
+```
+
+`next typegen` พิมพ์ `✓ Types generated successfully` และหลังจากนั้นเท่านั้นที่ `tsc --noEmit` จะมี generated route type ให้ใช้จับ typo ได้
+
+## scaffold `AGENTS.md` / `CLAUDE.md`
+
+recommended defaults (และ flag เดี่ยว `--agents-md`) ยังเขียน `AGENTS.md` ไว้ที่ root โปรเจกต์ ควบคู่กับ `CLAUDE.md` ที่แค่ re-export มันอีกที (`@AGENTS.md`) เพื่อให้ Claude Code รับ rule ชุดเดียวกัน จุดประสงค์ของมันตรงไปตรงมา — training data ของคุณล้าสมัยทันทีที่ major version ใหม่ออก —
+
+```text
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may
+all differ from your training data. Read the relevant guide in
+`node_modules/next/dist/docs/` before writing any code. Heed deprecation
+notices.
+
+This block is written and re-added by `next dev` — removing it from a diff
+only re-creates the uncommitted change; committing it with your work keeps
+the tree clean.
+
+<!-- END:nextjs-agent-rules -->
+```
+
+จุดสุดท้ายสำคัญมากสำหรับ agent ที่ทำงานใน repo นี้เอง — `next dev` generate block นี้กลับมาเองทุกครั้ง การลบมันจึงไม่ใช่การแก้ที่ถาวร — มันจะกลับมาอีก
+
 <Mermaid title="จาก scaffold ไปถึง dev server ที่รันอยู่" code={diagramToolchain} />
 
 export const diagramToolchain = `flowchart LR
@@ -90,8 +204,50 @@ export const diagramToolchain = `flowchart LR
   Turbo --> Browser[Live app in the browser]
   Config[next.config.ts] --> Turbo`;
 
+## Mental Model
+
+`create-next-app` ไม่ใช่ "เริ่มจากโฟลเดอร์เปล่า ๆ" — มันคือการเลือกจากชุด toggle ที่ document ไว้ตายตัว (TypeScript, linter, Tailwind, `src/`, import alias, React Compiler, AGENTS.md) และทุก toggle มีผลจริงที่เช็คได้กับ tree ที่ generate ออกมา มองทั้ง toolchain แบบเดียวกัน — config key อย่าง `reactCompiler` หรือ `typedRoutes` ไม่ใช่ "เวทมนตร์ที่ทำงานหรือไม่ทำงาน" — มันคือ feature ที่ document ไว้ มี dependency ของตัวเอง และมี error message จริงเมื่อ dependency นั้นขาดไป
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| recommended defaults ของ `create-next-app` | TypeScript/ESLint/App Router ต่อสายถูกต้องในคำสั่งเดียว | มีความเห็นในตัว — customize ทีหลังต้อง undo default บางตัว |
+| ESLint (flat config) | ecosystem อยู่ตัว ตัวอย่าง Next.js ส่วนใหญ่สมมติว่าใช้ตัวนี้ | ต้องเขียนและดูแล `eslint.config.mjs` เองเพราะ `next lint` หายไปแล้ว |
+| Biome | binary เดียวเร็ว แทน ESLint+Prettier | plugin ecosystem เล็กกว่า ESLint |
+| React Compiler | เขียน `useMemo`/`useCallback` เองน้อยลง | dependency เพิ่ม (`babel-plugin-react-compiler`) และ build time เพิ่มนิดหน่อย |
+| `typedRoutes` | link ที่พังกลายเป็น type error ไม่ใช่ 404 | ต้อง `next typegen` (หรือ `dev`/`build`) generate type ใหม่ก่อน `tsc` จะเห็น |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`reactCompiler: true` แค่ใส่ config key ก็ใช้ได้เลย"** มันต้องการ `babel-plugin-react-compiler` ติดตั้งอยู่ด้วย — ถ้าไม่มี `next build` จะ fail ทันทีด้วย error จริงที่บอกชื่อ ไม่ใช่ no-op เงียบ ๆ
+- **"`next lint` ยังมีอยู่ใน Next.js 16"** มันถูกถอดออกใน v16.0.0 พร้อมกับ option `eslint` ใน `next.config.js` — ตอนนี้ ESLint รันผ่าน ESLint CLI ธรรมดากับ flat config ของคุณเอง
+- **"`tsc --noEmit` เฉย ๆ จับ typed-route ผิดพลาดได้ทุกกรณี"** route type มาจาก `.next/types` ที่ generate โดย `next dev`, `next build`, หรือ `next typegen` — รัน `tsc` เปล่า ๆ ใน checkout ใหม่ (หรือ CI) โดยไม่มีสามอย่างนี้มาก่อนแปลว่า route type ยังไม่มี
+- **"block `AGENTS.md` เป็นแค่คำแนะนำ ลบได้"** `next dev` เติมมันกลับมาเอง — ลบออกจาก diff โดยไม่แก้ต้นตอแค่สร้าง uncommitted change ใหม่ตอนรัน `dev` ครั้งถัดไป
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลาโค้ดที่ generate มาแตะ `next.config.ts` หรือ scaffold ของโปรเจกต์ เช็คสิ่งเหล่านี้ก่อนเชื่อ —
+
+- มันตั้ง `reactCompiler: true` โดยไม่พูดถึงการติดตั้ง `babel-plugin-react-compiler` เลยหรือเปล่า? build จะ fail ด้วย error "Failed to resolve package" ที่ชัดเจนตั้งแต่รันครั้งแรก
+- มันใช้ `next lint` หรือ key `eslint` ใน `next.config.js` หรือเปล่า? ทั้งคู่ถูกถอดออกใน Next.js 16 แล้ว — โค้ดปัจจุบันใช้ ESLint CLI กับ flat config `eslint.config.mjs`
+- มันสมมติว่า `<Link href="...">` type-check กับ route จริงโดยไม่มี `typedRoutes: true` ใน config และไม่มีการรัน `next typegen`/`dev`/`build` เพื่อ generate type หรือเปล่า?
+- มันอ้างถึง `getInitialProps`, `next.config.js` แบบ `module.exports`, หรือ pattern อื่นที่เก่ากว่า `next.config.ts` แบบ typed, ESM-friendly ปัจจุบันหรือเปล่า?
+
+<SpotTheBug code={`// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+  typedRoutes: true,
+}
+
+export default nextConfig`}>
+config นี้เป็นแค่ครึ่งเรื่อง — `reactCompiler: true` ต้องการ `babel-plugin-react-compiler` ติดตั้งเป็น dependency จริง ๆ ด้วย และ `typedRoutes: true` ต้องการรัน `next typegen` (หรือ `dev`/`build`) ก่อนที่ `tsc` จะเห็น route type ที่ generate มา พิสูจน์แล้วใน probe — ด้วย config เป๊ะแบบนี้และไม่มี `babel-plugin-react-compiler` ใน `node_modules`, `next build` fail ทันทีด้วย `Error: Failed to resolve package babel-plugin-react-compiler while attempting to resolve React Compiler` แค่ config key อย่างเดียวไม่เปลี่ยนอะไรเลย — dependency (และสำหรับ typed routes คือขั้น generate type) ต้องมีอยู่จริงด้วย
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-scaffold ด้วย `create-next-app` รันด้วย `next dev` ปล่อยให้ Turbopack bundle โดย default และมองชื่อไฟล์ที่จองไว้ใต้ `app/` กับ `next.config.ts` เป็น convention ที่คุณอ่าน ไม่ใช่โค้ดที่คุณคิดขึ้นเอง
+scaffold ด้วย `create-next-app` รันด้วย `next dev` ปล่อยให้ Turbopack bundle โดย default — และมอง toggle ทุกตัว (linter ที่เลือก, React Compiler, typed routes, scaffold ของ `AGENTS.md`) เป็น feature ที่ document ไว้ มี dependency ของตัวเอง และมี error จริงที่พิสูจน์ได้เมื่อ dependency นั้นขาดไป
 </Callout>
 
 export const quizToolchain = [
@@ -99,21 +255,58 @@ export const quizToolchain = [
     q: 'command ไหนใช้ scaffold โปรเจกต์ Next.js ใหม่',
     options: ['npm run dev', 'npx create-next-app@latest my-app', 'next build', 'npm init next'],
     answer: 1,
+    explain: 'create-next-app คือ CLI ทางการสำหรับ scaffold มันถามว่าจะใช้ recommended defaults หรือ customize เอง',
   },
   {
     q: 'bundler เริ่มต้นของ Next.js ปัจจุบันสำหรับ dev และ build คืออะไร',
     options: ['webpack', 'Vite', 'Turbopack', 'esbuild'],
     answer: 2,
+    explain: 'ตั้งแต่ Next.js 16 Turbopack stable แล้วและใช้เป็น default ทั้ง next dev และ next build โดยไม่ต้องใส่ flag',
   },
   {
     q: 'ไฟล์ config แบบ TypeScript ของ framework ชื่ออะไร',
     options: ['next.config.js', 'next.config.ts', 'tsconfig.next.json', 'config.ts'],
     answer: 1,
+    explain: 'next.config.ts ถูก type ด้วย NextConfig และเป็นไฟล์ config ที่แนะนำเมื่อใช้ TypeScript',
   },
   {
     q: 'การครอบชื่อโฟลเดอร์ด้วยวงเล็บเหลี่ยม อย่าง [slug] ทำอะไร',
     options: ['ซ่อนโฟลเดอร์นั้นจาก routing', 'ทำให้เป็น dynamic route segment', 'มาร์กเป็น layout', 'เปลี่ยนเป็น API route'],
     answer: 1,
+    explain: 'วงเล็บเหลี่ยมรอบชื่อโฟลเดอร์สร้าง dynamic route segment ที่ค่าของมันอ่านได้ผ่าน params',
+  },
+  {
+    q: '```ts\n// next.config.ts\nconst nextConfig: NextConfig = {\n  reactCompiler: true,\n}\n```\nเกิดอะไรขึ้นเมื่อ build โค้ดนี้โดยไม่ได้ติดตั้ง babel-plugin-react-compiler',
+    options: [
+      'build ผ่านปกติ — option นี้เป็นแค่คำแนะนำ',
+      'next build fail ด้วย "Failed to resolve package babel-plugin-react-compiler"',
+      'มัน disable compiler เงียบ ๆ แล้วเตือนแค่ครั้งเดียว',
+      'มัน fallback ไปใช้ pipeline Babel-only แบบเก่าอัตโนมัติ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วใน probe — เปิด reactCompiler โดยไม่ติดตั้ง plugin คือ build fail จริงทันที บอกชื่อ package ที่ขาด ไม่ใช่ fallback เงียบ ๆ',
+  },
+  {
+    q: 'ตั้งแต่ Next.js 16 คุณรัน ESLint ในโปรเจกต์ที่ scaffold ด้วย option ESLint ยังไง',
+    options: [
+      'next lint',
+      'ESLint CLI ธรรมดา (npx eslint .) กับ flat config eslint.config.mjs ของคุณเอง',
+      'มันรันอัตโนมัติทุกครั้งที่ save ใน next dev โดยไม่ต้องใช้ CLI',
+      'ผ่าน key eslint ใน next.config.js',
+    ],
+    answer: 1,
+    explain: 'next lint และ option eslint ใน next.config.js ถูกถอดออกทั้งคู่ใน v16.0.0 ตอนนี้ eslint-config-next เสียบเข้ากับ flat config ที่คุณเป็นเจ้าของและรันผ่าน ESLint CLI ตรง ๆ',
+  },
+  {
+    q: 'ตั้ง `typedRoutes: true` แล้ว แต่ CI job รัน checkout ใหม่ผ่าน `tsc --noEmit` ตรง ๆ โดยไม่มี `next dev`, `next build`, หรือ `next typegen` มาก่อนเลย เกิดอะไรกับ `<Link href="/typo">` ที่ `/typo` ไม่ใช่ route จริง',
+    options: [
+      'tsc จับได้ทันทีไม่ว่าจะมีขั้นตอนไหนมาก่อนหรือไม่',
+      'generated route type ยังไม่มีอยู่ tsc เลยไม่มีอะไรให้เช็ค href ด้วย',
+      'ถูกจับตอน runtime เป็น 404 แทน',
+      'typedRoutes ไม่มีผลกับ tsc เลย มีผลแค่กับ next build',
+    ],
+    answer: 1,
+    explain: 'route type อยู่ใน .next/types ที่ generate โดย next dev, next build หรือ next typegen ข้ามทั้งสามอย่างแปลว่า tsc เปล่า ๆ ไม่มี generated type ให้ validate href เลย',
   },
 ];
 

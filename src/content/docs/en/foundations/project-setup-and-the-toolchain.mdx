@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -81,6 +82,119 @@ my-app/
   tsconfig.json      # TypeScript configuration
 ```
 
+## ESLint or Biome — the linter prompt
+
+`create-next-app`'s customize flow asks a linter question directly: **"Which linter would you like to use? ESLint / Biome / None."** ESLint is the traditional choice, with Next.js-specific rules from `@next/eslint-plugin-next`; Biome is a fast, single-binary linter+formatter with built-in Next.js/React support; None skips linting entirely and can be added later. As of Next.js 16, `next lint` and the config file's `eslint` option are both removed — ESLint is wired up by installing `eslint` + `eslint-config-next` and writing a **flat config** (`eslint.config.mjs`) yourself, run through the plain ESLint CLI:
+
+```js
+// eslint.config.mjs
+import { defineConfig, globalIgnores } from 'eslint/config'
+import nextVitals from 'eslint-config-next/core-web-vitals'
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts']),
+])
+
+export default eslintConfig
+```
+
+```bash
+npx eslint .
+```
+
+## React Compiler
+
+The React Compiler (`reactCompiler: true` in `next.config.ts`) automatically memoizes components, removing most hand-written `useMemo`/`useCallback`. In Next.js 16.3 it is **not enabled on its own** — it runs through a Babel plugin that Next.js does not bundle for you:
+
+```ts
+// next.config.ts — variant reactCompiler
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+};
+
+export default nextConfig;
+```
+
+Turning this on without the plugin installed produces a real build failure, proven in the probe:
+
+```text
+Error: Turbopack build failed with 1 error:
+./next.config.ts
+Error: Failed to resolve package babel-plugin-react-compiler while attempting to resolve React Compiler
+React compiler is enabled in next.config.ts. We attempted to resolve React Compiler relative to the next package. Is babel-plugin-react-compiler installed in your node_modules directory?
+```
+
+Installing the missing dependency is the whole fix — `npm install -D babel-plugin-react-compiler`, then the exact same `next.config.ts` builds cleanly. `create-next-app` also has a direct `--react-compiler` flag (and a customize-flow prompt) that sets this up for you, plugin included.
+
+## Typed routes and `next typegen`
+
+`typedRoutes: true` makes `<Link href>` (and `next/navigation`'s `push`/`replace`/`prefetch`) type-checked against your app's actual routes — a literal string that isn't a real route is a type error, not a 404 discovered at runtime:
+
+```ts
+// next.config.ts — variant typedRoutes
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  typedRoutes: true,
+};
+
+export default nextConfig;
+```
+
+Route types used to only get generated as a side effect of `next dev`/`next build`. The dedicated `next typegen` command (stable since v15.5) generates them on their own, which matters for CI type-checking without a full build:
+
+```bash
+npx next typegen && npx tsc --noEmit
+```
+
+Proven in the probe with a route that doesn't exist:
+
+```tsx
+// app/page.tsx
+import Link from 'next/link'
+
+export default function Home() {
+  return (
+    <div>
+      <Link href="/typed-a">Good link</Link>
+      <Link href="/nope-not-a-route">Bad link</Link>
+    </div>
+  )
+}
+```
+
+```text
+app/page.tsx(7,13): error TS2322: Type '"/nope-not-a-route"' is not assignable to type 'UrlObject | RouteImpl<"/nope-not-a-route">'.
+```
+
+`next typegen` printed `✓ Types generated successfully`, and only then did `tsc --noEmit` have the generated route types available to catch the typo.
+
+## The AGENTS.md / CLAUDE.md scaffold
+
+The recommended defaults (and the standalone `--agents-md` flag) also write an `AGENTS.md` at the project root, plus a `CLAUDE.md` that just re-exports it (`@AGENTS.md`) so Claude Code picks up the same rules. Its purpose is blunt: your training data is stale the moment a new major version ships.
+
+```text
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may
+all differ from your training data. Read the relevant guide in
+`node_modules/next/dist/docs/` before writing any code. Heed deprecation
+notices.
+
+This block is written and re-added by `next dev` — removing it from a diff
+only re-creates the uncommitted change; committing it with your work keeps
+the tree clean.
+
+<!-- END:nextjs-agent-rules -->
+```
+
+That last point matters for an agent working in this exact repository: `next dev` regenerates this block on its own, so deleting it is not a durable edit — it comes back.
+
 <Mermaid title="From scaffold to a running dev server" code={diagramToolchain} />
 
 export const diagramToolchain = `flowchart LR
@@ -90,8 +204,50 @@ export const diagramToolchain = `flowchart LR
   Turbo --> Browser[Live app in the browser]
   Config[next.config.ts] --> Turbo`;
 
+## Mental Model
+
+`create-next-app` is not "starting from a blank folder" — it is choosing among a fixed set of documented toggles (TypeScript, linter, Tailwind, `src/`, import alias, React Compiler, AGENTS.md), and every one of those toggles has a real, checkable effect on the generated tree. Treat the whole toolchain the same way: a config key like `reactCompiler` or `typedRoutes` is not "magic that works or doesn't" — it is a documented feature with its own dependency and its own real error message when that dependency is missing.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| `create-next-app` recommended defaults | Correctly wired TypeScript/ESLint/App Router in one command | Opinionated — customizing later means undoing specific defaults |
+| ESLint (flat config) | Mature ecosystem, most Next.js examples assume it | You write and own `eslint.config.mjs` yourself since `next lint` is gone |
+| Biome | One fast binary instead of ESLint+Prettier | Smaller plugin ecosystem than ESLint |
+| React Compiler | Fewer manual `useMemo`/`useCallback` | Extra dependency (`babel-plugin-react-compiler`) and a small build-time cost |
+| `typedRoutes` | Broken links become type errors, not 404s | Requires `next typegen` (or `dev`/`build`) to regenerate types before `tsc` sees them |
+
+## Common Misconceptions
+
+- **"`reactCompiler: true` just works once you add the config key."** It requires `babel-plugin-react-compiler` to be installed — without it, `next build` fails immediately with a real, named error, not a silent no-op.
+- **"`next lint` still exists in Next.js 16."** It was removed in v16.0.0, along with the `eslint` `next.config.js` option — ESLint is now run through the plain ESLint CLI against your own flat config.
+- **"`tsc --noEmit` alone catches every typed-route mistake."** Route types come from `.next/types`, generated by `next dev`, `next build`, or `next typegen` — running bare `tsc` in a fresh checkout (or CI) without one of those first means the route types don't exist yet.
+- **"The `AGENTS.md` block is just a suggestion I can delete."** `next dev` re-adds it on its own; deleting it from a diff without addressing why only recreates an uncommitted change on the next `dev` run.
+
+## Reading AI-generated code
+
+When a generated snippet touches `next.config.ts` or the project scaffold, check for these before trusting it:
+
+- Does it set `reactCompiler: true` without any mention of installing `babel-plugin-react-compiler`? The build will fail with a clear "Failed to resolve package" error the first time it runs.
+- Does it use `next lint` or an `eslint` key inside `next.config.js`? Both were removed in Next.js 16 — current code uses the ESLint CLI against a flat `eslint.config.mjs`.
+- Does it assume `<Link href="...">` type-checks against real routes without `typedRoutes: true` in config, and without a `next typegen`/`dev`/`build` run to produce the types?
+- Does it reference `getInitialProps`, `next.config.js` with `module.exports`, or other patterns that predate the current typed, ESM-friendly `next.config.ts`?
+
+<SpotTheBug code={`// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+  typedRoutes: true,
+}
+
+export default nextConfig`}>
+This config is only half the story — `reactCompiler: true` requires `babel-plugin-react-compiler` to actually be installed as a dependency, and `typedRoutes: true` requires a `next typegen` (or `dev`/`build`) run before `tsc` can see the generated route types. Proven in the probe: with this exact config and no `babel-plugin-react-compiler` in `node_modules`, `next build` fails immediately with `Error: Failed to resolve package babel-plugin-react-compiler while attempting to resolve React Compiler`. The config key alone changes nothing — the dependency (and, for typed routes, a type-generation step) has to exist too.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Scaffold with `create-next-app`, run with `next dev`, let Turbopack bundle by default, and treat the reserved filenames under `app/` plus `next.config.ts` as the conventions you read rather than code you invent.
+Scaffold with `create-next-app`, run with `next dev`, let Turbopack bundle by default — and treat every toggle (linter choice, React Compiler, typed routes, the `AGENTS.md` scaffold) as a documented feature with its own dependency and its own real, provable error when that dependency is missing.
 </Callout>
 
 export const quizToolchain = [
@@ -99,21 +255,58 @@ export const quizToolchain = [
     q: 'Which command scaffolds a new Next.js project?',
     options: ['npm run dev', 'npx create-next-app@latest my-app', 'next build', 'npm init next'],
     answer: 1,
+    explain: 'create-next-app is the official scaffolding CLI; it asks for recommended defaults or lets you customize each option.',
   },
   {
     q: 'What is the default bundler in current Next.js for dev and build?',
     options: ['webpack', 'Vite', 'Turbopack', 'esbuild'],
     answer: 2,
+    explain: 'As of Next.js 16, Turbopack is stable and used by default for both next dev and next build — no flag required.',
   },
   {
     q: 'What is the TypeScript config file for the framework called?',
     options: ['next.config.js', 'next.config.ts', 'tsconfig.next.json', 'config.ts'],
     answer: 1,
+    explain: 'next.config.ts is typed with NextConfig and is the recommended config file when using TypeScript.',
   },
   {
     q: 'What does wrapping a folder name in brackets, like [slug], do?',
     options: ['Hides it from routing', 'Makes it a dynamic route segment', 'Marks it as a layout', 'Turns it into an API route'],
     answer: 1,
+    explain: 'Square brackets around a folder name create a dynamic route segment whose value is available via params.',
+  },
+  {
+    q: '```ts\n// next.config.ts\nconst nextConfig: NextConfig = {\n  reactCompiler: true,\n}\n```\nWhat happens when this builds without babel-plugin-react-compiler installed?',
+    options: [
+      'It builds successfully — the option is purely advisory',
+      'next build fails with "Failed to resolve package babel-plugin-react-compiler"',
+      'It silently disables the compiler and warns once',
+      'It falls back to the older Babel-only pipeline automatically',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe: enabling reactCompiler without the plugin installed is a real, immediate build failure naming the missing package, not a silent fallback.',
+  },
+  {
+    q: 'Since Next.js 16, how do you run ESLint in a project scaffolded with the ESLint option?',
+    options: [
+      'next lint',
+      'The plain ESLint CLI (npx eslint .) against your own eslint.config.mjs flat config',
+      'It runs automatically on every next dev save with no CLI needed',
+      'Through the eslint key in next.config.js',
+    ],
+    answer: 1,
+    explain: 'next lint and the next.config.js eslint option were both removed in v16.0.0. eslint-config-next now plugs into a flat config you own and run through the ESLint CLI directly.',
+  },
+  {
+    q: '`typedRoutes: true` is set, but a CI job runs a fresh checkout straight through `tsc --noEmit` with no `next dev`, `next build`, or `next typegen` step first. What happens to a `<Link href="/typo">` where `/typo` is not a real route?',
+    options: [
+      'tsc catches it immediately regardless of any prior step',
+      'The generated route types do not exist yet, so tsc has nothing to check the href against',
+      'It is caught at runtime with a 404 instead',
+      'typedRoutes has no effect on tsc, only on next build',
+    ],
+    answer: 1,
+    explain: 'Route types live in .next/types and are produced by next dev, next build, or next typegen. Skipping all three means a bare tsc run has no generated types to validate the href against.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Server and Client Components'
-description: 'The core App Router mental model: Server Components by default, the "use client" boundary and why it is transitive, passing Server Components into Client Components, and serializable props.'
+description: 'The core App Router mental model: Server Components by default, the "use client" boundary and why it is transitive, passing Server Components into Client Components, serializable props, use() with a streamed Promise, server-only/client-only, and Context providers.'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -19,7 +20,7 @@ In the App Router every component is a Server Component until a file says `"use 
 A component in `app/` runs on the server unless you opt out. That means it can be `async`, `await` data, and touch the database, the filesystem, or secrets directly — none of that code is sent to the browser.
 
 ```tsx
-// app/dashboard/page.tsx — a Server Component (no directive needed)
+// app/dashboard/page.tsx
 import { db } from '@/lib/db';
 
 export default async function Dashboard() {
@@ -35,6 +36,7 @@ Because this never ships to the client, the browser downloads zero JavaScript fo
 Put `"use client"` at the very top of a file and everything it exports becomes a Client Component: it runs in the browser and may use hooks, state, effects, event handlers, and browser APIs.
 
 ```tsx
+// app/counter.tsx
 'use client';
 
 import { useState } from 'react';
@@ -57,7 +59,22 @@ Two rules govern how the two kinds mix, and they are not symmetric:
 That second rule is the **doughnut (slot) pattern**: the Client Component is the ring, and a Server Component fills the hole. The server-rendered content stays on the server even though a client component surrounds it.
 
 ```tsx
-// app/page.tsx — Server Component
+// app/client-shell.tsx
+'use client';
+export default function ClientShell({ children }: { children: React.ReactNode }) {
+  return <div className="shell">{children}</div>;
+}
+```
+
+```tsx
+// app/server-data.tsx
+export default function ServerData() {
+  return <p>Rendered on the server</p>;
+}
+```
+
+```tsx
+// app/page.tsx
 import ClientShell from './client-shell';
 import ServerData from './server-data';
 
@@ -70,7 +87,309 @@ export default function Page() {
 }
 ```
 
-One constraint makes this work: **props crossing the boundary must be serializable.** You can pass strings, numbers, Dates, plain objects, arrays, and JSX, but not functions (other than Server Actions) or class instances as raw props — they cannot survive the trip from server to client.
+One constraint makes this work: **props crossing the boundary must be serializable.** You can pass strings, numbers, Dates, plain objects, arrays, and JSX, but not functions (other than Server Actions) or class instances as raw props — they cannot survive the trip from server to client. The next two sections show exactly what happens when you try.
+
+## Streaming a Promise into a Client Component with `use()`
+
+Instead of `await`-ing data in the Server Component and passing the resolved value down, you can start the fetch and hand the **unresolved Promise** straight to a Client Component. The Client Component unwraps it with React's `use()`, and the nearest `<Suspense>` boundary shows a fallback until it resolves. The static shell streams immediately; the slow data arrives later, with no client-side `useEffect` fetch involved.
+
+```ts
+// lib/notifications-data.ts
+export async function getNotifications(userId: string) {
+  await new Promise((r) => setTimeout(r, 20));
+  return [{ id: '1', text: `Hello ${userId}` }, { id: '2', text: 'Another one' }];
+}
+```
+
+```tsx
+// app/notifications/notification-list.tsx
+'use client'
+import { use } from 'react'
+
+export function NotificationList({
+  notificationsPromise,
+}: {
+  notificationsPromise: Promise<{ id: string; text: string }[]>
+}) {
+  // Unwraps the Promise on the client — suspends the nearest boundary until it resolves
+  const notifications = use(notificationsPromise)
+  return (
+    <ul>
+      {notifications.map((n) => (
+        <li key={n.id}>{n.text}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/notifications/page.tsx
+import { Suspense } from 'react'
+import { NotificationList } from './notification-list'
+import { getNotifications } from '@/lib/notifications-data'
+
+export default function NotificationsPage() {
+  // Do not await — hand the unresolved Promise straight to the Client Component
+  const notificationsPromise = getNotifications('u_1')
+  return (
+    <Suspense fallback={<p>Loading notifications…</p>}>
+      <NotificationList notificationsPromise={notificationsPromise} />
+    </Suspense>
+  )
+}
+```
+
+Built in the probe (`next build`), this compiles and prerenders cleanly — `use()` is exactly what lets a Promise, which is not itself serializable JSON, cross the boundary: React handles the Promise specially and streams its resolution, rather than trying to serialize it as a plain value.
+
+## Marking modules `server-only` or `client-only`
+
+A plain module with no directive can be imported from either side, and nothing stops a teammate (or a generated snippet) from importing a server-secrets file into a Client Component by mistake — it will not throw at the type level, and only leaks at runtime. The `server-only` package (and its counterpart `client-only`) turns that mistake into a **build-time error** instead:
+
+```ts
+// lib/secret-data.ts
+import 'server-only'
+
+export function getSecret() {
+  return process.env.SECRET_KEY ?? 'unset'
+}
+```
+
+```tsx
+// app/exp1/client-uses-server-only.tsx
+'use client'
+import { getSecret } from '@/lib/secret-data'
+
+export default function Bad() {
+  return <p>{getSecret()}</p>
+}
+```
+
+`tsc --noEmit` accepts both files — there is nothing type-level wrong here. Running `next build` in the probe is where it actually fails, with two real errors:
+
+```text
+Error: You're importing a module that depends on "server-only". This API is
+only available in Server Components in the App Router, but you are using it
+in the Pages Router.
+  Learn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+
+Error: 'server-only' cannot be imported from a Client Component module
+It should only be used from a Server Component.
+```
+
+(The first message's "Pages Router" wording is boilerplate reused across both routers — the second message is the one that actually names the problem.) Installing `server-only`/`client-only` is optional in Next.js — the framework recognizes both package names internally and produces this error whether or not the packages are actually installed from npm — but installing them keeps a linter that flags missing dependencies quiet, and gives editors a real module to resolve.
+
+## What crosses the boundary — and what throws
+
+Serializable data crosses; functions and class instances do not. Both failures are real, provable errors — not type errors, but errors React throws while prerendering:
+
+```tsx
+// app/exp2/client-receiver.tsx
+'use client'
+export default function ClientReceiver({ onSave }: { onSave: () => void }) {
+  return <button onClick={onSave}>Save</button>
+}
+```
+
+```tsx
+// app/exp2/page.tsx
+import ClientReceiver from './client-receiver'
+
+function saveOnServer() {
+  console.log('saved')
+}
+
+export default function Page() {
+  return <ClientReceiver onSave={saveOnServer} />
+}
+```
+
+`tsc --noEmit` passes — `() => void` is a perfectly ordinary function type. `next build` fails during prerendering:
+
+```text
+Error: Event handlers cannot be passed to Client Component props.
+  {onSave: function d}
+           ^^^^^^^^^^
+If you need interactivity, consider converting part of this to a Client Component.
+```
+
+A class instance fails the same way, for a different reason — React only serializes plain objects and a short list of built-ins across the boundary:
+
+```tsx
+// app/exp3/client-receiver-user.tsx
+'use client'
+class UserModel {
+  constructor(public name: string) {}
+}
+export default function ClientReceiver({ user }: { user: UserModel }) {
+  return <p>{user.name}</p>
+}
+```
+
+```tsx
+// app/exp3/page.tsx
+import ClientReceiver from './client-receiver-user'
+
+class UserModel {
+  constructor(public name: string) {}
+}
+
+export default function Page() {
+  const user = new UserModel('Ada')
+  return <ClientReceiver user={user} />
+}
+```
+
+```text
+Error: Only plain objects, and a few built-ins, can be passed to Client
+Components from Server Components. Classes or null prototypes are not
+supported.
+  {user: {name: "Ada"}}
+         ^^^^^^^^^^^^^
+```
+
+The one exception to "no functions": a **Server Function** (`'use server'`) crosses as a reference, not as a closure — that is what makes passing an action to a form or button work at all, and it is covered in [What Are Server Actions](/nextjs/en/server-actions-and-mutations/what-are-server-actions/).
+
+## Keep the client boundary low
+
+Because the boundary is transitive, *where* you put `"use client"` decides how much JavaScript ships — not just for the interactive part, but for every purely-presentational component that happens to sit under it. Two versions of the same layout make the difference concrete: one marks the whole layout as a Client Component, the other keeps the layout on the server and pushes `"use client"` down to a small `Counter` leaf.
+
+```tsx
+// lib/widgets.tsx
+// Static presentational content — no interactivity, no client-only APIs.
+export function Sidebar() {
+  return <aside data-widget="sidebar">Recent posts, tags, links.</aside>
+}
+
+export function Nav() {
+  return <nav data-widget="nav">Home · Blog · About · Contact</nav>
+}
+
+export function Footer() {
+  return <footer data-widget="footer">© Example Co. All rights reserved.</footer>
+}
+```
+
+```tsx
+// app/heavy/high/layout.tsx
+'use client'
+// 'use client' on the layout — everything it imports and renders directly
+// joins the client bundle, including Nav/Sidebar/Footer, which have no
+// interactivity of their own.
+import { useState } from 'react'
+import { Sidebar, Nav, Footer } from '@/lib/widgets'
+
+export default function HighLayout({ children }: { children: React.ReactNode }) {
+  const [count, setCount] = useState(0)
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+```tsx
+// app/heavy/low/layout.tsx
+// A plain Server Component layout — Nav/Sidebar/Footer never leave the server.
+import { Sidebar, Nav, Footer } from '@/lib/widgets'
+import Counter from './counter'
+
+export default function LowLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <Counter />
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+```tsx
+// app/heavy/low/counter.tsx
+'use client'
+// 'use client' pushed down to only the interactive leaf.
+import { useState } from 'react'
+
+export default function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+}
+```
+
+`Nav`, `Sidebar`, and `Footer` are ordinary presentational components with no hooks — in `low`, they stay Server Components and ship no JavaScript at all. `next build` no longer prints a per-route bundle-size column (removed in v16.0.0), so the real proof comes from reading the emitted client-reference manifest and summing the referenced chunk files under `.next/static/chunks/` (`next experimental-analyze --output` shows the same data as an interactive treemap):
+
+```text
+--- /heavy/high ---
+  chunk 3fntmmi971322.js  14377 bytes  (shared framework chunk — both routes load this)
+  chunk 3gejn2apugqil.js   8967 bytes  (route-specific: Nav + Sidebar + Footer + Counter)
+TOTAL referenced by /heavy/high: 23344 bytes
+
+--- /heavy/low ---
+  chunk 3fntmmi971322.js  14377 bytes  (same shared framework chunk)
+  chunk 1p8pi2r0mnrj-.js    287 bytes  (route-specific: Counter only)
+TOTAL referenced by /heavy/low: 14664 bytes
+```
+
+Same visible UI, same three static widgets — the route-specific chunk is **31x larger** (8,967 vs. 287 bytes) purely because `"use client"` sat on the layout instead of the leaf.
+
+## Context providers cross the boundary too
+
+React Context is not supported in Server Components — `createContext` and a `<Context.Provider>` both need to run somewhere that has React's client runtime. The fix is not to avoid Context; it's to wrap only the provider in a small Client Component and render *that* from a Server Component, same as any other Client Component:
+
+```tsx
+// app/theme/theme-provider.tsx
+'use client'
+import { createContext, useState } from 'react'
+
+export const ThemeContext = createContext<{ theme: string; toggle: () => void }>({
+  theme: 'dark',
+  toggle: () => {},
+})
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setTheme] = useState('dark')
+  const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+  return <ThemeContext.Provider value={{ theme, toggle }}>{children}</ThemeContext.Provider>
+}
+```
+
+```tsx
+// app/theme/theme-toggle.tsx
+'use client'
+import { useContext } from 'react'
+import { ThemeContext } from './theme-provider'
+
+export function ThemeToggle() {
+  const { theme, toggle } = useContext(ThemeContext)
+  return <button onClick={toggle}>Theme: {theme}</button>
+}
+```
+
+```tsx
+// app/theme/page.tsx
+import { ThemeProvider } from './theme-provider'
+import { ThemeToggle } from './theme-toggle'
+
+// A Server Component renders the provider directly; every Client Component
+// below it in the tree can read the context with useContext.
+export default function ThemePage() {
+  return (
+    <ThemeProvider>
+      <ThemeToggle />
+    </ThemeProvider>
+  )
+}
+```
+
+`Page` is a Server Component and never touches `useState` or `createContext` itself — it only renders `ThemeProvider`, which is a Client Component boundary. Render providers as deep in the tree as you can (wrapping only `children`, not the whole `<html>` document) so the rest of the static shell stays outside the client bundle.
 
 <Mermaid title="Where the client boundary sits" code={diagramBoundary} />
 
@@ -81,8 +400,60 @@ export const diagramBoundary = `flowchart LR
   Root -. passes children .-> Client
   Client -. renders server child .-> Server`;
 
+## Mental Model
+
+A Server Component is code the browser never sees; a Client Component is code the browser runs. `"use client"` does not mark *a* component — it marks the entry point to a whole subtree of the module graph, and everything reachable by `import` from there ships to the browser. Two escape hatches let content stay server-side even inside a client subtree: `children`/props carrying already-rendered JSX (the doughnut pattern), and `use()` unwrapping a Promise that a Server Component started. Props are the only channel across the boundary, and props must be data React can serialize — a function reference and a class instance both fail that test, just in different, real, provable ways.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| Server Components by default | Zero client JS for anything that doesn't need interactivity | Cannot use hooks, state, or browser APIs |
+| `"use client"` low in the tree | Smallest possible client bundle | Requires deliberately identifying the interactive leaf, not the whole feature |
+| `use()` + `<Suspense>` for streamed data | Static shell ships immediately, slow data arrives later | Needs a Promise created in a Server Component and a Suspense boundary around the consumer |
+| `server-only` / `client-only` | Wrong-side imports fail the build instead of leaking secrets at runtime | One more (optional) dependency to add |
+| Context Provider wrapper | Keeps a shared-state pattern working across the boundary | The wrapper itself, and everything under it, is client JavaScript |
+
+## Common Misconceptions
+
+- **"`'use client'` only affects the component it's on."** It affects every module that component imports and renders directly — the whole subtree joins the client bundle, which is exactly why placement matters (see the 8,967 vs. 287 byte example above).
+- **"Passing a function prop from Server to Client just doesn't work as expected."** It does not compile silently wrong — it throws a specific, real prerender error: `Event handlers cannot be passed to Client Component props.` The one exception is a `'use server'` Server Function, which crosses as a reference.
+- **"`server-only` is required for secrets to stay safe."** It's optional — Next.js already strips non-`NEXT_PUBLIC_` env vars from the client bundle. `server-only` converts an accidental wrong-side *import* into a loud build error, which is a correctness/DX win, not the only safety net.
+- **"React Context doesn't work with the App Router."** It works fine — it just needs to live inside a Client Component (the provider), which a Server Component can still render directly.
+
+## Reading AI-generated code
+
+When a generated snippet crosses the Server/Client boundary, check for these before trusting it:
+
+- Does `"use client"` sit on a whole layout or page when only one small piece inside it is actually interactive? That drags every sibling into the client bundle.
+- Is a function (not a `'use server'` Server Function) passed as a prop from a Server Component to a Client Component? That compiles, but throws `Event handlers cannot be passed to Client Component props.` at build/render time.
+- Is a class instance — an ORM row, a custom error class, anything from `new` — passed as a prop across the boundary? Only plain objects and a short list of built-ins survive; classes do not.
+- Does a file that reads secrets or touches a database have no `server-only` guard? Nothing stops it from being imported into a Client Component by mistake.
+- Is `createContext`/`<Context.Provider>` used directly inside a Server Component instead of inside a small `'use client'` wrapper?
+- If a Promise is handed to a Client Component for `use()`, is there a `<Suspense>` boundary around the consumer? Without one, the whole tree blocks instead of streaming.
+
+<SpotTheBug code={`// app/nav.tsx
+'use client'
+
+import { useState } from 'react'
+import { Sidebar, Footer } from '@/lib/widgets'
+
+export default function Nav({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button onClick={() => setOpen((o) => !o)}>Menu</button>
+      {open && <Sidebar />}
+      {children}
+      <Footer />
+    </div>
+  )
+}`}>
+Only the `open` toggle needs the client — but `"use client"` sits on the whole `Nav` component, so `Sidebar` and `Footer` (plain presentational components with no hooks of their own) are dragged into the client bundle along with it, even though they never change. Proven in the probe: moving the `"use client"` boundary down to a small `MenuButton` leaf and rendering `Sidebar`/`Footer` from a Server Component parent shrank the route-specific client chunk from 8,967 bytes to 287 bytes for an equivalent layout — same visible output, 31x less JavaScript. The fix is to isolate the stateful toggle in its own small Client Component and keep `Nav`, `Sidebar`, and `Footer` as Server Components that render it.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Server is the default; `"use client"` opens a transitive boundary that swallows everything it imports — so keep it low in the tree and pass Server Components in as children with serializable props.
+Server is the default; `"use client"` opens a transitive boundary that swallows everything it imports — so keep it low in the tree, pass Server Components in as children or stream them with `use()`, guard server-only secrets with the `server-only` package, and remember that a function or class instance crossing the boundary is a real, provable build error, not a silent bug.
 </Callout>
 
 export const quizServerClient = [
@@ -90,21 +461,63 @@ export const quizServerClient = [
     q: 'In the App Router, what is a component before any directive is added?',
     options: ['A Client Component', 'A Server Component', 'A static template', 'Undefined until configured'],
     answer: 1,
+    explain: 'Every component under app/ is a Server Component by default. It takes an explicit "use client" directive to opt into running in the browser.',
   },
   {
     q: 'What does "use client" do to the modules a file imports?',
     options: ['Nothing — only that file changes', 'Pulls them into the client bundle too', 'Forces them to run on the server', 'Deletes their imports'],
     answer: 1,
+    explain: 'The boundary is transitive: everything a Client Component imports and renders directly becomes part of the client bundle, whether or not it has its own "use client".',
   },
   {
     q: 'How can a Client Component include Server-Component content?',
     options: ['By importing the Server Component directly', 'It cannot, ever', 'By receiving it as children or a prop', 'By adding "use server" to it'],
     answer: 2,
+    explain: 'A Client Component cannot import a Server Component, but it can receive one as children or a prop — the doughnut/slot pattern. The Server Component still renders on the server.',
   },
   {
-    q: 'Which prop can safely cross the server-to-client boundary?',
-    options: ['A database connection', 'A plain object of strings and numbers', 'A callback function defined on the server', 'A class instance'],
+    q: '```tsx\n// app/exp2/page.tsx\nfunction saveOnServer() {\n  console.log(\'saved\')\n}\n\nexport default function Page() {\n  return <ClientReceiver onSave={saveOnServer} />\n}\n```\nWhat happens when this builds?',
+    options: [
+      'It compiles and runs fine — functions can cross the boundary',
+      'tsc rejects it with a type error',
+      'It compiles, but next build fails while prerendering: "Event handlers cannot be passed to Client Component props."',
+      'It silently becomes a no-op button',
+    ],
+    answer: 2,
+    explain: 'tsc accepts the types fine — the failure is a real, provable error React throws during prerendering, not a compile-time type error. Only a \'use server\' Server Function can cross as a function reference.',
+  },
+  {
+    q: 'Why does importing a `server-only`-guarded module from a Client Component fail the build?',
+    options: [
+      'It does not fail — server-only is purely documentation',
+      'Next.js recognizes the "server-only" import and throws a build-time error when it reaches a Client Component module',
+      'It fails only in development, never in production',
+      'It fails because the package must be published on npm and installed',
+    ],
     answer: 1,
+    explain: 'Next.js handles the "server-only" (and "client-only") import specially regardless of whether the npm package is installed, and throws a real build error — proven in the probe with next build — when such a module is reachable from a Client Component.',
+  },
+  {
+    q: '```ts\n// lib/notifications-data.ts\nexport async function getNotifications(userId: string) {\n  await new Promise((r) => setTimeout(r, 20))\n  return [{ id: \'1\', text: `Hello ${userId}` }]\n}\n```\n```tsx\n// app/notifications/page.tsx\nexport default function NotificationsPage() {\n  const notificationsPromise = getNotifications(\'u_1\')\n  return (\n    <Suspense fallback={<p>Loading…</p>}>\n      <NotificationList notificationsPromise={notificationsPromise} />\n    </Suspense>\n  )\n}\n```\nWhy is `getNotifications` called without `await` here?',
+    options: [
+      'It is a mistake — every Server Component call must be awaited',
+      'The unresolved Promise is handed to a Client Component, which unwraps it with use() while Suspense shows a fallback',
+      'Because getNotifications is a Server Action',
+      'Because Promises cannot be awaited inside Server Components',
+    ],
+    answer: 1,
+    explain: 'Passing the pending Promise (instead of awaiting it) lets the static shell stream immediately; the Client Component consumes it with use(), and the nearest Suspense boundary shows the fallback until it resolves.',
+  },
+  {
+    q: 'Two equivalent layouts render the same Nav/Sidebar/Footer and one interactive button. One puts "use client" on the whole layout; the other keeps the layout on the server and marks only the button\'s wrapper as a Client Component. What does the probe measurement show?',
+    options: [
+      'Identical client bundle size either way',
+      'The layout-level "use client" version ships a route-specific chunk about 31x larger (8,967 vs. 287 bytes) for the same visible UI',
+      'The server-first version fails to build',
+      'The client bundle size cannot be measured since Next.js 16 removed size reporting entirely',
+    ],
+    answer: 1,
+    explain: 'Measured from the real client-reference-manifest and chunk files in the probe: 8,967 bytes when "use client" sits on the layout (pulling in three static widgets) vs. 287 bytes when it sits only on the interactive leaf.',
   },
 ];
 

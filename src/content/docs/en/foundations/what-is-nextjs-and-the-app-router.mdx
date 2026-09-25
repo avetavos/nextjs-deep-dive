@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -29,7 +30,7 @@ Concretely, the framework provides:
 A route is just a file that default-exports a React component:
 
 ```tsx
-// app/page.tsx — this is the "/" route
+// app/page.tsx
 export default function HomePage() {
   return <h1>Hello from a Server Component</h1>;
 }
@@ -73,6 +74,10 @@ my-app/
 
 From here, `npm run dev` starts the development server and you are looking at a live App Router app.
 
+## The request lifecycle, in one paragraph
+
+A request to an App Router route passes through more stages than "run a function, return HTML." In order: it optionally passes through `proxy.ts`, Next.js matches it to a route segment, your Server Components render into an RSC payload (with the framework's cache layers deciding what's fresh vs. reused), the result streams to the browser as HTML, the browser hydrates the Client Components inside it, and every navigation after that first load fetches more RSC payload instead of a full page. A Server Action call is a POST request that re-enters this same pipeline. Each of those stages is taught in its own lesson elsewhere in this course; [The Request Lifecycle](/nextjs/en/foundations/the-request-lifecycle/) walks the whole thing end to end, with the real headers and payloads proved in a running app.
+
 <Mermaid title="How a request flows through the App Router" code={diagramFramework} />
 
 export const diagramFramework = `flowchart LR
@@ -83,8 +88,48 @@ export const diagramFramework = `flowchart LR
   HTML --> Page[Interactive page]
   Bundle --> Page`;
 
+## Mental Model
+
+Think of Next.js as everything React deliberately leaves out: it is the layer that decides *where* your component code runs (server vs. browser), *when* it runs (build time, request time, or both), and *how* the result gets to a user. The App Router is not a new templating language bolted onto React — it is Next.js's current answer to those three questions, built around React Server Components instead of a client-only single-page app.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| App Router (Server Components by default) | Data fetching inline with `await`, minimal client JS, streaming | New mental model if you learned React as client-only |
+| Pages Router (kept for migration) | Familiar `getServerSideProps`/`getStaticProps` model, huge existing ecosystem | Every component is a Client Component; no new features land here |
+| `create-next-app` recommended defaults | Fastest path to a working, correctly-configured project | Customizing later means understanding what the defaults chose for you |
+| Framework owning routing/rendering/bundling | You write far less infrastructure code | You must learn the framework's conventions, not just React's API |
+
+## Common Misconceptions
+
+- **"Next.js is just a router for React."** Routing is one of five things it owns — it also decides rendering strategy, data fetching ergonomics, bundling, and built-in optimizations for images/fonts/scripts/metadata.
+- **"The App Router and Pages Router are two ways to write the same thing."** They are structurally different: App Router components are Server Components by default with inline `async`/`await` data fetching; Pages Router components are all Client Components fed by separate functions like `getServerSideProps`. Code does not port over 1:1.
+- **"Every request just runs my page function and returns HTML."** A request passes through proxy, route matching, RSC rendering against multiple cache layers, streaming, and (on later navigations) a client-side RSC fetch — see [The Request Lifecycle](/nextjs/en/foundations/the-request-lifecycle/) for the full picture.
+
+## Reading AI-generated code
+
+When a generated snippet claims to be "a Next.js page," check for these before trusting it:
+
+- Does it live under `app/` and default-export a component — or does it use Pages-Router-only APIs (`getServerSideProps`, `getStaticProps`, a `pages/` file) inside what's supposed to be an App Router project?
+- Does it assume the component is a Client Component (using `useState`/`useEffect` with no `"use client"`) when it's actually a Server Component by default?
+- Does it fetch data through a separate API call from the component, when an `async` Server Component could `await` it directly?
+- Is it training-data-era advice that predates the App Router — e.g. treating `pages/api` as the only way to build an endpoint, when Route Handlers (`app/**/route.ts`) are the App Router equivalent?
+
+<SpotTheBug code={`// app/dashboard/page.tsx
+export async function getServerSideProps() {
+  const res = await fetch('https://api.example.com/stats')
+  return { props: { stats: await res.json() } }
+}
+
+export default function Dashboard({ stats }: { stats: { views: number } }) {
+  return <p>Views: {stats.views}</p>
+}`}>
+`getServerSideProps` is a Pages Router export — it does nothing inside `app/`. In the App Router, `Dashboard` is already a Server Component by default, so it can `await` the fetch directly in its own body instead of exporting a separate data-loading function; `stats` would be `undefined` here because Next.js never calls `getServerSideProps` for App Router routes. The fix is to make `Dashboard` itself `async` and `await fetch(...)` inline, the pattern covered in [Server and Client Components](/nextjs/en/foundations/server-and-client-components/).
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Next.js is the framework around React that handles routing, rendering, data, and bundling — and the App Router is its current, Server-Component-based model, with the Pages Router kept only for migration.
+Next.js is the framework around React that handles routing, rendering, data, and bundling — the App Router is its current, Server-Component-based model (with the Pages Router kept only for migration), and a single request moves through proxy, routing, RSC rendering, caching, and streaming before it ever reaches the browser.
 </Callout>
 
 export const quizWhatIsNext = [
@@ -92,21 +137,47 @@ export const quizWhatIsNext = [
     q: 'What does the App Router use as the default type of component?',
     options: ['Client Components', 'Server Components', 'Static HTML files', 'Web Components'],
     answer: 1,
+    explain: 'Every component under app/ is a Server Component unless the file (or an ancestor in its import chain) is marked "use client".',
   },
   {
     q: 'Which directory signals that a project uses the App Router?',
     options: ['pages/', 'app/', 'routes/', 'src/config/'],
     answer: 1,
+    explain: 'app/ is the App Router convention; pages/ is the older Pages Router, still supported but not where new features land.',
   },
   {
     q: 'Which of these does Next.js NOT hand to you out of the box?',
     options: ['Routing from the folder structure', 'A design mockup tool', 'Server rendering and streaming', 'Code bundling and splitting'],
     answer: 1,
+    explain: 'Next.js owns routing, rendering, data fetching, bundling, and optimization — design tooling is not part of the framework.',
   },
   {
     q: 'How does this course treat the Pages Router?',
     options: ['As the primary model to learn', 'As fully removed from Next.js', 'As relevant mainly for migrating existing apps', 'As required before the App Router'],
     answer: 2,
+    explain: 'The Pages Router still works and ships with Next.js, but this course is App-Router-first; the Pages Router only comes up where migrating an existing app matters.',
+  },
+  {
+    q: '```tsx\n// app/dashboard/page.tsx\nexport async function getServerSideProps() {\n  const res = await fetch(\'https://api.example.com/stats\')\n  return { props: { stats: await res.json() } }\n}\n\nexport default function Dashboard({ stats }: { stats: { views: number } }) {\n  return <p>Views: {stats.views}</p>\n}\n```\nWhat happens to `stats` when this file is placed inside `app/`?',
+    options: [
+      'It is populated correctly — getServerSideProps still runs',
+      'It is undefined — Next.js never calls getServerSideProps for App Router routes',
+      'It throws a build error immediately',
+      'It works only in development mode',
+    ],
+    answer: 1,
+    explain: 'getServerSideProps is a Pages Router convention. Inside app/, the framework never calls it — the fix is to make the Server Component itself async and await the fetch directly.',
+  },
+  {
+    q: '```txt\napp/                    pages/\n  layout.tsx              _app.tsx\n  page.tsx                index.tsx\n```\nWhich statement about these two trees is accurate?',
+    options: [
+      'They are interchangeable — either directory works with either data-fetching style',
+      'app/ components are Server Components by default with inline async/await data fetching; pages/ components are all Client Components fed by separate data functions',
+      'pages/ is required even in an App Router project',
+      'app/ only works for static sites',
+    ],
+    answer: 1,
+    explain: 'The two routers are structurally different, not just differently named: App Router components run on the server by default and fetch inline; Pages Router components are Client Components that receive data from functions like getServerSideProps.',
   },
 ];
 

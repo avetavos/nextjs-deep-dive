@@ -1,6 +1,6 @@
 ---
 title: 'Server และ Client Components'
-description: 'mental model หลักของ App Router: Server Components เป็น default, boundary ของ "use client" และทำไม boundary นี้ถึงเป็น transitive, การส่ง Server Components เข้าไปใน Client Components และ serializable props'
+description: 'mental model หลักของ App Router: Server Components เป็น default, boundary ของ "use client" และทำไม boundary นี้ถึงเป็น transitive, การส่ง Server Components เข้าไปใน Client Components, serializable props, use() กับ Promise ที่ stream มา, server-only/client-only และ Context provider'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -19,7 +20,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 component ใน `app/` รันบน server เว้นแต่คุณจะ opt out นั่นแปลว่าเป็น `async` ได้, `await` data ได้ และแตะ database, filesystem หรือ secret ตรง ๆ ได้ — โค้ดพวกนี้ไม่ถูกส่งไป browser เลย
 
 ```tsx
-// app/dashboard/page.tsx — a Server Component (no directive needed)
+// app/dashboard/page.tsx
 import { db } from '@/lib/db';
 
 export default async function Dashboard() {
@@ -35,6 +36,7 @@ export default async function Dashboard() {
 วาง `"use client"` ไว้บนสุดของไฟล์ แล้วทุกอย่างที่ไฟล์นั้น export จะกลายเป็น Client Component ซึ่งรันใน browser และใช้ hook, state, effect, event handler และ browser API ได้
 
 ```tsx
+// app/counter.tsx
 'use client';
 
 import { useState } from 'react';
@@ -57,7 +59,22 @@ export default function Counter() {
 กฎข้อที่สองคือ **doughnut (slot) pattern** — Client Component เป็นวงแหวน และ Server Component เติมเข้าไปในรู เนื้อหาที่ render บน server ยังอยู่บน server แม้จะมี client component ล้อมรอบ
 
 ```tsx
-// app/page.tsx — Server Component
+// app/client-shell.tsx
+'use client';
+export default function ClientShell({ children }: { children: React.ReactNode }) {
+  return <div className="shell">{children}</div>;
+}
+```
+
+```tsx
+// app/server-data.tsx
+export default function ServerData() {
+  return <p>Rendered on the server</p>;
+}
+```
+
+```tsx
+// app/page.tsx
 import ClientShell from './client-shell';
 import ServerData from './server-data';
 
@@ -70,7 +87,309 @@ export default function Page() {
 }
 ```
 
-มีข้อจำกัดหนึ่งที่ทำให้สิ่งนี้ทำงานได้ — **prop ที่ข้าม boundary ต้อง serializable** คุณส่ง string, number, Date, plain object, array และ JSX ได้ แต่ส่ง function (ยกเว้น Server Action) หรือ class instance เป็น prop ดิบ ๆ ไม่ได้ — ค่าพวกนี้รอดการเดินทางจาก server ไป client ไม่ได้
+มีข้อจำกัดหนึ่งที่ทำให้สิ่งนี้ทำงานได้ — **prop ที่ข้าม boundary ต้อง serializable** คุณส่ง string, number, Date, plain object, array และ JSX ได้ แต่ส่ง function (ยกเว้น Server Action) หรือ class instance เป็น prop ดิบ ๆ ไม่ได้ — ค่าพวกนี้รอดการเดินทางจาก server ไป client ไม่ได้ สองหัวข้อถัดไปโชว์ว่าเกิดอะไรขึ้นจริงตอนลอง
+
+## Stream Promise เข้า Client Component ด้วย `use()`
+
+แทนที่จะ `await` data ใน Server Component แล้วส่งค่าที่ resolve แล้วลงไป คุณเริ่ม fetch แล้วส่ง **Promise ที่ยังไม่ resolve** ตรง ๆ ไปให้ Client Component ได้เลย Client Component จะแกะมันด้วย `use()` ของ React และ `<Suspense>` ที่ใกล้ที่สุดจะโชว์ fallback จนกว่าจะ resolve static shell จะ stream ออกไปทันที ส่วน data ที่ช้ามาทีหลัง โดยไม่ต้องมี client-side `useEffect` fetch เลย
+
+```ts
+// lib/notifications-data.ts
+export async function getNotifications(userId: string) {
+  await new Promise((r) => setTimeout(r, 20));
+  return [{ id: '1', text: `Hello ${userId}` }, { id: '2', text: 'Another one' }];
+}
+```
+
+```tsx
+// app/notifications/notification-list.tsx
+'use client'
+import { use } from 'react'
+
+export function NotificationList({
+  notificationsPromise,
+}: {
+  notificationsPromise: Promise<{ id: string; text: string }[]>
+}) {
+  // Unwraps the Promise on the client — suspends the nearest boundary until it resolves
+  const notifications = use(notificationsPromise)
+  return (
+    <ul>
+      {notifications.map((n) => (
+        <li key={n.id}>{n.text}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/notifications/page.tsx
+import { Suspense } from 'react'
+import { NotificationList } from './notification-list'
+import { getNotifications } from '@/lib/notifications-data'
+
+export default function NotificationsPage() {
+  // Do not await — hand the unresolved Promise straight to the Client Component
+  const notificationsPromise = getNotifications('u_1')
+  return (
+    <Suspense fallback={<p>Loading notifications…</p>}>
+      <NotificationList notificationsPromise={notificationsPromise} />
+    </Suspense>
+  )
+}
+```
+
+build ใน probe (`next build`) ผ่านและ prerender ได้สะอาด — `use()` คือสิ่งที่ทำให้ Promise (ซึ่งไม่ใช่ plain value ที่ serialize เป็น JSON ได้) ข้าม boundary ได้ — React จัดการ Promise เป็นกรณีพิเศษและ stream ผลลัพธ์ของมัน แทนที่จะพยายาม serialize มันเป็นค่าธรรมดา
+
+## มาร์ก module ว่า `server-only` หรือ `client-only`
+
+module เปล่า ๆ ที่ไม่มี directive ถูก import จากฝั่งไหนก็ได้ และไม่มีอะไรห้ามเพื่อนร่วมทีม (หรือโค้ดที่ AI generate) import ไฟล์ที่มี server secret เข้า Client Component โดยไม่ตั้งใจ — มันไม่ error ที่ type level และรั่วเฉพาะตอน runtime เท่านั้น package `server-only` (และคู่หูของมัน `client-only`) เปลี่ยนความผิดพลาดนั้นให้เป็น **build-time error** แทน
+
+```ts
+// lib/secret-data.ts
+import 'server-only'
+
+export function getSecret() {
+  return process.env.SECRET_KEY ?? 'unset'
+}
+```
+
+```tsx
+// app/exp1/client-uses-server-only.tsx
+'use client'
+import { getSecret } from '@/lib/secret-data'
+
+export default function Bad() {
+  return <p>{getSecret()}</p>
+}
+```
+
+`tsc --noEmit` ผ่านทั้งสองไฟล์ — ไม่มีอะไรผิดใน type level เลย รัน `next build` ใน probe ต่างหากที่ fail จริง ด้วย error สองอันนี้ —
+
+```text
+Error: You're importing a module that depends on "server-only". This API is
+only available in Server Components in the App Router, but you are using it
+in the Pages Router.
+  Learn more: https://nextjs.org/docs/app/building-your-application/rendering/server-components
+
+Error: 'server-only' cannot be imported from a Client Component module
+It should only be used from a Server Component.
+```
+
+(ข้อความแรกที่พูดถึง "Pages Router" เป็น boilerplate ที่ใช้ร่วมกันทั้งสอง router — ข้อความที่สองคือตัวที่บอกปัญหาจริง ๆ) การติดตั้ง `server-only`/`client-only` เป็น optional ใน Next.js — framework รู้จักชื่อ package ทั้งสองอยู่แล้วภายในตัวมันเอง และจะ error แบบนี้ไม่ว่าจะติดตั้งจาก npm จริงหรือไม่ — แต่การติดตั้งช่วยให้ linter ที่เช็ค dependency ที่ขาดหายเงียบลง และให้ editor มี module จริงให้ resolve
+
+## อะไรข้าม boundary ได้ — และอะไรที่ throw
+
+data ที่ serialize ได้ข้ามได้ ส่วน function กับ class instance ข้ามไม่ได้ ทั้งสอง failure เป็น error จริงที่พิสูจน์ได้ — ไม่ใช่ type error แต่เป็น error ที่ React throw ระหว่าง prerender —
+
+```tsx
+// app/exp2/client-receiver.tsx
+'use client'
+export default function ClientReceiver({ onSave }: { onSave: () => void }) {
+  return <button onClick={onSave}>Save</button>
+}
+```
+
+```tsx
+// app/exp2/page.tsx
+import ClientReceiver from './client-receiver'
+
+function saveOnServer() {
+  console.log('saved')
+}
+
+export default function Page() {
+  return <ClientReceiver onSave={saveOnServer} />
+}
+```
+
+`tsc --noEmit` ผ่าน — `() => void` เป็น function type ธรรมดาทั่วไป `next build` fail ระหว่าง prerender —
+
+```text
+Error: Event handlers cannot be passed to Client Component props.
+  {onSave: function d}
+           ^^^^^^^^^^
+If you need interactivity, consider converting part of this to a Client Component.
+```
+
+class instance ก็ fail แบบเดียวกัน แต่ด้วยเหตุผลต่างกัน — React serialize แค่ plain object กับ built-in สั้น ๆ ไม่กี่ตัวข้าม boundary เท่านั้น —
+
+```tsx
+// app/exp3/client-receiver-user.tsx
+'use client'
+class UserModel {
+  constructor(public name: string) {}
+}
+export default function ClientReceiver({ user }: { user: UserModel }) {
+  return <p>{user.name}</p>
+}
+```
+
+```tsx
+// app/exp3/page.tsx
+import ClientReceiver from './client-receiver-user'
+
+class UserModel {
+  constructor(public name: string) {}
+}
+
+export default function Page() {
+  const user = new UserModel('Ada')
+  return <ClientReceiver user={user} />
+}
+```
+
+```text
+Error: Only plain objects, and a few built-ins, can be passed to Client
+Components from Server Components. Classes or null prototypes are not
+supported.
+  {user: {name: "Ada"}}
+         ^^^^^^^^^^^^^
+```
+
+ข้อยกเว้นเดียวของ "function ข้ามไม่ได้" คือ **Server Function** (`'use server'`) ซึ่งข้ามไปเป็น reference ไม่ใช่ closure — นี่คือสิ่งที่ทำให้ส่ง action ไปให้ form หรือ button ทำงานได้ตั้งแต่แรก เรื่องนี้อยู่ใน [What Are Server Actions](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)
+
+## วาง client boundary ให้ต่ำเข้าไว้
+
+เพราะ boundary เป็น transitive ตำแหน่งที่คุณวาง `"use client"` จึงตัดสินว่า JavaScript จะถูกส่งไปเท่าไร — ไม่ใช่แค่ส่วนที่ interactive แต่รวมถึงทุก component ที่เป็น presentational ล้วน ๆ ที่บังเอิญอยู่ใต้มันด้วย layout สองเวอร์ชันของหน้าเดียวกันทำให้ความต่างจับต้องได้ — อันหนึ่งมาร์กทั้ง layout เป็น Client Component อีกอันเก็บ layout ไว้บน server แล้วดัน `"use client"` ลงไปที่ `Counter` leaf เล็ก ๆ
+
+```tsx
+// lib/widgets.tsx
+// Static presentational content — no interactivity, no client-only APIs.
+export function Sidebar() {
+  return <aside data-widget="sidebar">Recent posts, tags, links.</aside>
+}
+
+export function Nav() {
+  return <nav data-widget="nav">Home · Blog · About · Contact</nav>
+}
+
+export function Footer() {
+  return <footer data-widget="footer">© Example Co. All rights reserved.</footer>
+}
+```
+
+```tsx
+// app/heavy/high/layout.tsx
+'use client'
+// 'use client' on the layout — everything it imports and renders directly
+// joins the client bundle, including Nav/Sidebar/Footer, which have no
+// interactivity of their own.
+import { useState } from 'react'
+import { Sidebar, Nav, Footer } from '@/lib/widgets'
+
+export default function HighLayout({ children }: { children: React.ReactNode }) {
+  const [count, setCount] = useState(0)
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+```tsx
+// app/heavy/low/layout.tsx
+// A plain Server Component layout — Nav/Sidebar/Footer never leave the server.
+import { Sidebar, Nav, Footer } from '@/lib/widgets'
+import Counter from './counter'
+
+export default function LowLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div>
+      <Nav />
+      <Sidebar />
+      <Counter />
+      {children}
+      <Footer />
+    </div>
+  )
+}
+```
+
+```tsx
+// app/heavy/low/counter.tsx
+'use client'
+// 'use client' pushed down to only the interactive leaf.
+import { useState } from 'react'
+
+export default function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+}
+```
+
+`Nav`, `Sidebar`, `Footer` เป็น presentational component ธรรมดาที่ไม่มี hook เลย — ใน `low` มันยังเป็น Server Components และไม่ส่ง JavaScript ออกไปเลย `next build` ไม่พิมพ์คอลัมน์ bundle-size ต่อ route ให้แล้ว (ถูกถอดออกใน v16.0.0) หลักฐานจริงจึงมาจากการอ่าน client-reference manifest ที่ build ออกมาแล้วรวมขนาดไฟล์ chunk ที่ถูกอ้างถึงใต้ `.next/static/chunks/` (`next experimental-analyze --output` ก็โชว์ data ชุดเดียวกันเป็น interactive treemap) —
+
+```text
+--- /heavy/high ---
+  chunk 3fntmmi971322.js  14377 bytes  (shared framework chunk — both routes load this)
+  chunk 3gejn2apugqil.js   8967 bytes  (route-specific: Nav + Sidebar + Footer + Counter)
+TOTAL referenced by /heavy/high: 23344 bytes
+
+--- /heavy/low ---
+  chunk 3fntmmi971322.js  14377 bytes  (same shared framework chunk)
+  chunk 1p8pi2r0mnrj-.js    287 bytes  (route-specific: Counter only)
+TOTAL referenced by /heavy/low: 14664 bytes
+```
+
+UI ที่เห็นเหมือนกันเป๊ะ static widget เดียวกันสามตัว — แต่ chunk เฉพาะ route ต่างกัน **31 เท่า** (8,967 เทียบกับ 287 ไบต์) เพียงเพราะ `"use client"` อยู่ที่ layout แทนที่จะอยู่ที่ leaf
+
+## Context provider ก็ข้าม boundary เหมือนกัน
+
+React Context ใช้ใน Server Components ไม่ได้ — `createContext` กับ `<Context.Provider>` ต้องรันในที่ที่มี React client runtime ทางแก้ไม่ใช่การเลี่ยง Context แต่คือห่อแค่ provider ไว้ใน Client Component เล็ก ๆ แล้ว render *มัน* จาก Server Component เหมือน Client Component ตัวอื่น ๆ —
+
+```tsx
+// app/theme/theme-provider.tsx
+'use client'
+import { createContext, useState } from 'react'
+
+export const ThemeContext = createContext<{ theme: string; toggle: () => void }>({
+  theme: 'dark',
+  toggle: () => {},
+})
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setTheme] = useState('dark')
+  const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+  return <ThemeContext.Provider value={{ theme, toggle }}>{children}</ThemeContext.Provider>
+}
+```
+
+```tsx
+// app/theme/theme-toggle.tsx
+'use client'
+import { useContext } from 'react'
+import { ThemeContext } from './theme-provider'
+
+export function ThemeToggle() {
+  const { theme, toggle } = useContext(ThemeContext)
+  return <button onClick={toggle}>Theme: {theme}</button>
+}
+```
+
+```tsx
+// app/theme/page.tsx
+import { ThemeProvider } from './theme-provider'
+import { ThemeToggle } from './theme-toggle'
+
+// A Server Component renders the provider directly; every Client Component
+// below it in the tree can read the context with useContext.
+export default function ThemePage() {
+  return (
+    <ThemeProvider>
+      <ThemeToggle />
+    </ThemeProvider>
+  )
+}
+```
+
+`Page` เป็น Server Component และไม่แตะ `useState` หรือ `createContext` เลย — มัน render แค่ `ThemeProvider` ซึ่งเป็น Client Component boundary วาง provider ให้ลึกใน tree ที่สุดเท่าที่ทำได้ (ห่อแค่ `children` ไม่ใช่ทั้ง document `<html>`) เพื่อให้ static shell ส่วนที่เหลืออยู่นอก client bundle
 
 <Mermaid title="เส้น client boundary อยู่ตรงไหน" code={diagramBoundary} />
 
@@ -81,8 +400,60 @@ export const diagramBoundary = `flowchart LR
   Root -. passes children .-> Client
   Client -. renders server child .-> Server`;
 
+## Mental Model
+
+Server Component คือโค้ดที่ browser ไม่เคยเห็น ส่วน Client Component คือโค้ดที่ browser รันจริง `"use client"` ไม่ได้มาร์ก *component เดียว* — มันมาร์ก entry point ของทั้ง subtree ใน module graph และทุกอย่างที่ import ถึงจากตรงนั้นถูกส่งไป browser ทางออกสองทางที่ทำให้เนื้อหายังอยู่ฝั่ง server ได้แม้อยู่ใน client subtree คือ — `children`/prop ที่แบก JSX ที่ render แล้ว (doughnut pattern) และ `use()` ที่แกะ Promise ที่ Server Component เริ่มไว้ prop เป็นช่องทางเดียวที่ข้าม boundary ได้ และ prop ต้องเป็น data ที่ React serialize ได้ — function reference กับ class instance ทั้งคู่ไม่ผ่านการทดสอบนี้ ด้วยวิธีที่ต่างกันแต่พิสูจน์ได้จริงทั้งคู่
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| Server Components เป็น default | client JS เป็นศูนย์สำหรับทุกอย่างที่ไม่ต้อง interactive | ใช้ hook, state, หรือ browser API ไม่ได้ |
+| `"use client"` วางต่ำใน tree | client bundle เล็กที่สุดเท่าที่จะทำได้ | ต้องตั้งใจแยก leaf ที่ interactive จริง ๆ ไม่ใช่ทั้ง feature |
+| `use()` + `<Suspense>` สำหรับ data ที่ stream | static shell ส่งออกทันที data ที่ช้ามาทีหลัง | ต้องมี Promise ที่สร้างใน Server Component และ Suspense boundary ล้อม consumer |
+| `server-only` / `client-only` | import ผิดฝั่งทำให้ build fail แทนที่จะรั่ว secret ตอน runtime | เพิ่ม dependency อีกหนึ่งตัว (optional) |
+| Context Provider wrapper | ทำให้ pattern shared-state ยังทำงานข้าม boundary ได้ | wrapper เองและทุกอย่างใต้มันเป็น client JavaScript |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`'use client'` กระทบแค่ component ที่ใส่ไว้"** มันกระทบทุก module ที่ component นั้น import และ render ตรง ๆ — ทั้ง subtree เข้า client bundle ด้วย นี่คือเหตุผลที่ตำแหน่งสำคัญมาก (ดูตัวอย่าง 8,967 เทียบกับ 287 ไบต์ด้านบน)
+- **"ส่ง function prop จาก Server ไป Client แค่ทำงานไม่ตรงตามคาด"** มันไม่ได้ compile แล้วพังแบบเงียบ ๆ — มัน throw error จริงเฉพาะเจาะจง: `Event handlers cannot be passed to Client Component props.` ข้อยกเว้นเดียวคือ Server Function (`'use server'`) ที่ข้ามไปเป็น reference
+- **"`server-only` จำเป็นเพื่อให้ secret ปลอดภัย"** มันเป็น optional — Next.js ตัด env var ที่ไม่ใช่ `NEXT_PUBLIC_` ออกจาก client bundle อยู่แล้ว `server-only` แปลง *import* ผิดฝั่งที่เกิดโดยไม่ตั้งใจให้กลายเป็น build error ที่ดัง ๆ ซึ่งเป็นเรื่อง correctness/DX ไม่ใช่ safety net เดียว
+- **"React Context ใช้กับ App Router ไม่ได้"** ใช้ได้ปกติ — แค่ต้องอยู่ใน Client Component (ตัว provider) ซึ่ง Server Component ยัง render ตรง ๆ ได้
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลาโค้ดที่ generate มาข้าม boundary Server/Client เช็คสิ่งเหล่านี้ก่อนเชื่อ —
+
+- `"use client"` อยู่ที่ทั้ง layout หรือ page ทั้งที่มีแค่ชิ้นเล็ก ๆ ข้างในที่ interactive จริง ๆ หรือเปล่า? นั่นลาก sibling ทุกตัวเข้า client bundle ไปด้วย
+- มี function (ที่ไม่ใช่ Server Function `'use server'`) ถูกส่งเป็น prop จาก Server Component ไป Client Component หรือเปล่า? มัน compile ผ่าน แต่ throw `Event handlers cannot be passed to Client Component props.` ตอน build/render
+- มี class instance — แถวจาก ORM, custom error class, อะไรก็ตามจาก `new` — ถูกส่งเป็น prop ข้าม boundary หรือเปล่า? มีแค่ plain object กับ built-in สั้น ๆ ที่รอด class ไม่รอด
+- ไฟล์ที่อ่าน secret หรือแตะ database ไม่มี `server-only` guard หรือเปล่า? ไม่มีอะไรห้ามมันถูก import เข้า Client Component โดยไม่ตั้งใจ
+- `createContext`/`<Context.Provider>` ถูกใช้ตรง ๆ ใน Server Component แทนที่จะอยู่ใน wrapper `'use client'` เล็ก ๆ หรือเปล่า?
+- ถ้า Promise ถูกส่งให้ Client Component ไปใช้ `use()` มี `<Suspense>` boundary ล้อม consumer หรือเปล่า? ถ้าไม่มี ทั้ง tree จะ block แทนที่จะ stream
+
+<SpotTheBug code={`// app/nav.tsx
+'use client'
+
+import { useState } from 'react'
+import { Sidebar, Footer } from '@/lib/widgets'
+
+export default function Nav({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button onClick={() => setOpen((o) => !o)}>Menu</button>
+      {open && <Sidebar />}
+      {children}
+      <Footer />
+    </div>
+  )
+}`}>
+มีแค่ toggle `open` ที่ต้องการ client — แต่ `"use client"` อยู่ที่ทั้ง component `Nav` ทำให้ `Sidebar` กับ `Footer` (component แสดงผลธรรมดาที่ไม่มี hook ของตัวเอง) ถูกลากเข้า client bundle ไปด้วย ทั้งที่มันไม่เคยเปลี่ยนเลย พิสูจน์แล้วใน probe — ย้าย boundary `"use client"` ลงไปที่ `MenuButton` leaf เล็ก ๆ แล้ว render `Sidebar`/`Footer` จาก Server Component parent ทำให้ client chunk เฉพาะ route หดจาก 8,967 ไบต์เหลือ 287 ไบต์ สำหรับ layout ที่เทียบเท่ากัน — output ที่เห็นเหมือนเดิม แต่ JavaScript น้อยลง 31 เท่า ทางแก้คือแยก toggle ที่มี state ออกมาเป็น Client Component เล็ก ๆ ของตัวเอง แล้วให้ `Nav`, `Sidebar`, `Footer` เป็น Server Components ที่ render มัน
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-server คือ default ส่วน `"use client"` เปิด boundary แบบ transitive ที่กลืนทุกอย่างที่ถูก import ต่อจากนั้น — ดังนั้นวาง directive นี้ไว้ต่ำ ๆ ใน tree แล้วส่ง Server Components เข้าไปเป็น children ด้วย serializable props
+server คือ default ส่วน `"use client"` เปิด boundary แบบ transitive ที่กลืนทุกอย่างที่ถูก import ต่อจากนั้น — ดังนั้นวาง directive นี้ไว้ต่ำ ๆ ใน tree ส่ง Server Components เข้าไปเป็น children หรือ stream ด้วย `use()` ป้องกัน secret ฝั่ง server ด้วย package `server-only` และจำไว้ว่า function หรือ class instance ที่ข้าม boundary คือ build error จริงที่พิสูจน์ได้ ไม่ใช่ bug เงียบ ๆ
 </Callout>
 
 export const quizServerClient = [
@@ -90,21 +461,63 @@ export const quizServerClient = [
     q: 'ใน App Router component เป็นอะไรก่อนที่จะเพิ่ม directive ใด ๆ',
     options: ['Client Component', 'Server Component', 'template แบบ static', 'ยังไม่ระบุจนกว่าจะ config'],
     answer: 1,
+    explain: 'ทุก component ใต้ app/ เป็น Server Component โดย default ต้องมี directive "use client" ชัดเจนถึงจะ opt in ไปรันใน browser',
   },
   {
     q: '"use client" ทำอะไรกับ module ที่ไฟล์นั้น import เข้ามา',
     options: ['ไม่ทำอะไร — เปลี่ยนแค่ไฟล์นั้น', 'ดึงไฟล์นั้นเข้า client bundle ด้วย', 'บังคับให้ไฟล์นั้นรันบน server', 'ลบ import ของตัวเองทิ้ง'],
     answer: 1,
+    explain: 'boundary นี้เป็น transitive — ทุกอย่างที่ Client Component import และ render ตรง ๆ กลายเป็นส่วนหนึ่งของ client bundle ไม่ว่าจะมี "use client" ของตัวเองหรือไม่',
   },
   {
     q: 'Client Component จะรวมเนื้อหาแบบ Server Component ได้ยังไง',
     options: ['import Server Component เข้ามาตรง ๆ', 'ทำไม่ได้เลย', 'รับเข้ามาเป็น children หรือ prop', 'ใส่ "use server" ให้ component นั้น'],
     answer: 2,
+    explain: 'Client Component import Server Component ตรง ๆ ไม่ได้ แต่รับมันเข้ามาเป็น children หรือ prop ได้ — doughnut/slot pattern — Server Component ก็ยัง render บน server เหมือนเดิม',
   },
   {
-    q: 'prop ไหนข้าม boundary จาก server ไป client ได้อย่างปลอดภัย',
-    options: ['database connection', 'plain object ของ string กับ number', 'callback function ที่นิยามบน server', 'class instance'],
+    q: '```tsx\n// app/exp2/page.tsx\nfunction saveOnServer() {\n  console.log(\'saved\')\n}\n\nexport default function Page() {\n  return <ClientReceiver onSave={saveOnServer} />\n}\n```\nเกิดอะไรขึ้นตอน build โค้ดนี้',
+    options: [
+      'compile และรันได้ปกติ — function ข้าม boundary ได้',
+      'tsc ปฏิเสธด้วย type error',
+      'compile ผ่าน แต่ next build fail ตอน prerender: "Event handlers cannot be passed to Client Component props."',
+      'กลายเป็นปุ่มที่ไม่ทำอะไรแบบเงียบ ๆ',
+    ],
+    answer: 2,
+    explain: 'tsc ยอมรับ type นี้ปกติ — ความล้มเหลวคือ error จริงที่พิสูจน์ได้ที่ React throw ระหว่าง prerender ไม่ใช่ type error ตอน compile มีแค่ Server Function \'use server\' เท่านั้นที่ข้ามไปเป็น function reference ได้',
+  },
+  {
+    q: 'ทำไม import module ที่มี `server-only` guard จาก Client Component ถึงทำให้ build fail',
+    options: [
+      'ไม่ fail — server-only เป็นแค่ documentation',
+      'Next.js รู้จัก import "server-only" และ throw build-time error เมื่อมันไปถึง Client Component module',
+      'fail แค่ตอน development เท่านั้น ไม่ fail ตอน production',
+      'fail เพราะ package ต้อง publish บน npm และติดตั้งก่อน',
+    ],
     answer: 1,
+    explain: 'Next.js จัดการ import "server-only" (และ "client-only") เป็นกรณีพิเศษไม่ว่าจะติดตั้ง npm package จริงหรือไม่ และ throw build error จริง — พิสูจน์แล้วใน probe ด้วย next build — เมื่อ module แบบนี้ถูก reach ได้จาก Client Component',
+  },
+  {
+    q: '```ts\n// lib/notifications-data.ts\nexport async function getNotifications(userId: string) {\n  await new Promise((r) => setTimeout(r, 20))\n  return [{ id: \'1\', text: `Hello ${userId}` }]\n}\n```\n```tsx\n// app/notifications/page.tsx\nexport default function NotificationsPage() {\n  const notificationsPromise = getNotifications(\'u_1\')\n  return (\n    <Suspense fallback={<p>Loading…</p>}>\n      <NotificationList notificationsPromise={notificationsPromise} />\n    </Suspense>\n  )\n}\n```\nทำไม `getNotifications` ถูกเรียกโดยไม่มี `await` ตรงนี้',
+    options: [
+      'เป็นความผิดพลาด — ทุกการเรียกใน Server Component ต้อง await',
+      'Promise ที่ยังไม่ resolve ถูกส่งให้ Client Component ซึ่งแกะด้วย use() ระหว่างที่ Suspense โชว์ fallback',
+      'เพราะ getNotifications เป็น Server Action',
+      'เพราะ Promise ใช้ await ใน Server Component ไม่ได้',
+    ],
+    answer: 1,
+    explain: 'การส่ง Promise ที่ยังค้างอยู่ (แทนที่จะ await ก่อน) ทำให้ static shell stream ออกไปทันที Client Component แกะมันด้วย use() และ Suspense boundary ที่ใกล้ที่สุดโชว์ fallback จนกว่าจะ resolve',
+  },
+  {
+    q: 'layout สองอันที่เทียบเท่ากัน render Nav/Sidebar/Footer และปุ่ม interactive ปุ่มเดียวเหมือนกัน อันหนึ่งใส่ "use client" ที่ทั้ง layout อีกอันเก็บ layout ไว้บน server แล้วมาร์กแค่ wrapper ของปุ่มเป็น Client Component ผลวัดใน probe เป็นยังไง',
+    options: [
+      'ขนาด client bundle เท่ากันทั้งสองแบบ',
+      'เวอร์ชันที่ "use client" อยู่ที่ layout ส่ง chunk เฉพาะ route ที่ใหญ่กว่าประมาณ 31 เท่า (8,967 เทียบกับ 287 ไบต์) สำหรับ UI ที่เห็นเหมือนกัน',
+      'เวอร์ชัน server-first build ไม่ผ่าน',
+      'วัดขนาด client bundle ไม่ได้แล้ว เพราะ Next.js 16 ถอด size reporting ออกทั้งหมด',
+    ],
+    answer: 1,
+    explain: 'วัดจาก client-reference-manifest และไฟล์ chunk จริงใน probe — 8,967 ไบต์เมื่อ "use client" อยู่ที่ layout (ลาก static widget สามตัวเข้ามาด้วย) เทียบกับ 287 ไบต์เมื่ออยู่แค่ที่ leaf ที่ interactive',
   },
 ];
 

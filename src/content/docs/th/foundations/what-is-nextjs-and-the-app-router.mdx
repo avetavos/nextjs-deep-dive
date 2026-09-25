@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -29,7 +30,7 @@ React เปล่า ๆ ให้แค่โมเดล component เท่�
 route ก็คือไฟล์ที่ default-export React component ออกมาเท่านั้น —
 
 ```tsx
-// app/page.tsx — this is the "/" route
+// app/page.tsx
 export default function HomePage() {
   return <h1>Hello from a Server Component</h1>;
 }
@@ -73,6 +74,10 @@ my-app/
 
 จากจุดนี้ `npm run dev` จะสตาร์ท development server แล้วคุณก็กำลังมอง App Router app ที่รันจริงอยู่
 
+## Request lifecycle ในหนึ่งย่อหน้า
+
+request ที่เข้ามาที่ App Router route ผ่านหลาย stage มากกว่าแค่ "รันฟังก์ชัน แล้วคืน HTML" เรียงลำดับ — มันผ่าน `proxy.ts` (ถ้ามี), Next.js match ไปที่ route segment, Server Components ของคุณ render ออกมาเป็น RSC payload (โดย cache layer ของ framework ตัดสินว่าอะไร fresh อะไรใช้ของเดิม), ผลลัพธ์ stream ไป browser เป็น HTML, browser hydrate Client Components ข้างในนั้น และทุกการ navigate หลังจากโหลดครั้งแรกจะ fetch RSC payload เพิ่มแทนที่จะโหลดทั้งหน้าใหม่ การเรียก Server Action ก็คือ POST request ที่กลับเข้า pipeline เดียวกันนี้ แต่ละ stage ถูกสอนแยกในบทของตัวเองที่อื่นในคอร์สนี้ [The Request Lifecycle](/nextjs/th/foundations/the-request-lifecycle/) เดินเรื่องทั้งหมดแบบ end-to-end พร้อม header และ payload จริงที่พิสูจน์จาก app ที่รันอยู่จริง
+
 <Mermaid title="request ไหลผ่าน App Router ยังไง" code={diagramFramework} />
 
 export const diagramFramework = `flowchart LR
@@ -83,8 +88,48 @@ export const diagramFramework = `flowchart LR
   HTML --> Page[Interactive page]
   Bundle --> Page`;
 
+## Mental Model
+
+คิดว่า Next.js คือทุกอย่างที่ React จงใจไม่ทำให้ — มันคือชั้นที่ตัดสินว่าโค้ด component ของคุณรัน *ที่ไหน* (server กับ browser), รัน *เมื่อไร* (build time, request time หรือทั้งคู่), และผลลัพธ์เดินทางไปถึงผู้ใช้ *ยังไง* App Router ไม่ใช่ templating language ใหม่ที่แปะเข้ากับ React — มันคือคำตอบปัจจุบันของ Next.js สำหรับสามคำถามนั้น สร้างบน React Server Components แทนที่จะเป็น single-page app แบบ client-only
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| App Router (Server Components เป็น default) | fetch data บรรทัดเดียวกับ `await`, client JS น้อย, streaming | mental model ใหม่ถ้าคุณเรียน React แบบ client-only มาก่อน |
+| Pages Router (เก็บไว้เพื่อ migrate) | โมเดล `getServerSideProps`/`getStaticProps` ที่คุ้นเคย, ecosystem เก่าใหญ่มาก | ทุก component เป็น Client Component ทั้งหมด ไม่มี feature ใหม่มาลงที่นี่ |
+| recommended defaults ของ `create-next-app` | เส้นทางที่เร็วที่สุดไปสู่โปรเจกต์ที่ config ถูกต้อง | ถ้าจะ customize ทีหลัง ต้องเข้าใจว่า default เลือกอะไรให้คุณไว้ |
+| framework เป็นเจ้าของ routing/rendering/bundling | คุณเขียนโค้ด infrastructure น้อยลงมาก | ต้องเรียน convention ของ framework ไม่ใช่แค่ API ของ React |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Next.js เป็นแค่ router ให้ React"** routing เป็นแค่หนึ่งในห้าอย่างที่มันเป็นเจ้าของ — มันยังตัดสิน rendering strategy, ergonomics ของการ fetch data, bundling และ optimization ในตัวสำหรับ image/font/script/metadata ด้วย
+- **"App Router กับ Pages Router เป็นสองวิธีเขียนของแบบเดียวกัน"** ทั้งสองต่างกันเชิงโครงสร้าง — component ของ App Router เป็น Server Component โดย default และ fetch data ในบรรทัดเดียวกับ `async`/`await`; component ของ Pages Router เป็น Client Component ทั้งหมด ป้อนข้อมูลด้วยฟังก์ชันแยกต่างหากอย่าง `getServerSideProps` โค้ดย้ายข้ามกันแบบ 1:1 ไม่ได้
+- **"ทุก request แค่รันฟังก์ชัน page ของฉันแล้วคืน HTML"** request หนึ่งผ่าน proxy, route matching, RSC rendering กับ cache layer หลายชั้น, streaming และ (ตอน navigate ครั้งถัดไป) การ fetch RSC ฝั่ง client — ดูภาพเต็มที่ [The Request Lifecycle](/nextjs/th/foundations/the-request-lifecycle/)
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลาโค้ดที่ generate มาอ้างว่าเป็น "Next.js page" เช็คสิ่งเหล่านี้ก่อนเชื่อ —
+
+- มันอยู่ใต้ `app/` และ default-export component หรือเปล่า — หรือใช้ API เฉพาะ Pages Router (`getServerSideProps`, `getStaticProps`, ไฟล์ `pages/`) ในโปรเจกต์ที่ควรเป็น App Router?
+- มันสมมติว่า component เป็น Client Component (ใช้ `useState`/`useEffect` โดยไม่มี `"use client"`) ทั้งที่จริงมันเป็น Server Component โดย default หรือเปล่า?
+- มัน fetch data ผ่าน API call แยกจาก component ทั้งที่ async Server Component `await` มันตรง ๆ ได้เลยหรือเปล่า?
+- มันเป็นคำแนะนำยุคก่อน App Router หรือเปล่า — เช่นถือว่า `pages/api` เป็นทางเดียวที่จะสร้าง endpoint ทั้งที่ Route Handlers (`app/**/route.ts`) คือของเทียบเท่าฝั่ง App Router?
+
+<SpotTheBug code={`// app/dashboard/page.tsx
+export async function getServerSideProps() {
+  const res = await fetch('https://api.example.com/stats')
+  return { props: { stats: await res.json() } }
+}
+
+export default function Dashboard({ stats }: { stats: { views: number } }) {
+  return <p>Views: {stats.views}</p>
+}`}>
+`getServerSideProps` เป็น export เฉพาะ Pages Router — ในไฟล์ใต้ `app/` มันไม่ทำอะไรเลย ใน App Router `Dashboard` เป็น Server Component โดย default อยู่แล้ว จึง `await` การ fetch ตรง ๆ ในตัวมันเองได้เลย ไม่ต้อง export ฟังก์ชันโหลด data แยก `stats` ตรงนี้จะเป็น `undefined` เพราะ Next.js ไม่เรียก `getServerSideProps` ให้ route ของ App Router เลย ทางแก้คือทำให้ `Dashboard` เป็น `async` แล้ว `await fetch(...)` ตรงในตัวมันเอง ตาม pattern ใน [Server and Client Components](/nextjs/th/foundations/server-and-client-components/)
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-Next.js คือ framework ที่ครอบ React ไว้ จัดการ routing, rendering, data และ bundling — และ App Router คือโมเดลปัจจุบันของตัวเองที่สร้างบน Server Component ส่วน Pages Router เก็บไว้เพื่อการ migrate เท่านั้น
+Next.js คือ framework ที่ครอบ React ไว้ จัดการ routing, rendering, data และ bundling — App Router คือโมเดลปัจจุบันของตัวเองที่สร้างบน Server Component (ส่วน Pages Router เก็บไว้เพื่อการ migrate เท่านั้น) และ request หนึ่งเดินทางผ่าน proxy, routing, RSC rendering, caching และ streaming ก่อนจะไปถึง browser
 </Callout>
 
 export const quizWhatIsNext = [
@@ -92,21 +137,47 @@ export const quizWhatIsNext = [
     q: 'App Router ใช้ component ชนิดไหนเป็น default',
     options: ['Client Components', 'Server Components', 'ไฟล์ HTML แบบ static', 'Web Components'],
     answer: 1,
+    explain: 'ทุก component ใต้ app/ เป็น Server Component เว้นแต่ไฟล์นั้น (หรือ ancestor ใน import chain) จะมาร์ก "use client"',
   },
   {
     q: 'โฟลเดอร์ไหนบอกว่าโปรเจกต์ใช้ App Router',
     options: ['pages/', 'app/', 'routes/', 'src/config/'],
     answer: 1,
+    explain: 'app/ คือ convention ของ App Router; pages/ คือ Pages Router แบบเก่า ยังใช้งานได้แต่ feature ใหม่ไม่ได้มาลงที่นี่',
   },
   {
     q: 'ข้อไหนที่ Next.js ไม่ได้ให้มาในตัว',
     options: ['routing จากโครงสร้างโฟลเดอร์', 'เครื่องมือทำ design mockup', 'การ render บน server และ streaming', 'การ bundle และ split โค้ด'],
     answer: 1,
+    explain: 'Next.js เป็นเจ้าของ routing, rendering, การ fetch data, bundling และ optimization — เครื่องมือ design ไม่ใช่ส่วนหนึ่งของ framework',
   },
   {
     q: 'คอร์สนี้ปฏิบัติกับ Pages Router ยังไง',
     options: ['เป็นโมเดลหลักที่ต้องเรียน', 'ถูกถอดออกจาก Next.js ไปแล้ว', 'เกี่ยวข้องหลัก ๆ ตอน migrate app เดิม', 'ต้องเรียนก่อน App Router'],
     answer: 2,
+    explain: 'Pages Router ยังใช้งานได้และมากับ Next.js แต่คอร์สนี้เป็นแบบ App-Router-first — Pages Router โผล่มาเฉพาะตอนที่การ migrate app เดิมสำคัญเท่านั้น',
+  },
+  {
+    q: '```tsx\n// app/dashboard/page.tsx\nexport async function getServerSideProps() {\n  const res = await fetch(\'https://api.example.com/stats\')\n  return { props: { stats: await res.json() } }\n}\n\nexport default function Dashboard({ stats }: { stats: { views: number } }) {\n  return <p>Views: {stats.views}</p>\n}\n```\nเกิดอะไรขึ้นกับ `stats` เมื่อไฟล์นี้ถูกวางไว้ใต้ `app/`',
+    options: [
+      'ถูกเติมค่าถูกต้อง — getServerSideProps ยังรันอยู่',
+      'เป็น undefined — Next.js ไม่เรียก getServerSideProps ให้ route ของ App Router เลย',
+      'throw build error ทันที',
+      'ทำงานได้เฉพาะตอน development mode',
+    ],
+    answer: 1,
+    explain: 'getServerSideProps เป็น convention ของ Pages Router ในไฟล์ใต้ app/ framework ไม่เรียกมันเลย — ทางแก้คือทำให้ Server Component เป็น async แล้ว await fetch ตรง ๆ',
+  },
+  {
+    q: '```txt\napp/                    pages/\n  layout.tsx              _app.tsx\n  page.tsx                index.tsx\n```\nข้อความไหนถูกต้องเกี่ยวกับ tree ทั้งสองแบบนี้',
+    options: [
+      'สลับใช้แทนกันได้ — โฟลเดอร์ไหนก็ใช้ data-fetching style แบบไหนก็ได้',
+      'component ของ app/ เป็น Server Component โดย default และ fetch data บรรทัดเดียวกับ async/await; component ของ pages/ เป็น Client Component ทั้งหมด ป้อนข้อมูลด้วยฟังก์ชันแยก',
+      'pages/ จำเป็นแม้ในโปรเจกต์ App Router',
+      'app/ ใช้ได้แค่กับ static site เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'สอง router ต่างกันเชิงโครงสร้าง ไม่ใช่แค่ชื่อต่างกัน — component ของ App Router รันบน server โดย default และ fetch แบบ inline; component ของ Pages Router เป็น Client Component ที่รับ data จากฟังก์ชันอย่าง getServerSideProps',
   },
 ];
 

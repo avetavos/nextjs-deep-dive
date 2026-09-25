@@ -1,0 +1,285 @@
+---
+title: 'The Request Lifecycle'
+description: 'End-to-end request lifecycle in the App Router: proxy, route matching, RSC rendering into the Flight payload, cache layers, streaming, hydration, client-side RSC navigation and the Client Cache, and a Server Action POST — with real headers and payloads proved in a running app.'
+sidebar:
+  order: 6
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## The idea in one sentence
+
+A single page load is not "run a function, return HTML" — it is a fixed pipeline of eight stages, each with its own real, inspectable headers and payloads, and every later navigation (a `<Link>` click, a Server Action submit) re-enters that same pipeline instead of starting a new one.
+
+## The big picture
+
+<Mermaid title="One request, end to end" code={diagramBigPictureEn} />
+
+export const diagramBigPictureEn = `sequenceDiagram
+  participant Browser
+  participant Proxy as "proxy.ts"
+  participant Router as "Router / cache layers"
+  participant RSC as "Server Components"
+  Browser->>Proxy: GET /dashboard
+  Proxy->>Proxy: "read cookies/headers, decide next() / redirect() / rewrite()"
+  Proxy->>Router: "NextResponse.next()"
+  Router->>Router: "match route segment"
+  Router->>RSC: render (Full Route Cache / Data Cache checked)
+  RSC-->>Router: "RSC payload (Flight format)"
+  Router-->>Browser: "streamed HTML + inline RSC payload"
+  Browser->>Browser: "hydrate Client Components"
+  Note over Browser: later navigation
+  Browser->>Router: "Link click - GET with rsc:1, next-router-state-tree"
+  Router-->>Browser: "RSC payload (text/x-component), Client Cache updated"
+  Note over Browser: Server Action submit
+  Browser->>Router: "POST / with next-action: <id> header"
+  Router->>RSC: run the Server Function
+  RSC-->>Browser: "updated RSC payload"`;
+
+Each stage below links to the lesson that teaches it in depth — this lesson's job is to show them wired together, in order, with real evidence at every join.
+
+## Stage 1 — Proxy
+
+`proxy.ts` runs before the request completes, on every matching route. It can redirect, rewrite, forward headers to the render path, or just call `NextResponse.next()` and continue. This stage is proved in detail — including the exact header-forwarding bug that silently only reaches the browser instead of the Server Component — in [Proxy and the Request Lifecycle](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/).
+
+<Mermaid title="Stage 1: Proxy" code={diagramStage1En} />
+
+export const diagramStage1En = `flowchart LR
+  A[Request arrives] --> B{"matcher matches?"}
+  B -->|no| D[Router]
+  B -->|yes| C["proxy.ts (Node.js runtime)"]
+  C --> D`;
+
+## Stage 2 — Route matching
+
+The Router takes the (possibly rewritten) URL and matches it to a route segment tree — folders under `app/` map directly to URL segments, and the reserved filenames inside each folder (`page`, `layout`, `route`, and the rest of the table in [File Conventions and Special Files](/nextjs/en/foundations/file-conventions-and-special-files/)) decide what that segment does. A folder with no `page.tsx` and no `route.ts` never resolves to anything.
+
+## Stage 3 — Server Components render into the RSC payload
+
+Server Components render on the server into a compact serialized format — the **RSC payload**, transmitted as **React Flight** — containing the rendered result of Server Components, placeholders for Client Components plus references to their JS, and the serialized props between them. This is the same model taught in [Server and Client Components](/nextjs/en/foundations/server-and-client-components/).
+
+Proving the actual wire format: requesting a page with the `RSC: 1` header (and a router-state-tree header, matching what the real client sends) returns `Content-Type: text/x-component` instead of HTML, with the real Flight text:
+
+```text
+1:"$Sreact.fragment"
+2:I[39756,["/_next/static/chunks/3fntmmi971322.js"],"default"]
+...
+5:{"id":"40ac7b2cf94b54446304fd50e95d186b8b66699754","bound":null}
+0:{"P":null,"c":["",""],"q":"","i":false,"f":[[["",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},...
+```
+
+The `I[...]` lines are client reference placeholders (module id, chunk list, export name); the numbered `0:{...}` line is the actual serialized element tree; and — notably — a Server Action reference (`5:{"id":"40ac...","bound":null}`) is embedded right in the payload for any form on the page, which is exactly what Stage 8 below sends back.
+
+<Mermaid title="Stage 3: RSC render" code={diagramStage3En} />
+
+export const diagramStage3En = `flowchart LR
+  A[Route segment matched] --> B["Server Components render"]
+  B --> C["RSC payload (Flight)"]
+  C --> D["Client refs + serialized props"]`;
+
+## Stage 4 — Cache layers
+
+Rendering doesn't always mean re-running your components — Next.js checks its cache layers first. The real response headers from a static route show this directly:
+
+```text
+HTTP/1.1 200 OK
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, Accept-Encoding
+x-nextjs-cache: HIT
+x-nextjs-prerender: 1
+x-nextjs-stale-time: 300
+Cache-Control: s-maxage=31536000
+```
+
+`x-nextjs-cache: HIT` means the Full Route Cache served this without re-rendering; `x-nextjs-stale-time` is how long until it's considered stale. The four layers — Request Memoization, Data Cache, Full Route Cache, Client Cache — and how they interact are the entire subject of [The Four Caching Layers](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/); this stage is where they sit in the pipeline, not a re-teaching of them.
+
+## Stage 5 — Streaming
+
+The RSC payload does not have to be complete before the response starts. A `<Suspense>` boundary lets Next.js send a static shell immediately and stream the slower part in afterward, over the same HTTP response — covered in [Streaming and Suspense](/nextjs/en/rendering/streaming-and-suspense/). This is also why the RSC payload above contains an `OutletBoundary`/`$Sreact.suspense` reference: the streamed parts are slotted in as they resolve.
+
+## Stage 6 — Hydration
+
+Once the HTML and its inline RSC payload reach the browser, React "hydrates" — it attaches event handlers to the existing DOM instead of re-creating it, using the RSC payload to know which parts are Client Components. A mismatch between what the server rendered and what the client would render on its own (a `Date`, `Math.random()`, or `typeof window` check in the render path) is what produces a hydration error; reading and fixing those is covered where rendering behavior is taught in this course.
+
+## Stage 7 — Client navigation: RSC fetch and the Client Cache
+
+After the first load, clicking a `<Link>` does not reload the page — it fetches only the next segment's RSC payload and patches the existing tree. The real request headers a `<Link>` sends (captured from the browser's own Network tab, not guessed) are:
+
+```text
+rsc: 1
+next-router-prefetch: 1
+next-router-segment-prefetch: /about/__PAGE__
+next-url: /
+```
+
+The response comes back as `content-type: text/x-component` with `x-nextjs-cache: HIT` again — same Full Route Cache as a fresh request. But the more interesting proof is what happens on the actual click: because `<Link>` already **prefetched** `/about` while it was in the viewport, the click itself produced **zero additional network requests** — the Segment Cache (part of the Client Cache) already had the RSC payload sitting in memory, and the Router just read it out. This is the same Client Cache taught in [The Four Caching Layers](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/) and the prefetch behavior taught in [Linking and Navigation](/nextjs/en/routing-and-navigation/linking-and-navigation/).
+
+<Mermaid title="Stage 7: Client navigation" code={diagramStage7En} />
+
+export const diagramStage7En = `flowchart LR
+  A["Link enters viewport"] --> B["prefetch: RSC fetch, segment cached"]
+  C["User clicks Link"] --> D{"Segment already cached?"}
+  D -->|yes| E["Read from Client Cache - no network request"]
+  D -->|no| F["RSC fetch now, then cache it"]`;
+
+## Stage 8 — Server Action POST
+
+Submitting a `<form action={serverFunction}>` sends a real `POST` request to the same route the form lives on — not to a separate API. The action reference embedded in Stage 3's payload (`{"id":"40ac7b2cf94b54446304fd50e95d186b8b66699754", ...}`) is exactly the ID the browser now sends back. Captured from a real submit in the probe:
+
+```text
+POST / HTTP/1.1
+next-action: 40ac7b2cf94b54446304fd50e95d186b8b66699754
+next-router-state-tree: %5B%22%22%2C%7B%22children%22%3A...
+accept: text/x-component
+content-type: multipart/form-data; boundary=----WebKitFormBoundaryVUmMyIm8h12a6NHt
+
+------WebKitFormBoundaryVUmMyIm8h12a6NHt
+Content-Disposition: form-data; name="_1_$ACTION_ID_40ac7b2cf94b54446304fd50e95d186b8b66699754"
+
+------WebKitFormBoundaryVUmMyIm8h12a6NHt
+Content-Disposition: form-data; name="_1_text"
+
+hello from playwright
+------WebKitFormBoundaryVUmMyIm8h12a6NHt--
+```
+
+And the server's own log for that same request, proving the action actually executed rather than the browser just believing it did:
+
+```text
+Server Action received: hello from playwright
+```
+
+The response is another RSC payload (`content-type: text/x-component`) — a Server Action round-trip re-renders and streams back the same way a page load does, which is why `revalidatePath`/`revalidateTag` inside an action can update what the user sees without a full page reload. This is taught in depth in [What Are Server Actions](/nextjs/en/server-actions-and-mutations/what-are-server-actions/) and [Security and Patterns](/nextjs/en/server-actions-and-mutations/security-and-patterns/) — including the fact that this POST endpoint is reachable by anyone who knows the action ID, not just your own `<form>`.
+
+## Where AI-generated code goes wrong at each stage
+
+- **Proxy** — reaches for `middleware.ts`/`export function middleware` (deprecated name), or puts a database call inside proxy because "it runs first," not realizing every matching request — including prefetches — pays that cost.
+- **Route matching** — assumes a folder is routable because it has *some* file in it, forgetting neither `page.tsx` nor `route.ts` is present.
+- **RSC render** — passes a function or class instance as a prop from a Server to a Client Component, which compiles but throws a real error only at this stage (prerendering), not at `tsc` time.
+- **Cache layers** — assumes `fetch` is cached by default (true in Next.js 14, false since 15) or forgets `revalidateTag` needs the profile/tag pairing taught in the caching lessons.
+- **Streaming** — wraps a `<Suspense>` around the entire page and is surprised nothing actually streams incrementally, because the boundary is too coarse to isolate the slow part.
+- **Hydration** — renders `new Date()`, `Math.random()`, or checks `typeof window` directly in a component body, producing a server/client mismatch instead of deferring that to an effect or `useSyncExternalStore`.
+- **Client navigation** — assumes every `<Link>` click hits the network, missing that a prefetched segment is served instantly from the Client Cache with zero requests — and then "optimizes" something that was already free.
+- **Server Action POST** — wraps the action body in a `try/catch` that also swallows a `redirect()`/`notFound()` thrown inside it (both throw a special value), or ships an action with no authorization check, forgetting it is a public POST endpoint identified only by its action ID.
+
+## Mental Model
+
+Treat "loading a page" and "navigating" and "submitting a form" as the *same* pipeline entered at different points, not three unrelated mechanisms. Proxy and route matching always run first; Server Components always render into the same RSC payload format; the cache layers always get consulted before anything re-renders; and the browser always ends up either painting fresh HTML (first load) or patching an existing tree with a new RSC payload (navigation, Server Action). Once you can name which of the eight stages a piece of behavior belongs to, "where does this run, and why" stops being a guess.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| A fixed, ordered pipeline | Every request's behavior is predictable and inspectable at each stage | More stages to understand than "run a handler, return a response" |
+| RSC payload as the universal wire format | The same format serves first load, navigation, and Server Action responses | Requires learning a new payload shape (Flight), not plain JSON |
+| Segment Cache prefetching | Clicks on already-visited links are instant, zero-network | Prefetches themselves cost requests — including ones proxy still has to see |
+| Server Actions re-entering the same pipeline | Mutations get the same caching/streaming machinery as reads | The POST target is the page's own route, which surprises people expecting a separate API endpoint |
+
+## Common Misconceptions
+
+- **"A page load and a client-side navigation are basically the same request."** They diverge sharply — a page load returns full HTML with an inlined RSC payload; a client-side navigation's request carries `rsc: 1` and fetches back `text/x-component` directly, patching the existing DOM instead of replacing it.
+- **"Clicking every link triggers a network request."** Not if `<Link>` already prefetched it — the click can be served entirely from the in-memory Client (Segment) Cache with no request at all, provable by watching the Network tab.
+- **"A Server Action's request looks like a JSON API call."** It's a `multipart/form-data` POST carrying a `next-action` header with the action's ID and form fields named things like `_1_text` — not a REST/JSON body.
+- **"Proxy is just a preprocessing step separate from caching."** It runs before route matching and before any cache layer is consulted — a redirect or rewrite decided in proxy changes which segment (and which cache entry) the rest of the pipeline even looks at.
+
+## Reading AI-generated code
+
+When a generated snippet claims to understand "what happens on a request," check for these before trusting it:
+
+- Does it treat a Server Action call as hitting a separate `/api/*` endpoint, instead of a POST to the page's own route carrying a `next-action` header?
+- Does it assume every navigation triggers a fresh render, missing that a prefetched segment can be served from the Client Cache with zero requests?
+- Does it put meaningful work (a database call, an auth check) in `proxy.ts` without accounting for it running on every matching request, including prefetches?
+- Does it wrap a Server Action body in `try/catch` in a way that would also swallow a `redirect()`/`notFound()` thrown from inside it?
+- Does it describe the RSC payload as "just JSON," when it's a distinct serialization (Flight) with client references and streaming semantics JSON doesn't have?
+
+<SpotTheBug code={`// app/dashboard/actions.ts
+'use server'
+
+export async function updateProfile(formData: FormData) {
+  try {
+    const name = formData.get('name') as string
+    await db.user.update({ where: { id: '1' }, data: { name } })
+    redirect('/dashboard')
+  } catch (err) {
+    console.error('Update failed', err)
+    return { error: 'Something went wrong' }
+  }
+}`}>
+`redirect()` works by throwing a special value that Next.js's own machinery catches further up — wrapping the whole action body in `try/catch` means this action's own `catch` block intercepts that throw, logs a misleading "Update failed" for a redirect that was actually working as intended, and swallows the navigation entirely: the user stays on the page with no redirect and no visible error. The fix is to call `redirect()` outside the `try/catch` (after it succeeds), or catch only the specific error you expect (the database call) and let `redirect()`'s throw propagate unmodified.
+</SpotTheBug>
+
+<Callout title="The one-line takeaway">
+One pipeline handles every request — proxy, route matching, RSC render into the Flight payload, cache-layer checks, streaming, hydration, client-side RSC fetches served from the Client Cache, and a Server Action POST are the same eight stages every time, provable end to end with real headers and payloads rather than assumed.
+</Callout>
+
+export const quizLifecycleEn = [
+  {
+    q: 'In the pipeline, what runs first: proxy or route matching?',
+    options: ['Route matching, then proxy', 'Proxy, then route matching', 'They run simultaneously', 'Route matching only runs if proxy is absent'],
+    answer: 1,
+    explain: 'Proxy runs before the request completes and before the router resolves a segment — a redirect or rewrite decided in proxy changes what route matching even sees.',
+  },
+  {
+    q: 'What format is the RSC payload transmitted as?',
+    options: ['Plain JSON', 'React Flight — a serialized tree with client references', 'HTML fragments only', 'A binary protobuf'],
+    answer: 1,
+    explain: 'The RSC payload uses the React Flight format: numbered lines with client reference placeholders (module id, chunks, export name) and a serialized element tree — proved directly with a real curl response carrying Content-Type: text/x-component.',
+  },
+  {
+    q: 'What does `x-nextjs-cache: HIT` on a response mean?',
+    options: [
+      'The request was blocked by proxy',
+      'The Full Route Cache served this response without re-rendering',
+      'The Client Cache on the browser served it',
+      'Hydration failed and the server had to recover',
+    ],
+    answer: 1,
+    explain: 'x-nextjs-cache: HIT is a real, provable header showing the response came from the Full Route Cache rather than a fresh render.',
+  },
+  {
+    q: '```text\nrsc: 1\nnext-router-prefetch: 1\nnext-router-segment-prefetch: /about/__PAGE__\n```\nA click on a `<Link href="/about">` that was already prefetched while in the viewport produces how many additional network requests?',
+    options: ['Exactly one, for the final navigation', 'Zero — the segment is read from the Client Cache', 'Two, one for RSC and one for HTML', 'It depends on the page size'],
+    answer: 1,
+    explain: 'Captured directly from the browser Network tab in the probe: the prefetch already populated the Client (Segment) Cache, so clicking the link produced no additional request at all.',
+  },
+  {
+    q: '```text\nPOST / HTTP/1.1\nnext-action: 40ac7b2cf94b54446304fd50e95d186b8b66699754\ncontent-type: multipart/form-data; boundary=----WebKitFormBoundaryVUmMyIm8h12a6NHt\n```\nWhat does this request represent?',
+    options: [
+      'A REST API call to a dedicated /api/actions endpoint',
+      "A Server Action submission — a POST to the page's own route, identified by the next-action header's ID",
+      'A file upload unrelated to Server Actions',
+      'A proxy redirect response',
+    ],
+    answer: 1,
+    explain: "Server Actions are POST requests to the route the form is defined on, not a separate API — the next-action header carries the action's ID, and the multipart body carries the form fields and the action reference.",
+  },
+  {
+    q: '```ts\nexport async function updateProfile(formData: FormData) {\n  try {\n    await db.user.update(/* ... */)\n    redirect(\'/dashboard\')\n  } catch (err) {\n    return { error: \'failed\' }\n  }\n}\n```\nWhat happens when this Server Action runs successfully?',
+    options: [
+      'It redirects to /dashboard as intended',
+      'redirect() throws a special value that this catch block intercepts, so the redirect never completes and the UI reports a misleading error',
+      'It throws a TypeScript compile error',
+      'redirect() is a no-op inside Server Actions',
+    ],
+    answer: 1,
+    explain: "redirect() works by throwing a value Next.js's own machinery catches further up the stack — a try/catch around the whole action body catches it first, silently swallowing the redirect.",
+  },
+  {
+    q: 'Why does a Server Action response come back as an RSC payload instead of plain JSON?',
+    options: [
+      'It does not — Server Actions always return JSON',
+      'Because the action re-enters the same rendering pipeline, letting it stream updated UI back the same way a navigation does',
+      'Because JSON is not supported in the App Router',
+      'Only when revalidatePath is called',
+    ],
+    answer: 1,
+    explain: "A Server Action's response is a real RSC payload (content-type: text/x-component) — the mutation re-enters the same render pipeline, which is exactly what lets revalidatePath/revalidateTag update the visible UI without a full page reload.",
+  },
+];
+
+<Quiz client:visible id="foundations-request-lifecycle" questions={quizLifecycleEn} />
+
+<ProgressTracker client:visible id="foundations-request-lifecycle" />

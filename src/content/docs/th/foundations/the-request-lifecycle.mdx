@@ -1,0 +1,285 @@
+---
+title: 'The Request Lifecycle'
+description: 'Request lifecycle แบบ end-to-end ใน App Router: proxy, route matching, RSC render เป็น Flight payload, cache layers, streaming, hydration, client-side RSC navigation กับ Client Cache และ Server Action POST — พร้อม header กับ payload จริงที่พิสูจน์แล้วใน app ที่รันอยู่จริง'
+sidebar:
+  order: 6
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## ไอเดียหลักในหนึ่งประโยค
+
+การโหลดหน้าเว็บครั้งหนึ่งไม่ใช่ "รันฟังก์ชัน แล้วคืน HTML" — มันคือ pipeline ตายตัวแปดขั้นตอน แต่ละขั้นมี header กับ payload จริงที่ตรวจสอบได้ และทุกการ navigate ครั้งถัดไป (คลิก `<Link>`, submit Server Action) กลับเข้า pipeline เดียวกันนี้ ไม่ใช่เริ่มใหม่
+
+## ภาพรวมใหญ่
+
+<Mermaid title="request หนึ่งครั้ง แบบ end to end" code={diagramBigPictureTh} />
+
+export const diagramBigPictureTh = `sequenceDiagram
+  participant Browser
+  participant Proxy as "proxy.ts"
+  participant Router as "Router / cache layers"
+  participant RSC as "Server Components"
+  Browser->>Proxy: GET /dashboard
+  Proxy->>Proxy: "read cookies/headers, decide next() / redirect() / rewrite()"
+  Proxy->>Router: "NextResponse.next()"
+  Router->>Router: "match route segment"
+  Router->>RSC: render (Full Route Cache / Data Cache checked)
+  RSC-->>Router: "RSC payload (Flight format)"
+  Router-->>Browser: "streamed HTML + inline RSC payload"
+  Browser->>Browser: "hydrate Client Components"
+  Note over Browser: later navigation
+  Browser->>Router: "Link click - GET with rsc:1, next-router-state-tree"
+  Router-->>Browser: "RSC payload (text/x-component), Client Cache updated"
+  Note over Browser: Server Action submit
+  Browser->>Router: "POST / with next-action: <id> header"
+  Router->>RSC: run the Server Function
+  RSC-->>Browser: "updated RSC payload"`;
+
+แต่ละขั้นด้านล่างลิงก์ไปยังบทที่สอนมันแบบลึก — หน้าที่ของบทนี้คือโชว์ว่าทั้งหมดต่อกันยังไง ตามลำดับ พร้อมหลักฐานจริงในทุกจุดต่อ
+
+## ขั้นที่ 1 — Proxy
+
+`proxy.ts` รันก่อน request จะเสร็จ บนทุก route ที่ match มัน redirect, rewrite, forward header ไปให้ render path หรือแค่เรียก `NextResponse.next()` แล้วไปต่อได้ ขั้นนี้พิสูจน์แบบละเอียดแล้ว — รวมถึง bug การ forward header ที่ไปถึงแค่ browser ไม่ถึง Server Component — ใน [Proxy and the Request Lifecycle](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)
+
+<Mermaid title="ขั้นที่ 1: Proxy" code={diagramStage1Th} />
+
+export const diagramStage1Th = `flowchart LR
+  A[Request arrives] --> B{"matcher matches?"}
+  B -->|no| D[Router]
+  B -->|yes| C["proxy.ts (Node.js runtime)"]
+  C --> D`;
+
+## ขั้นที่ 2 — Route matching
+
+Router รับ URL (ที่อาจถูก rewrite แล้ว) มา match กับ route segment tree — โฟลเดอร์ใต้ `app/` map ตรงเข้ากับ URL segment และชื่อไฟล์ที่จองไว้ในแต่ละโฟลเดอร์ (`page`, `layout`, `route` และที่เหลือในตารางที่ [File Conventions and Special Files](/nextjs/th/foundations/file-conventions-and-special-files/)) ตัดสินว่า segment นั้นทำอะไร โฟลเดอร์ที่ไม่มีทั้ง `page.tsx` และ `route.ts` ไม่ resolve เป็นอะไรเลย
+
+## ขั้นที่ 3 — Server Components render เป็น RSC payload
+
+Server Components render บน server เป็น format ที่ serialize มาแบบกระชับ — **RSC payload** ส่งในรูป **React Flight** — มีผลลัพธ์ที่ render แล้วของ Server Components, placeholder สำหรับ Client Components พร้อม reference ไปยัง JS ของมัน และ prop ที่ serialize แล้วระหว่างกัน นี่คือโมเดลเดียวกับที่สอนใน [Server and Client Components](/nextjs/th/foundations/server-and-client-components/)
+
+พิสูจน์ wire format จริง — request หน้าด้วย header `RSC: 1` (พร้อม router-state-tree header ให้ตรงกับที่ client จริงส่ง) คืน `Content-Type: text/x-component` แทน HTML พร้อม Flight text จริง —
+
+```text
+1:"$Sreact.fragment"
+2:I[39756,["/_next/static/chunks/3fntmmi971322.js"],"default"]
+...
+5:{"id":"40ac7b2cf94b54446304fd50e95d186b8b66699754","bound":null}
+0:{"P":null,"c":["",""],"q":"","i":false,"f":[[["",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},...
+```
+
+บรรทัด `I[...]` คือ client reference placeholder (module id, chunk list, export name); บรรทัด `0:{...}` ที่มีเลขคือ element tree ที่ serialize จริง และที่น่าสนใจ — reference ของ Server Action (`5:{"id":"40ac...","bound":null}`) ถูกฝังมาในตัว payload เลยสำหรับ form ใด ๆ บนหน้า ซึ่งตรงกับสิ่งที่ขั้นที่ 8 ด้านล่างส่งกลับมา
+
+<Mermaid title="ขั้นที่ 3: RSC render" code={diagramStage3Th} />
+
+export const diagramStage3Th = `flowchart LR
+  A[Route segment matched] --> B["Server Components render"]
+  B --> C["RSC payload (Flight)"]
+  C --> D["Client refs + serialized props"]`;
+
+## ขั้นที่ 4 — Cache layers
+
+การ render ไม่ได้แปลว่าต้องรัน component ใหม่เสมอไป — Next.js เช็ค cache layer ของมันก่อน header ของ response จริงจาก route แบบ static โชว์แบบนี้ตรง ๆ —
+
+```text
+HTTP/1.1 200 OK
+Vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, Accept-Encoding
+x-nextjs-cache: HIT
+x-nextjs-prerender: 1
+x-nextjs-stale-time: 300
+Cache-Control: s-maxage=31536000
+```
+
+`x-nextjs-cache: HIT` แปลว่า Full Route Cache เสิร์ฟตัวนี้โดยไม่ต้อง render ใหม่; `x-nextjs-stale-time` คือเวลาก่อนที่มันจะถือว่า stale สี่ layer — Request Memoization, Data Cache, Full Route Cache, Client Cache — และวิธีที่มันทำงานร่วมกันคือเรื่องทั้งหมดของ [The Four Caching Layers](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/) บทนี้แค่โชว์ว่ามันอยู่ตรงไหนใน pipeline ไม่ได้สอนซ้ำ
+
+## ขั้นที่ 5 — Streaming
+
+RSC payload ไม่จำเป็นต้องเสร็จสมบูรณ์ก่อน response จะเริ่มส่ง `<Suspense>` boundary ให้ Next.js ส่ง static shell ทันที แล้ว stream ส่วนที่ช้ากว่าตามมาทีหลัง ผ่าน HTTP response เดียวกัน — สอนใน [Streaming and Suspense](/nextjs/th/rendering/streaming-and-suspense/) นี่ก็เป็นเหตุผลที่ RSC payload ด้านบนมี reference `OutletBoundary`/`$Sreact.suspense` — ส่วนที่ stream มาถูกเสียบเข้าไปเมื่อมัน resolve
+
+## ขั้นที่ 6 — Hydration
+
+พอ HTML กับ RSC payload ที่ฝังมาด้วยไปถึง browser React จะ "hydrate" — มันติด event handler เข้ากับ DOM ที่มีอยู่แล้วแทนที่จะสร้างใหม่ โดยใช้ RSC payload บอกว่าส่วนไหนเป็น Client Components ความไม่ตรงกันระหว่างสิ่งที่ server render กับสิ่งที่ client จะ render เอง (`Date`, `Math.random()`, หรือเช็ค `typeof window` ใน render path) คือสิ่งที่ทำให้เกิด hydration error การอ่านและแก้มันถูกสอนตรงที่พฤติกรรม rendering ถูกสอนในคอร์สนี้
+
+## ขั้นที่ 7 — Client navigation: RSC fetch กับ Client Cache
+
+หลังโหลดครั้งแรก คลิก `<Link>` ไม่ได้ reload หน้าใหม่ — มัน fetch แค่ RSC payload ของ segment ถัดไป แล้วแปะเข้า tree ที่มีอยู่ request header จริงที่ `<Link>` ส่ง (จับมาจาก Network tab ของ browser จริง ไม่ได้เดา) คือ —
+
+```text
+rsc: 1
+next-router-prefetch: 1
+next-router-segment-prefetch: /about/__PAGE__
+next-url: /
+```
+
+response กลับมาเป็น `content-type: text/x-component` พร้อม `x-nextjs-cache: HIT` อีกครั้ง — Full Route Cache เดียวกับ request สด ๆ แต่หลักฐานที่น่าสนใจกว่าคือสิ่งที่เกิดขึ้นตอนคลิกจริง — เพราะ `<Link>` **prefetch** `/about` ไปแล้วตอนที่มันอยู่ใน viewport ตัวคลิกเองสร้าง **network request เพิ่มเป็นศูนย์** — Segment Cache (ส่วนหนึ่งของ Client Cache) มี RSC payload อยู่ในหน่วยความจำแล้ว และ Router แค่อ่านมันออกมา นี่คือ Client Cache เดียวกับที่สอนใน [The Four Caching Layers](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/) และพฤติกรรม prefetch ที่สอนใน [Linking and Navigation](/nextjs/th/routing-and-navigation/linking-and-navigation/)
+
+<Mermaid title="ขั้นที่ 7: Client navigation" code={diagramStage7Th} />
+
+export const diagramStage7Th = `flowchart LR
+  A["Link enters viewport"] --> B["prefetch: RSC fetch, segment cached"]
+  C["User clicks Link"] --> D{"Segment already cached?"}
+  D -->|yes| E["Read from Client Cache - no network request"]
+  D -->|no| F["RSC fetch now, then cache it"]`;
+
+## ขั้นที่ 8 — Server Action POST
+
+submit `<form action={serverFunction}>` ส่ง `POST` request จริงไปที่ route เดียวกับที่ form นั้นอยู่ — ไม่ใช่ไปที่ API แยกต่างหาก reference ของ action ที่ฝังอยู่ใน payload ของขั้นที่ 3 (`{"id":"40ac7b2cf94b54446304fd50e95d186b8b66699754", ...}`) คือ ID เดียวกันเป๊ะที่ browser ส่งกลับมา จับมาจากการ submit จริงใน probe —
+
+```text
+POST / HTTP/1.1
+next-action: 40ac7b2cf94b54446304fd50e95d186b8b66699754
+next-router-state-tree: %5B%22%22%2C%7B%22children%22%3A...
+accept: text/x-component
+content-type: multipart/form-data; boundary=----WebKitFormBoundaryVUmMyIm8h12a6NHt
+
+------WebKitFormBoundaryVUmMyIm8h12a6NHt
+Content-Disposition: form-data; name="_1_$ACTION_ID_40ac7b2cf94b54446304fd50e95d186b8b66699754"
+
+------WebKitFormBoundaryVUmMyIm8h12a6NHt
+Content-Disposition: form-data; name="_1_text"
+
+hello from playwright
+------WebKitFormBoundaryVUmMyIm8h12a6NHt--
+```
+
+และ log ของ server เองสำหรับ request เดียวกันนี้ พิสูจน์ว่า action รันจริง ไม่ใช่แค่ browser เชื่อว่ามันรัน —
+
+```text
+Server Action received: hello from playwright
+```
+
+response เป็น RSC payload อีกอัน (`content-type: text/x-component`) — Server Action round-trip กลับเข้า render pipeline เดียวกันแล้ว stream กลับมาเหมือนตอน navigate ซึ่งเป็นเหตุผลที่ `revalidatePath`/`revalidateTag` ข้างใน action อัปเดตสิ่งที่ผู้ใช้เห็นได้โดยไม่ต้อง reload ทั้งหน้า สอนแบบลึกใน [What Are Server Actions](/nextjs/th/server-actions-and-mutations/what-are-server-actions/) และ [Security and Patterns](/nextjs/th/server-actions-and-mutations/security-and-patterns/) — รวมถึงข้อเท็จจริงที่ว่า POST endpoint นี้ใครก็เรียกได้ถ้ารู้ action ID ไม่ใช่แค่ผ่าน `<form>` ของคุณเท่านั้น
+
+## จุดที่โค้ด AI พลาดในแต่ละขั้น
+
+- **Proxy** — ใช้ `middleware.ts`/`export function middleware` (ชื่อที่ deprecated แล้ว) หรือใส่ database call ไว้ใน proxy เพราะ "มันรันก่อน" โดยไม่รู้ว่าทุก request ที่ match — รวม prefetch — ต้องจ่ายต้นทุนนั้นด้วย
+- **Route matching** — สมมติว่าโฟลเดอร์ route ได้เพราะมี "ไฟล์บางอย่าง" อยู่ข้างใน ลืมว่าไม่มีทั้ง `page.tsx` และ `route.ts`
+- **RSC render** — ส่ง function หรือ class instance เป็น prop จาก Server ไป Client Component ซึ่ง compile ผ่าน แต่ throw error จริงเฉพาะตอนขั้นนี้ (prerendering) ไม่ใช่ตอน `tsc`
+- **Cache layers** — สมมติว่า `fetch` cache เป็น default (จริงใน Next.js 14 ไม่จริงตั้งแต่ 15) หรือลืมว่า `revalidateTag` ต้องมี profile/tag คู่กันตามที่สอนในบท caching
+- **Streaming** — ห่อ `<Suspense>` รอบทั้งหน้า แล้วแปลกใจว่าทำไมไม่มีอะไร stream ทีละส่วนจริง ๆ เพราะ boundary กว้างเกินจะแยกส่วนที่ช้าออกมา
+- **Hydration** — render `new Date()`, `Math.random()`, หรือเช็ค `typeof window` ตรง ๆ ใน component body ทำให้เกิด server/client mismatch แทนที่จะ defer ไปที่ effect หรือ `useSyncExternalStore`
+- **Client navigation** — สมมติว่าทุกคลิก `<Link>` ยิง network จริง พลาดไปว่า segment ที่ prefetch แล้วเสิร์ฟทันทีจาก Client Cache โดยไม่มี request เลย แล้วไป "optimize" สิ่งที่ฟรีอยู่แล้ว
+- **Server Action POST** — ห่อ body ของ action ด้วย `try/catch` ที่กลืน `redirect()`/`notFound()` ที่ throw ข้างในไปด้วย (ทั้งคู่ throw ค่าพิเศษ) หรือ ship action ที่ไม่มี authorization check ลืมว่ามันคือ POST endpoint แบบ public ที่ระบุด้วย action ID เท่านั้น
+
+## Mental Model
+
+มองว่า "โหลดหน้า" กับ "navigate" กับ "submit form" เป็น pipeline *เดียวกัน* ที่เข้าจากจุดต่างกัน ไม่ใช่กลไกสามอย่างที่ไม่เกี่ยวกัน proxy กับ route matching รันก่อนเสมอ; Server Components render เป็น RSC payload format เดียวกันเสมอ; cache layer ถูกเช็คก่อน render ใหม่เสมอ; และ browser จบลงด้วยการวาด HTML สด (โหลดครั้งแรก) หรือแปะ tree ที่มีอยู่ด้วย RSC payload ใหม่ (navigate, Server Action) พอตั้งชื่อได้ว่าพฤติกรรมหนึ่งอยู่ในแปดขั้นไหน "มันรันที่ไหน ทำไม" ก็เลิกเป็นการเดา
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| pipeline ตายตัวที่มีลำดับ | พฤติกรรมของทุก request คาดเดาได้และตรวจสอบได้ทีละขั้น | มีขั้นตอนต้องเข้าใจมากกว่า "รัน handler แล้วคืน response" |
+| RSC payload เป็น wire format สากล | format เดียวกันเสิร์ฟทั้งโหลดครั้งแรก, navigate, และ response ของ Server Action | ต้องเรียนรู้รูปร่าง payload ใหม่ (Flight) ไม่ใช่ JSON ธรรมดา |
+| Segment Cache prefetching | คลิก link ที่เคยเยี่ยมชมแล้วเร็วทันที ไม่มี network เลย | prefetch เองก็มีต้นทุนเป็น request — รวมถึง request ที่ proxy ยังต้องเห็นอยู่ |
+| Server Actions กลับเข้า pipeline เดียวกัน | mutation ได้กลไก caching/streaming เดียวกับการอ่าน | POST target คือ route ของหน้าเอง ซึ่งทำให้คนที่คาดหวัง API endpoint แยกต่างหากแปลกใจ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"การโหลดหน้ากับ client-side navigation แทบเป็น request แบบเดียวกัน"** ต่างกันชัดเจน — โหลดหน้าคืน HTML เต็มพร้อม RSC payload ฝังมาด้วย; client-side navigation ส่ง request ที่มี `rsc: 1` แล้ว fetch กลับมาเป็น `text/x-component` ตรง ๆ แปะเข้า DOM ที่มีอยู่แทนที่จะแทนที่ทั้งหมด
+- **"คลิก link ทุกอันยิง network request"** ไม่เสมอไปถ้า `<Link>` prefetch มันไว้แล้ว — คลิกนั้นเสิร์ฟจาก Client (Segment) Cache ในหน่วยความจำได้เลยโดยไม่มี request เลย พิสูจน์ได้จากการดู Network tab
+- **"request ของ Server Action หน้าตาเหมือน JSON API call"** มันคือ POST แบบ `multipart/form-data` ที่มี header `next-action` เป็น ID ของ action และ field ของ form ชื่อประมาณ `_1_text` — ไม่ใช่ body แบบ REST/JSON
+- **"Proxy เป็นแค่ขั้น preprocessing แยกจาก caching"** มันรันก่อน route matching และก่อน cache layer ใด ๆ จะถูกเช็ค — redirect หรือ rewrite ที่ตัดสินใจใน proxy เปลี่ยนได้ว่า pipeline ที่เหลือมองไป segment ไหน (และ cache entry ไหน)
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลาโค้ดที่ generate มาอ้างว่าเข้าใจ "เกิดอะไรขึ้นตอน request" เช็คสิ่งเหล่านี้ก่อนเชื่อ —
+
+- มันปฏิบัติกับการเรียก Server Action เหมือนไปที่ endpoint `/api/*` แยกต่างหาก แทนที่จะเป็น POST ไปที่ route ของหน้าเองที่มี header `next-action` หรือเปล่า?
+- มันสมมติว่าทุก navigate trigger การ render ใหม่ พลาดไปว่า segment ที่ prefetch แล้วเสิร์ฟจาก Client Cache ได้โดยไม่มี request เลยหรือเปล่า?
+- มันใส่งานที่มีความหมาย (database call, auth check) ไว้ใน `proxy.ts` โดยไม่คิดว่ามันรันทุก request ที่ match รวม prefetch หรือเปล่า?
+- มันห่อ body ของ Server Action ด้วย `try/catch` แบบที่จะกลืน `redirect()`/`notFound()` ที่ throw ข้างในไปด้วยหรือเปล่า?
+- มันบอกว่า RSC payload "ก็แค่ JSON" ทั้งที่มันคือ serialization แบบเฉพาะ (Flight) ที่มี client reference และ streaming semantics ที่ JSON ไม่มีหรือเปล่า?
+
+<SpotTheBug code={`// app/dashboard/actions.ts
+'use server'
+
+export async function updateProfile(formData: FormData) {
+  try {
+    const name = formData.get('name') as string
+    await db.user.update({ where: { id: '1' }, data: { name } })
+    redirect('/dashboard')
+  } catch (err) {
+    console.error('Update failed', err)
+    return { error: 'Something went wrong' }
+  }
+}`}>
+`redirect()` ทำงานด้วยการ throw ค่าพิเศษที่กลไกของ Next.js เองจับที่ชั้นบนขึ้นไป — ห่อทั้ง action body ด้วย `try/catch` แปลว่า `catch` block ของ action นี้เองจะดักการ throw นั้น log "Update failed" ที่ทำให้เข้าใจผิดสำหรับ redirect ที่จริง ๆ ทำงานตามที่ตั้งใจ แล้วกลืนการ navigate ไปเลย — ผู้ใช้ค้างอยู่ที่หน้าเดิมโดยไม่มี redirect และไม่มี error ให้เห็น ทางแก้คือเรียก `redirect()` ไว้นอก `try/catch` (หลังจากที่มันสำเร็จแล้ว) หรือ catch เฉพาะ error ที่คาดหวังจริง ๆ (database call) แล้วปล่อยให้ throw ของ `redirect()` ผ่านไปโดยไม่ถูกแตะ
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+pipeline เดียวจัดการทุก request — proxy, route matching, RSC render เป็น Flight payload, เช็ค cache layer, streaming, hydration, client-side RSC fetch ที่เสิร์ฟจาก Client Cache และ Server Action POST คือแปดขั้นเดียวกันทุกครั้ง พิสูจน์ได้ end-to-end ด้วย header กับ payload จริง ไม่ใช่การสมมติ
+</Callout>
+
+export const quizLifecycleTh = [
+  {
+    q: 'ใน pipeline อะไรรันก่อน proxy หรือ route matching',
+    options: ['route matching ก่อน แล้วค่อย proxy', 'proxy ก่อน แล้วค่อย route matching', 'รันพร้อมกัน', 'route matching รันเฉพาะเมื่อไม่มี proxy'],
+    answer: 1,
+    explain: 'proxy รันก่อน request จะเสร็จและก่อน router จะ resolve segment — redirect หรือ rewrite ที่ตัดสินใจใน proxy เปลี่ยนได้ว่า route matching เห็นอะไรบ้าง',
+  },
+  {
+    q: 'RSC payload ถูกส่งในรูปแบบไหน',
+    options: ['JSON ธรรมดา', 'React Flight — tree ที่ serialize แล้วพร้อม client reference', 'HTML fragment เท่านั้น', 'binary protobuf'],
+    answer: 1,
+    explain: 'RSC payload ใช้ format React Flight — บรรทัดที่มีเลขนำหน้าพร้อม client reference placeholder (module id, chunk, export name) และ element tree ที่ serialize แล้ว — พิสูจน์ตรง ๆ ด้วย response จาก curl จริงที่มี Content-Type: text/x-component',
+  },
+  {
+    q: '`x-nextjs-cache: HIT` บน response แปลว่าอะไร',
+    options: [
+      'request ถูก proxy บล็อก',
+      'Full Route Cache เสิร์ฟ response นี้โดยไม่ render ใหม่',
+      'Client Cache บน browser เสิร์ฟมัน',
+      'hydration fail และ server ต้อง recover',
+    ],
+    answer: 1,
+    explain: 'x-nextjs-cache: HIT คือ header จริงที่พิสูจน์ได้ว่า response มาจาก Full Route Cache ไม่ใช่การ render ใหม่',
+  },
+  {
+    q: '```text\nrsc: 1\nnext-router-prefetch: 1\nnext-router-segment-prefetch: /about/__PAGE__\n```\nคลิก `<Link href="/about">` ที่ prefetch ไว้แล้วตอนอยู่ใน viewport สร้าง network request เพิ่มกี่ครั้ง',
+    options: ['หนึ่งครั้งพอดี สำหรับ navigate จริง', 'ศูนย์ — segment ถูกอ่านจาก Client Cache', 'สองครั้ง หนึ่งสำหรับ RSC หนึ่งสำหรับ HTML', 'ขึ้นอยู่กับขนาดหน้า'],
+    answer: 1,
+    explain: 'จับมาตรง ๆ จาก Network tab ของ browser ใน probe — prefetch เติม Client (Segment) Cache ไปแล้ว คลิก link จึงไม่สร้าง request เพิ่มเลย',
+  },
+  {
+    q: '```text\nPOST / HTTP/1.1\nnext-action: 40ac7b2cf94b54446304fd50e95d186b8b66699754\ncontent-type: multipart/form-data; boundary=----WebKitFormBoundaryVUmMyIm8h12a6NHt\n```\nrequest นี้คืออะไร',
+    options: [
+      'REST API call ไปที่ endpoint /api/actions เฉพาะ',
+      'การ submit Server Action — POST ไปที่ route ของหน้าเอง ระบุด้วย ID ใน header next-action',
+      'การ upload ไฟล์ที่ไม่เกี่ยวกับ Server Actions',
+      'response การ redirect ของ proxy',
+    ],
+    answer: 1,
+    explain: 'Server Actions คือ POST request ไปที่ route ที่ form ถูก define ไว้ ไม่ใช่ API แยก — header next-action แบก ID ของ action และ body แบบ multipart แบก field ของ form กับ reference ของ action',
+  },
+  {
+    q: '```ts\nexport async function updateProfile(formData: FormData) {\n  try {\n    await db.user.update(/* ... */)\n    redirect(\'/dashboard\')\n  } catch (err) {\n    return { error: \'failed\' }\n  }\n}\n```\nเกิดอะไรขึ้นเมื่อ Server Action นี้รันสำเร็จ',
+    options: [
+      'redirect ไป /dashboard ตามที่ตั้งใจ',
+      'redirect() throw ค่าพิเศษที่ catch block นี้ดักไว้ redirect เลยไม่เสร็จ และ UI รายงาน error ที่เข้าใจผิด',
+      'มัน throw TypeScript compile error',
+      'redirect() เป็น no-op ใน Server Actions',
+    ],
+    answer: 1,
+    explain: 'redirect() ทำงานด้วยการ throw ค่าที่กลไกของ Next.js เองจับที่ชั้นบนของ stack — try/catch ที่ห่อทั้ง action body ดักมันไว้ก่อน กลืน redirect ไปเงียบ ๆ',
+  },
+  {
+    q: 'ทำไม response ของ Server Action ถึงกลับมาเป็น RSC payload แทนที่จะเป็น JSON ธรรมดา',
+    options: [
+      'ไม่จริง — Server Actions คืน JSON เสมอ',
+      'เพราะ action กลับเข้า render pipeline เดียวกัน ทำให้มัน stream UI ที่อัปเดตกลับมาได้เหมือนตอน navigate',
+      'เพราะ JSON ไม่รองรับใน App Router',
+      'เฉพาะเมื่อเรียก revalidatePath เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'response ของ Server Action เป็น RSC payload จริง (content-type: text/x-component) — mutation กลับเข้า render pipeline เดียวกัน ซึ่งเป็นสิ่งที่ทำให้ revalidatePath/revalidateTag อัปเดต UI ที่เห็นได้โดยไม่ต้อง reload ทั้งหน้า',
+  },
+];
+
+<Quiz client:visible id="foundations-request-lifecycle" questions={quizLifecycleTh} />
+
+<ProgressTracker client:visible id="foundations-request-lifecycle" />

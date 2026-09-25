@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -104,8 +105,99 @@ export const diagramFileConventions = `flowchart LR
   Layout --> Page[page is the routable UI]
   Page --> URL[/dashboard is reachable]`;
 
+## The full special-files reference
+
+`page` and `layout` are the two you reach for daily, but the App Router reserves a much longer list of filenames, each verified here against the bundled Next.js docs (`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/`):
+
+| File | What it does | Status |
+| --- | --- | --- |
+| `page.tsx` | The UI for a segment; makes it publicly routable. | Stable |
+| `layout.tsx` | Shared wrapper that persists across sibling navigations; the root one must render `<html>`/`<body>`. | Stable |
+| `template.tsx` | Like a layout, but re-mounts a fresh instance on every navigation instead of persisting. | Stable |
+| `loading.tsx` | A `<Suspense>` fallback shown while the segment streams in. | Stable |
+| `error.tsx` | A Client Component error boundary for the segment. | Stable |
+| `not-found.tsx` | UI rendered when `notFound()` is called, or a segment doesn't match. | Stable |
+| `default.tsx` | Fallback UI for a [Parallel Routes](/nextjs/en/routing-and-navigation/parallel-and-intercepting-routes/) slot when Next.js can't recover its active state on a hard navigation. | Stable |
+| `global-error.tsx` | Root-level error boundary — the only one that can catch errors thrown by the root `layout`/`template` themselves. Must define its own `<html>`/`<body>`, and cannot export `metadata`. | Stable |
+| `forbidden.tsx` | Rendered when [`forbidden()`](/nextjs/en/production-and-ecosystem/authentication-patterns/) is called; Next.js returns a `403`. | Experimental |
+| `unauthorized.tsx` | Rendered when `unauthorized()` is called; Next.js returns a `401`. | Experimental |
+| `route.ts` | A Route Handler — `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS` — instead of a page. | Stable |
+| `proxy.ts` | Runs before a request completes on every matching route (the file Next.js 16 renamed from `middleware.ts`); see [Proxy and the Request Lifecycle](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/). | Stable |
+| `instrumentation.ts` | Exports an optional `register()` (runs once per server instance) and an optional `onRequestError()` for observability. Root-level only. | Stable |
+| `instrumentation-client.ts` | Client-side counterpart — runs before the app becomes interactive, for monitoring/analytics/polyfills. No required exports. | Stable |
+| `mdx-components.tsx` | Required to use `@next/mdx` with the App Router; exports a single `useMDXComponents()` function. | Stable |
+| `sitemap.ts` / `sitemap.xml` | Generates (or statically defines) `/sitemap.xml`. | Stable |
+| `robots.ts` / `robots.txt` | Generates (or statically defines) `/robots.txt`; the generated form is cached by default like any other Route Handler. | Stable |
+| `opengraph-image.tsx` / `twitter-image.tsx` | Generates a segment's social-sharing image with `ImageResponse`, or ships a static image file of the same name. | Stable |
+
+`forbidden.tsx` and `unauthorized.tsx` are the only two in this list still marked `experimental` in the bundled docs — everything else, including `global-error`, `instrumentation-client`, and the metadata file conventions, is stable in Next.js 16.3.
+
+## Nesting order
+
+The component hierarchy is fixed, and it is not the order the files sit in your editor's file tree — it's the order React nests them around your page, outermost to innermost:
+
+<Mermaid title="Component nesting order for one route segment" code={diagramNestingOrder} />
+
+export const diagramNestingOrder = `flowchart TD
+  Layout["layout.tsx (outermost)"] --> Template["template.tsx"]
+  Template --> Error["error.tsx (error boundary)"]
+  Error --> Loading["loading.tsx (Suspense boundary)"]
+  Loading --> NotFound["not-found.tsx"]
+  NotFound --> Page["page.tsx (innermost)"]`;
+
+This is stated directly, file by file, in the bundled docs: `layout.js` "wraps `template.js`, `error.js`, `loading.js`, `not-found.js`, and `page.js`"; `template.js` "renders between `layout.js` and `error.js`... wraps `error.js`, `loading.js`, `not-found.js`, and `page.js`, but does **not** wrap the `layout.js`"; `error.js` "wraps `loading.js`, `not-found.js`, `page.js`, and nested `layout.js` files... does **not** wrap the `layout.js` or `template.js` above it"; `loading.js` "wraps `not-found.js`, `page.js`, and nested `layout.js` files in a `<Suspense>` boundary... does **not** wrap the `layout.js`, `template.js`, or `error.js`"; and `page.js` "is the innermost file convention." One consequence worth internalizing: because `error.js` sits *inside* `layout.js` in this order, an error thrown by the layout itself is never caught by that segment's own `error.tsx` — only `global-error.tsx` (or a parent segment's `error.tsx`) can catch it.
+
+## Mental Model
+
+A route segment is not "one file" — it's a fixed nesting of up to six optional wrapper components around your `page`, in an order the framework enforces rather than one your file tree implies. Reading a folder means asking, for each reserved name present: what layer of that nesting does it occupy, and what does it *not* reach — a `layout` never sees the errors of its own `template`/`error` children above it, and a `loading` boundary never covers the `layout` it hangs from.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+| --- | --- | --- |
+| Reserved filenames instead of a router config | The folder tree *is* the routing table — nothing else to keep in sync | You must memorize which names are meaningful; a typo (`Page.tsx`) is just an inert file |
+| Fixed nesting order (layout → template → error → loading → not-found → page) | Predictable, composable error/loading boundaries per segment | A layout's own errors are invisible to its segment's `error.tsx` — easy to assume otherwise |
+| `global-error.tsx` for root-level failures | The only way to catch an error thrown by the root layout itself | Must duplicate its own `<html>`/`<body>` and cannot use `metadata` |
+| `forbidden.tsx` / `unauthorized.tsx` | Purpose-built 403/401 UI tied to `forbidden()`/`unauthorized()` | Still `experimental` — API surface can still change |
+
+## Common Misconceptions
+
+- **"`error.tsx` catches errors thrown by its own `layout.tsx`."** It does not — in the nesting order, `error.tsx` sits *inside* `layout.tsx`, so a layout's own render errors skip past it. Only `global-error.tsx` (root) or a parent segment's `error.tsx` can catch a layout's errors.
+- **"Any reserved filename works anywhere, at any depth."** Some are root-only (`instrumentation.ts`, `instrumentation-client.ts`), and some depend on other conventions being in place (`mdx-components.tsx` only matters with `@next/mdx` installed).
+- **"`forbidden.tsx`/`unauthorized.tsx` are as stable as `error.tsx`."** They're both still marked `experimental` in the bundled docs, unlike the rest of this table.
+- **"A folder with files in it is automatically a route."** Only `page.tsx` (or `route.ts`) makes a segment reachable — a folder that only holds a `layout.tsx`, or plain organizational subfolders, never responds to a URL on its own.
+
+## Reading AI-generated code
+
+When a generated snippet claims a file "just works" because of its name, check for these before trusting it:
+
+- Is `error.tsx` expected to catch a failure thrown directly inside the `layout.tsx` in the *same* segment? It can't — that requires `global-error.tsx` or a parent segment's `error.tsx`.
+- Is a root-only convention (`instrumentation.ts`, `instrumentation-client.ts`) placed inside a nested route folder instead of the project root (or `src/`)?
+- Does `global-error.tsx` skip `'use client'`, or try to export `metadata`? Both are required/forbidden respectively, and the file must render its own `<html>`/`<body>`.
+- Is `forbidden.tsx`/`unauthorized.tsx` presented as a long-stable API, when the bundled docs still mark both `experimental`?
+- Does a `route.ts` sit next to a `page.tsx` in the very same segment, expecting both to work? A segment resolves to one or the other, not both, for the same path.
+
+<SpotTheBug code={`// app/dashboard/layout.tsx
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const config = getDashboardConfig() // throws if the config file is missing
+  return (
+    <section>
+      <nav>{config.title}</nav>
+      {children}
+    </section>
+  )
+}
+
+// app/dashboard/error.tsx
+'use client'
+export default function DashboardError({ error }: { error: Error }) {
+  return <p>Dashboard failed to load: {error.message}</p>
+}`}>
+This looks like a matched pair, but `error.tsx` sits *inside* `layout.tsx` in the nesting order — it wraps `page.tsx` (and any nested `layout.tsx`), not the `layout.tsx` in its own segment. If `getDashboardConfig()` throws while `DashboardLayout` itself renders, `app/dashboard/error.tsx` never sees it; the error propagates up to the nearest *parent* segment's `error.tsx`, or to the root's `global-error.tsx` if there is no parent boundary. The fix is either to move the risky call into `page.tsx` (which this `error.tsx` does cover), or to rely on the parent segment's error boundary and design for that intentionally.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Folders make segments, reserved filenames give them behavior, `page` (or `route`) is what makes a segment reachable at all, and the root layout is the one place `<html>` and `<body>` live.
+Folders make segments, reserved filenames give them behavior in a fixed nesting order (layout → template → error → loading → not-found → page), `page` (or `route`) is what makes a segment reachable at all, and only `global-error.tsx` — never a segment's own `error.tsx` — can catch its own layout's failures.
 </Callout>
 
 export const quizFileConventions = [
@@ -113,21 +205,58 @@ export const quizFileConventions = [
     q: 'Which file makes a route segment publicly reachable at a URL?',
     options: ['layout.tsx', 'page.tsx', 'template.tsx', 'loading.tsx'],
     answer: 1,
+    explain: 'A folder without a page.tsx (or a route.ts) is never reachable as a URL, no matter what other special files it contains.',
   },
   {
     q: 'What is special about error.tsx?',
     options: ['It must be a Server Component', 'It must be a Client Component', 'It replaces the root layout', 'It cannot import anything'],
     answer: 1,
+    explain: 'Error boundaries rely on client-side React, so error.tsx must start with "use client".',
   },
   {
     q: 'What lives only in the root layout?',
     options: ['The page component', 'The <html> and <body> tags', 'Route Handlers', 'The loading fallback'],
     answer: 1,
+    explain: 'Next.js does not emit <html>/<body> for you — only the root layout.tsx renders them (global-error.tsx also must, separately, when it activates).',
   },
   {
     q: 'A folder that contains no page.tsx and no route.ts is:',
     options: ['A 404 route', 'Not routable, only for organization', 'Automatically an API endpoint', 'The same as a layout'],
     answer: 1,
+    explain: 'A folder is only inert organization until either page.tsx or route.ts gives it something to respond with.',
+  },
+  {
+    q: 'In the nesting order layout → template → error → loading → not-found → page, which statement is correct?',
+    options: [
+      "A segment's error.tsx wraps its own layout.tsx, so it catches the layout's errors too",
+      "error.tsx sits inside layout.tsx, so a layout's own render errors are NOT caught by that segment's error.tsx",
+      'template.tsx wraps layout.tsx',
+      'page.tsx is the outermost component in the nesting',
+    ],
+    answer: 1,
+    explain: "The bundled docs state layout.js wraps template.js, error.js, loading.js, not-found.js, and page.js — meaning error.tsx is nested INSIDE layout.tsx and never sees that layout's own errors. Only global-error.tsx (or a parent segment's error.tsx) can.",
+  },
+  {
+    q: '```tsx\n// app/global-error.tsx\nexport default function GlobalError({ error }: { error: Error }) {\n  return <p>Something went wrong: {error.message}</p>\n}\n```\nWhat is wrong with this file as written?',
+    options: [
+      'Nothing — it will work exactly as shown',
+      "It's missing 'use client' and its own <html>/<body> tags, both required for global-error.tsx",
+      'global-error.tsx cannot accept an error prop',
+      'It should be named global-error.js instead of .tsx',
+    ],
+    answer: 1,
+    explain: "global-error.tsx replaces the root layout when active, so it must render its own <html> and <body>, and — like every error boundary — it must be a Client Component ('use client').",
+  },
+  {
+    q: 'Which two file conventions does the bundled Next.js 16.3 documentation still mark `experimental`?',
+    options: [
+      'layout.tsx and page.tsx',
+      'forbidden.tsx and unauthorized.tsx',
+      'route.ts and proxy.ts',
+      'sitemap.ts and robots.ts',
+    ],
+    answer: 1,
+    explain: "forbidden.js and unauthorized.js both carry version: experimental in their frontmatter in node_modules/next/dist/docs — every other file convention in this lesson's table is stable.",
   },
 ];
 

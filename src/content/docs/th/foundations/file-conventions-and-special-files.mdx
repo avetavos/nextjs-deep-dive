@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียหลักในหนึ่งประโยค
 
@@ -104,8 +105,99 @@ export const diagramFileConventions = `flowchart LR
   Layout --> Page[page is the routable UI]
   Page --> URL[/dashboard is reachable]`;
 
+## ตารางอ้างอิง special files แบบเต็ม
+
+`page` กับ `layout` คือสองอันที่คุณใช้ทุกวัน แต่ App Router จองชื่อไฟล์ไว้อีกยาวกว่านั้นมาก แต่ละอันตรวจสอบแล้วกับ Next.js docs ที่ bundle มา (`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/`) —
+
+| ไฟล์ | ทำอะไร | สถานะ |
+| --- | --- | --- |
+| `page.tsx` | UI ของ segment ทำให้มัน route ได้แบบ public | Stable |
+| `layout.tsx` | wrapper ที่ใช้ร่วมกัน คงอยู่ข้าม sibling navigation อันที่เป็น root ต้อง render `<html>`/`<body>` | Stable |
+| `template.tsx` | เหมือน layout แต่ re-mount instance ใหม่ทุกครั้งที่ navigate แทนที่จะคงอยู่ | Stable |
+| `loading.tsx` | `<Suspense>` fallback ที่โชว์ระหว่าง segment กำลัง stream เข้ามา | Stable |
+| `error.tsx` | error boundary แบบ Client Component ของ segment | Stable |
+| `not-found.tsx` | UI ที่ render เมื่อ `notFound()` ถูกเรียก หรือ segment ไม่ match | Stable |
+| `default.tsx` | UI สำรองของ slot ใน [Parallel Routes](/nextjs/th/routing-and-navigation/parallel-and-intercepting-routes/) เมื่อ Next.js กู้ active state คืนไม่ได้ตอน hard navigation | Stable |
+| `global-error.tsx` | error boundary ระดับ root — ตัวเดียวที่จับ error จาก root `layout`/`template` เองได้ ต้อง define `<html>`/`<body>` เอง และ export `metadata` ไม่ได้ | Stable |
+| `forbidden.tsx` | render เมื่อ [`forbidden()`](/nextjs/th/production-and-ecosystem/authentication-patterns/) ถูกเรียก Next.js คืน `403` | Experimental |
+| `unauthorized.tsx` | render เมื่อ `unauthorized()` ถูกเรียก Next.js คืน `401` | Experimental |
+| `route.ts` | Route Handler — `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS` — แทนที่จะเป็น page | Stable |
+| `proxy.ts` | รันก่อน request จะเสร็จ บนทุก route ที่ match (ไฟล์ที่ Next.js 16 เปลี่ยนชื่อจาก `middleware.ts`) ดู [Proxy and the Request Lifecycle](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/) | Stable |
+| `instrumentation.ts` | export `register()` (optional, รันครั้งเดียวต่อ server instance) และ `onRequestError()` (optional) สำหรับ observability อยู่ที่ root เท่านั้น | Stable |
+| `instrumentation-client.ts` | คู่หูฝั่ง client — รันก่อน app จะ interactive สำหรับ monitoring/analytics/polyfill ไม่ต้อง export อะไรเป็นพิเศษ | Stable |
+| `mdx-components.tsx` | จำเป็นสำหรับใช้ `@next/mdx` กับ App Router export ฟังก์ชัน `useMDXComponents()` เดียว | Stable |
+| `sitemap.ts` / `sitemap.xml` | generate (หรือ define แบบ static) `/sitemap.xml` | Stable |
+| `robots.ts` / `robots.txt` | generate (หรือ define แบบ static) `/robots.txt` แบบ generate ถูก cache โดย default เหมือน Route Handler ทั่วไป | Stable |
+| `opengraph-image.tsx` / `twitter-image.tsx` | generate รูปสำหรับแชร์บน social ของ segment ด้วย `ImageResponse` หรือใส่ไฟล์รูป static ชื่อเดียวกัน | Stable |
+
+`forbidden.tsx` กับ `unauthorized.tsx` เป็นสองตัวเดียวในตารางนี้ที่ยังมาร์ก `experimental` ใน docs ที่ bundle มา — ที่เหลือทั้งหมด รวมถึง `global-error`, `instrumentation-client` และ metadata file conventions stable แล้วใน Next.js 16.3
+
+## ลำดับการซ้อน
+
+component hierarchy ถูกกำหนดตายตัว และมันไม่ใช่ลำดับที่ไฟล์วางอยู่ใน file tree ของ editor — มันคือลำดับที่ React ซ้อนมันรอบ page ของคุณ จากนอกสุดไปในสุด —
+
+<Mermaid title="ลำดับการซ้อน component สำหรับหนึ่ง route segment" code={diagramNestingOrder} />
+
+export const diagramNestingOrder = `flowchart TD
+  Layout["layout.tsx (outermost)"] --> Template["template.tsx"]
+  Template --> Error["error.tsx (error boundary)"]
+  Error --> Loading["loading.tsx (Suspense boundary)"]
+  Loading --> NotFound["not-found.tsx"]
+  NotFound --> Page["page.tsx (innermost)"]`;
+
+สิ่งนี้ระบุไว้ตรง ๆ ทีละไฟล์ใน docs ที่ bundle มา — `layout.js` "wraps `template.js`, `error.js`, `loading.js`, `not-found.js`, and `page.js`"; `template.js` "renders between `layout.js` and `error.js`... wraps `error.js`, `loading.js`, `not-found.js`, and `page.js`, but does **not** wrap the `layout.js`"; `error.js` "wraps `loading.js`, `not-found.js`, `page.js`, and nested `layout.js` files... does **not** wrap the `layout.js` or `template.js` above it"; `loading.js` "wraps `not-found.js`, `page.js`, and nested `layout.js` files in a `<Suspense>` boundary... does **not** wrap the `layout.js`, `template.js`, or `error.js`"; และ `page.js` "is the innermost file convention" ผลที่ตามมาที่ควรจำไว้ — เพราะ `error.js` อยู่ *ข้างใน* `layout.js` ในลำดับนี้ error ที่ throw จาก layout เองจึงไม่มีวันถูกจับโดย `error.tsx` ของ segment เดียวกัน — มีแค่ `global-error.tsx` (หรือ `error.tsx` ของ parent segment) เท่านั้นที่จับได้
+
+## Mental Model
+
+route segment หนึ่งไม่ใช่ "ไฟล์เดียว" — มันคือการซ้อน wrapper component ที่ optional สูงสุดหกชั้นรอบ `page` ของคุณ ตามลำดับที่ framework บังคับไว้ ไม่ใช่ลำดับที่ file tree ของคุณสื่อ การอ่านโฟลเดอร์คือการถามสำหรับแต่ละชื่อที่จองไว้ที่มีอยู่ — มันอยู่ชั้นไหนของการซ้อนนั้น และมันเข้าไม่ถึงอะไรบ้าง — `layout` ไม่เคยเห็น error ของ `template`/`error` ที่เป็น child ของมันเองข้างบน และ `loading` boundary ไม่เคยครอบ `layout` ที่มันแขวนอยู่
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| ชื่อไฟล์ที่จองไว้แทน router config | file tree *คือ* routing table เลย ไม่มีอะไรอื่นต้อง sync | ต้องจำว่าชื่อไหนมีความหมาย พิมพ์ผิด (`Page.tsx`) กลายเป็นไฟล์เฉย ๆ |
+| ลำดับการซ้อนตายตัว (layout → template → error → loading → not-found → page) | error/loading boundary ต่อ segment คาดเดาได้ ประกอบกันได้ | error ของ layout เองมองไม่เห็นจาก error.tsx ของ segment ตัวเอง — สมมติผิดง่าย |
+| `global-error.tsx` สำหรับ failure ระดับ root | ทางเดียวที่จับ error ที่ throw จาก root layout เองได้ | ต้อง duplicate `<html>`/`<body>` เองและใช้ `metadata` ไม่ได้ |
+| `forbidden.tsx` / `unauthorized.tsx` | UI 403/401 ที่ทำมาเฉพาะ ผูกกับ `forbidden()`/`unauthorized()` | ยัง `experimental` — API อาจเปลี่ยนได้อีก |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`error.tsx` จับ error ที่ throw จาก `layout.tsx` ของตัวเองได้"** จับไม่ได้ — ในลำดับการซ้อน `error.tsx` อยู่ *ข้างใน* `layout.tsx` error จาก render ของ layout เองจึงข้ามมันไป มีแค่ `global-error.tsx` (root) หรือ `error.tsx` ของ parent segment เท่านั้นที่จับ error ของ layout ได้
+- **"ชื่อไฟล์ที่จองไว้ใช้ได้ทุกที่ ทุกความลึก"** บางตัวอยู่ที่ root เท่านั้น (`instrumentation.ts`, `instrumentation-client.ts`) และบางตัวต้องพึ่ง convention อื่นที่ตั้งไว้แล้ว (`mdx-components.tsx` มีความหมายก็ต่อเมื่อติดตั้ง `@next/mdx`)
+- **"`forbidden.tsx`/`unauthorized.tsx` stable เท่า `error.tsx`"** ทั้งคู่ยังมาร์ก `experimental` ใน docs ที่ bundle มา ต่างจากที่เหลือในตารางนี้
+- **"โฟลเดอร์ที่มีไฟล์อยู่ข้างในกลายเป็น route อัตโนมัติ"** มีแค่ `page.tsx` (หรือ `route.ts`) เท่านั้นที่ทำให้ segment เข้าถึงได้ — โฟลเดอร์ที่มีแค่ `layout.tsx` หรือ subfolder จัดระเบียบล้วน ๆ ไม่ตอบสนองต่อ URL เอง
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลาโค้ดที่ generate มาอ้างว่าไฟล์ "ทำงานเองได้" เพราะชื่อของมัน เช็คสิ่งเหล่านี้ก่อนเชื่อ —
+
+- คาดหวังให้ `error.tsx` จับ failure ที่ throw ตรงจาก `layout.tsx` ใน segment *เดียวกัน* หรือเปล่า? จับไม่ได้ — ต้องใช้ `global-error.tsx` หรือ `error.tsx` ของ parent segment
+- convention ที่เป็น root-only (`instrumentation.ts`, `instrumentation-client.ts`) ถูกวางไว้ในโฟลเดอร์ route ที่ nest ลึกแทนที่จะเป็น root โปรเจกต์ (หรือ `src/`) หรือเปล่า?
+- `global-error.tsx` ข้าม `'use client'` หรือพยายาม export `metadata` หรือเปล่า? ทั้งสองอย่างจำเป็น/ห้ามตามลำดับ และไฟล์ต้อง render `<html>`/`<body>` เอง
+- `forbidden.tsx`/`unauthorized.tsx` ถูกนำเสนอเหมือนเป็น API ที่ stable มานาน ทั้งที่ docs ที่ bundle มายังมาร์กทั้งคู่ `experimental` หรือเปล่า?
+- `route.ts` วางอยู่ข้าง ๆ `page.tsx` ใน segment เดียวกัน โดยคาดหวังให้ทั้งคู่ทำงานหรือเปล่า? segment หนึ่งจะ resolve ไปที่อันใดอันหนึ่ง ไม่ใช่ทั้งคู่ สำหรับ path เดียวกัน
+
+<SpotTheBug code={`// app/dashboard/layout.tsx
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const config = getDashboardConfig() // throws if the config file is missing
+  return (
+    <section>
+      <nav>{config.title}</nav>
+      {children}
+    </section>
+  )
+}
+
+// app/dashboard/error.tsx
+'use client'
+export default function DashboardError({ error }: { error: Error }) {
+  return <p>Dashboard failed to load: {error.message}</p>
+}`}>
+ดูเหมือนเป็นคู่ที่จับกันพอดี แต่ `error.tsx` อยู่ *ข้างใน* `layout.tsx` ในลำดับการซ้อน — มันครอบ `page.tsx` (และ `layout.tsx` ที่ nest ต่อ) ไม่ใช่ครอบ `layout.tsx` ใน segment ของตัวเอง ถ้า `getDashboardConfig()` throw ตอน `DashboardLayout` เองกำลัง render `app/dashboard/error.tsx` จะไม่เห็น error นี้เลย — มันจะลอยขึ้นไปหา `error.tsx` ของ *parent* segment ที่ใกล้ที่สุด หรือไปที่ `global-error.tsx` ของ root ถ้าไม่มี boundary ของ parent เลย ทางแก้คือย้าย call ที่เสี่ยงไปไว้ใน `page.tsx` (ซึ่ง `error.tsx` นี้ครอบอยู่จริง) หรือพึ่งพา error boundary ของ parent segment โดยตั้งใจออกแบบให้เป็นแบบนั้น
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-โฟลเดอร์สร้าง segment ชื่อไฟล์ที่จองไว้ให้พฤติกรรม `page` (หรือ `route`) คือสิ่งที่ทำให้ segment เข้าถึงได้ และ root layout คือที่เดียวที่ `<html>` และ `<body>` อยู่
+โฟลเดอร์สร้าง segment ชื่อไฟล์ที่จองไว้ให้พฤติกรรมตามลำดับการซ้อนตายตัว (layout → template → error → loading → not-found → page) `page` (หรือ `route`) คือสิ่งที่ทำให้ segment เข้าถึงได้ และมีแค่ `global-error.tsx` เท่านั้น — ไม่ใช่ `error.tsx` ของ segment เอง — ที่จับ failure ของ layout ตัวเองได้
 </Callout>
 
 export const quizFileConventions = [
@@ -113,21 +205,58 @@ export const quizFileConventions = [
     q: 'ไฟล์ไหนทำให้ route segment เข้าถึงได้แบบ public ที่ URL',
     options: ['layout.tsx', 'page.tsx', 'template.tsx', 'loading.tsx'],
     answer: 1,
+    explain: 'โฟลเดอร์ที่ไม่มี page.tsx (หรือ route.ts) ไม่มีวันเข้าถึงเป็น URL ได้ ไม่ว่าจะมี special file อื่นอะไรอยู่ข้างในก็ตาม',
   },
   {
     q: 'อะไรคือสิ่งพิเศษของ error.tsx',
     options: ['ต้องเป็น Server Component', 'ต้องเป็น Client Component', 'แทนที่ root layout', 'import อะไรไม่ได้เลย'],
     answer: 1,
+    explain: 'error boundary พึ่งพา React ฝั่ง client ดังนั้น error.tsx ต้องขึ้นต้นด้วย "use client"',
   },
   {
     q: 'อะไรที่อยู่เฉพาะใน root layout เท่านั้น',
     options: ['component page', 'tag <html> และ <body>', 'Route Handlers', 'loading fallback'],
     answer: 1,
+    explain: 'Next.js ไม่ปล่อย <html>/<body> ให้เอง — มีแค่ root layout.tsx เท่านั้นที่ render มัน (global-error.tsx ก็ต้อง render เองแยกต่างหากตอน activate)',
   },
   {
     q: 'โฟลเดอร์ที่ไม่มีทั้ง page.tsx และ route.ts คือ:',
     options: ['route แบบ 404', 'route ไม่ได้ ใช้จัดระเบียบเท่านั้น', 'กลายเป็น API endpoint อัตโนมัติ', 'เหมือนกับ layout'],
     answer: 1,
+    explain: 'โฟลเดอร์เป็นแค่การจัดระเบียบเฉย ๆ จนกว่า page.tsx หรือ route.ts จะให้มันมีอะไรให้ตอบสนอง',
+  },
+  {
+    q: 'ในลำดับการซ้อน layout → template → error → loading → not-found → page ข้อไหนถูกต้อง',
+    options: [
+      'error.tsx ของ segment ครอบ layout.tsx ของตัวเอง จึงจับ error ของ layout ได้ด้วย',
+      'error.tsx อยู่ข้างใน layout.tsx ดังนั้น error จาก render ของ layout เอง ไม่ถูกจับโดย error.tsx ของ segment นั้น',
+      'template.tsx ครอบ layout.tsx',
+      'page.tsx เป็น component นอกสุดในลำดับการซ้อน',
+    ],
+    answer: 1,
+    explain: 'docs ที่ bundle มาระบุว่า layout.js wraps template.js, error.js, loading.js, not-found.js, and page.js — หมายความว่า error.tsx ถูกซ้อนอยู่ข้างใน layout.tsx และไม่มีวันเห็น error ของ layout นั้นเอง มีแค่ global-error.tsx (หรือ error.tsx ของ parent segment) เท่านั้นที่เห็น',
+  },
+  {
+    q: '```tsx\n// app/global-error.tsx\nexport default function GlobalError({ error }: { error: Error }) {\n  return <p>Something went wrong: {error.message}</p>\n}\n```\nไฟล์นี้ผิดตรงไหน',
+    options: [
+      'ไม่มีอะไรผิด — มันจะทำงานตามที่เขียนพอดี',
+      "ขาด 'use client' และ tag <html>/<body> ของตัวเอง ทั้งสองอย่างจำเป็นสำหรับ global-error.tsx",
+      'global-error.tsx รับ prop error ไม่ได้',
+      'ต้องตั้งชื่อ global-error.js แทน .tsx',
+    ],
+    answer: 1,
+    explain: 'global-error.tsx แทนที่ root layout ตอน activate มันจึงต้อง render <html> กับ <body> ของตัวเอง และเหมือน error boundary ทุกตัว มันต้องเป็น Client Component (\'use client\')',
+  },
+  {
+    q: 'Next.js docs ที่ bundle มากับ 16.3 ยังมาร์ก file convention คู่ไหนว่า `experimental`',
+    options: [
+      'layout.tsx และ page.tsx',
+      'forbidden.tsx และ unauthorized.tsx',
+      'route.ts และ proxy.ts',
+      'sitemap.ts และ robots.ts',
+    ],
+    answer: 1,
+    explain: 'forbidden.js และ unauthorized.js ทั้งคู่มี version: experimental ใน frontmatter ที่ node_modules/next/dist/docs — file convention อื่นในตารางของบทนี้ stable หมดแล้ว',
   },
 ];
 
