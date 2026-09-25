@@ -26,7 +26,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     layout กับ nested route, dynamic segment, route group, parallel & intercepting route, loading/error UI [route →](/nextjs/th/routing-and-navigation/pages-layouts-and-nested-routing/)
   </Card>
   <Card title="Data Fetching & Caching" icon="random">
-    การ fetch ใน Server Components และ caching 4 ชั้น — Request Memoization, Data Cache, Full Route Cache, Router Cache — พร้อม revalidation [cache →](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/)
+    การ fetch ใน Server Components และ caching 4 ชั้น — Request Memoization, Data Cache, Full Route Cache, Client Cache (ชื่อเดิม Router Cache) — พร้อม revalidation [cache →](/nextjs/th/data-fetching-and-caching/the-four-caching-layers/)
   </Card>
   <Card title="Rendering" icon="seti:config">
     static เทียบกับ dynamic rendering, streaming ด้วย Suspense และ Partial Prerendering ผ่าน cacheComponents [render →](/nextjs/th/rendering/static-and-dynamic-rendering/)
@@ -38,7 +38,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Image, Font กับ Script component, Metadata API, bundle analysis และ Turbopack [optimize →](/nextjs/th/optimization/images-and-fonts/)
   </Card>
   <Card title="Production & Ecosystem" icon="puzzle">
-    middleware, pattern การทำ auth, การตั้งค่า environment และการ deploy นอกเหนือจาก Vercel [ขึ้น production →](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)
+    proxy (ชื่อใหม่ของ middleware ใน Next.js 16), pattern การทำ auth, การตั้งค่า environment และการ deploy นอกเหนือจาก Vercel [ขึ้น production →](/nextjs/th/production-and-ecosystem/middleware-and-the-request-lifecycle/)
   </Card>
 </CardGrid>
 
@@ -52,7 +52,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     เขียนตามพฤติกรรมปัจจุบันของ Next.js และตรวจสอบกับ official docs ผ่าน context7 — รวมถึงการเปลี่ยนแปลงใหญ่ที่ tutorial ส่วนใหญ่พลาด คือ `fetch` และ GET Route Handlers ไม่ถูก cache โดย default อีกต่อไป และการ cache ตอนนี้ต้อง opt-in ผ่าน `use cache` / `cacheComponents` ตรวจสอบกับ Next.js 16.3.x และ React 19.x (Node.js 20.9+) เมื่อ 2026-09-25
   </Card>
   <Card title="cache 4 ชั้น ไม่ใช่ชั้นเดียว" icon="approve-check">
-    Request Memoization, Data Cache, Full Route Cache และ Router Cache ฝั่ง client แต่ละอันอยู่คนละชั้น มี lifetime และวิธี invalidate ต่างกัน — เป็นส่วนที่คนเข้าใจผิดมากที่สุดใน Next.js สอนทีละชั้น
+    Request Memoization, Data Cache, Full Route Cache และ Client Cache ฝั่ง client แต่ละอันอยู่คนละชั้น มี lifetime และวิธี invalidate ต่างกัน — เป็นส่วนที่คนเข้าใจผิดมากที่สุดใน Next.js สอนทีละชั้น
   </Card>
   <Card title="ไดอะแกรมที่อธิบายได้" icon="puzzle">
     RSC request lifecycle, caching 4 ชั้น, flow ของ streaming/Suspense และ round-trip ของ Server Action เป็นไดอะแกรม Mermaid ที่รองรับธีม สองภาษา (English / ไทย) พร้อมบันทึกความคืบหน้า quiz

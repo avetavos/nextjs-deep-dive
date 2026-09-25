@@ -32,7 +32,7 @@ export default function Nav() {
 }
 ```
 
-route ที่ prefetch แล้วจะเข้าไปอยู่ใน client Router Cache การ navigate จึงอาจถูก serve ทันทีจาก RSC payload ที่ cache ไว้แทนที่จะยิง request ใหม่ เรื่อง Router Cache เต็ม ๆ อยู่ใน module Data Fetching
+route ที่ prefetch แล้วจะเข้าไปอยู่ใน Client Cache การ navigate จึงอาจถูก serve ทันทีจาก RSC payload ที่ cache ไว้แทนที่จะยิง request ใหม่ เรื่อง Client Cache เต็ม ๆ อยู่ใน module Data Fetching
 
 ## navigation แบบ programmatic ด้วย useRouter
 
@@ -113,7 +113,7 @@ export const quizLinkingTh = [
     q: 'Link ทำอะไรอัตโนมัติกับ route ที่อยู่ใน viewport',
     options: [
       'reload หน้าทั้งหน้า',
-      'prefetch เข้า Router Cache',
+      'prefetch เข้า Client Cache',
       'ปิด client-side navigation',
       'redirect route พวกนั้นบน server',
     ],

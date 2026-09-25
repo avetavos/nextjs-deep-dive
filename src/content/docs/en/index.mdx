@@ -26,7 +26,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Layouts and nested routes, dynamic segments, route groups, parallel & intercepting routes, loading/error UI. [Route →](/nextjs/en/routing-and-navigation/pages-layouts-and-nested-routing/)
   </Card>
   <Card title="Data Fetching & Caching" icon="random">
-    Fetching in Server Components and the four caching layers — Request Memoization, Data Cache, Full Route Cache, Router Cache — plus revalidation. [Cache →](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/)
+    Fetching in Server Components and the four caching layers — Request Memoization, Data Cache, Full Route Cache, Client Cache (formerly Router Cache) — plus revalidation. [Cache →](/nextjs/en/data-fetching-and-caching/the-four-caching-layers/)
   </Card>
   <Card title="Rendering" icon="seti:config">
     Static vs. dynamic rendering, streaming with Suspense, and Partial Prerendering via cacheComponents. [Render →](/nextjs/en/rendering/static-and-dynamic-rendering/)
@@ -38,7 +38,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Image, Font and Script components, the Metadata API, bundle analysis, and Turbopack. [Optimize →](/nextjs/en/optimization/images-and-fonts/)
   </Card>
   <Card title="Production & Ecosystem" icon="puzzle">
-    Middleware, auth patterns, environment config, and deployment beyond Vercel. [Ship it →](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)
+    Proxy (the Next.js 16 name for middleware), auth patterns, environment config, and deployment beyond Vercel. [Ship it →](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/)
   </Card>
 </CardGrid>
 
@@ -52,7 +52,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Written against current Next.js and checked against the official docs via context7 — including the big shift most tutorials miss: `fetch` and GET Route Handlers are no longer cached by default, and caching is now opt-in via `use cache` / `cacheComponents`. Verified against Next.js 16.3.x and React 19.x (Node.js 20.9+) on 2026-09-25.
   </Card>
   <Card title="Four caches, not one" icon="approve-check">
-    Request Memoization, the Data Cache, the Full Route Cache, and the client Router Cache each live at a different layer with different lifetimes and invalidation — the single most misunderstood part of Next.js, taught layer by layer.
+    Request Memoization, the Data Cache, the Full Route Cache, and the Client Cache each live at a different layer with different lifetimes and invalidation — the single most misunderstood part of Next.js, taught layer by layer.
   </Card>
   <Card title="Diagrams that explain" icon="puzzle">
     The RSC request lifecycle, the four caching layers, the streaming/Suspense flow, and the Server Action round-trip as theme-aware Mermaid diagrams. Bilingual (English / ไทย) with saved quiz progress.

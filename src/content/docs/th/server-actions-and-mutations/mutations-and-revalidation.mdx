@@ -79,7 +79,7 @@ export async function POST() {
 
 ## Client cache ถูก refresh อย่างไร
 
-ส่วนนี้โยงกลับไปที่ caching module ฝั่ง server การ revalidate จะล้าง entry ใน Data Cache ของ fetch ที่ได้รับผลกระทบ ฝั่ง client response ของ Server Action ยัง refresh Router Cache ของ route ปัจจุบันด้วย segment ที่ render ไปแล้วจึงถูกแทนด้วย output ใหม่จาก server ผู้ใช้เห็นข้อมูลใหม่โดยไม่ต้อง hard reload cache ทั้งสองตัวจึงคงความ consistent
+ส่วนนี้โยงกลับไปที่ caching module ฝั่ง server การ revalidate จะล้าง entry ใน Data Cache ของ fetch ที่ได้รับผลกระทบ ฝั่ง client response ของ Server Action ยัง refresh Client Cache ของ route ปัจจุบันด้วย segment ที่ render ไปแล้วจึงถูกแทนด้วย output ใหม่จาก server ผู้ใช้เห็นข้อมูลใหม่โดยไม่ต้อง hard reload cache ทั้งสองตัวจึงคงความ consistent
 
 <Mermaid title="flow ของ mutation และ revalidation" code={diagramSa3Th} />
 
@@ -88,14 +88,14 @@ graph TD
   A["Action validates input"] --> B["Writes to the database"]
   B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
-  C --> E["Router Cache refreshed"]
+  C --> E["Client Cache refreshed"]
   D --> F["UI shows fresh data"]
   E --> F
   B --> G["Optional redirect after revalidate"]
 `;
 
 <Callout title="สรุปในหนึ่งบรรทัด">
-validate, write แล้ว `updateTag`/`revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Router Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
+validate, write แล้ว `updateTag`/`revalidateTag`/`revalidatePath` เพื่อล้าง Data Cache และ refresh Client Cache นี่คือสิ่งที่ทำให้ UI สะท้อน mutation โดยไม่ต้อง reload เอง
 </Callout>
 
 export const quizSa3Th = [
@@ -133,7 +133,7 @@ export const quizSa3Th = [
     q: 'response ของ action refresh cache ฝั่ง client ตัวไหน',
     options: [
       'image cache ของ browser',
-      'Router Cache ของ route ปัจจุบัน',
+      'Client Cache ของ route ปัจจุบัน',
       'localStorage เท่านั้น',
       'cache ของ service worker',
     ],

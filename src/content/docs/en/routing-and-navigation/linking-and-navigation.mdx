@@ -32,7 +32,7 @@ export default function Nav() {
 }
 ```
 
-Prefetched routes land in the client Router Cache, so a navigation may be served instantly from a cached RSC payload instead of a fresh request. The Router Cache is covered fully in the Data Fetching module.
+Prefetched routes land in the Client Cache, so a navigation may be served instantly from a cached RSC payload instead of a fresh request. The Client Cache is covered fully in the Data Fetching module.
 
 ## Programmatic navigation with useRouter
 
@@ -113,7 +113,7 @@ export const quizLinkingEn = [
     q: 'What does Link do automatically for routes in the viewport?',
     options: [
       'It reloads the whole page',
-      'It prefetches them into the Router Cache',
+      'It prefetches them into the Client Cache',
       'It disables client-side navigation',
       'It redirects them on the server',
     ],

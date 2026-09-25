@@ -79,7 +79,7 @@ export async function POST() {
 
 ## How the client caches get refreshed
 
-This ties back to the caching module. On the server, revalidation clears the Data Cache entry for the affected fetch. On the client, the Server Action response also refreshes the Router Cache for the current route, so the already-rendered segments are replaced with fresh server output. The user sees the new data without a hard reload — the two caches stay consistent.
+This ties back to the caching module. On the server, revalidation clears the Data Cache entry for the affected fetch. On the client, the Server Action response also refreshes the Client Cache for the current route, so the already-rendered segments are replaced with fresh server output. The user sees the new data without a hard reload — the two caches stay consistent.
 
 <Mermaid title="The mutation and revalidation flow" code={diagramSa3En} />
 
@@ -88,14 +88,14 @@ graph TD
   A["Action validates input"] --> B["Writes to the database"]
   B --> C["updateTag, revalidateTag, or revalidatePath"]
   C --> D["Data Cache entry cleared"]
-  C --> E["Router Cache refreshed"]
+  C --> E["Client Cache refreshed"]
   D --> F["UI shows fresh data"]
   E --> F
   B --> G["Optional redirect after revalidate"]
 `;
 
 <Callout title="The one-line takeaway">
-Validate, write, then `updateTag`/`revalidateTag`/`revalidatePath` to clear the Data Cache and refresh the Router Cache — that is what makes the UI reflect a mutation without a manual reload.
+Validate, write, then `updateTag`/`revalidateTag`/`revalidatePath` to clear the Data Cache and refresh the Client Cache — that is what makes the UI reflect a mutation without a manual reload.
 </Callout>
 
 export const quizSa3En = [
@@ -133,7 +133,7 @@ export const quizSa3En = [
     q: 'Which client-side cache does the action response refresh?',
     options: [
       'The browser image cache',
-      'The Router Cache for the current route',
+      'The Client Cache for the current route',
       'Only localStorage',
       'The service worker cache',
     ],
