@@ -1,0 +1,671 @@
+---
+title: 'Worked review 1: a blog with comments and an admin publish button'
+description: 'An AI-generated blog feature — Server Components, a comment form, and an admin publish button — reviewed bug by bug against a real Next.js 16.3.6 build and browser.'
+sidebar:
+  order: 5
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## The feature
+
+The prompt was: *"Add a blog post page with comments. Logged-in admins get a Publish button that flips a draft post to published."* The result below is the kind of first draft an AI assistant hands back — it compiles, `next build` finishes with zero errors, and every piece looks like something you have already seen in this course. Read it the way the [reading order](/nextjs/en/reading-nextjs/index/) in this module's index recommends: boundaries first, then the data flow, then auth, then the error path. It has **6 real bugs**, none of which `next build` catches.
+
+## The generated code
+
+```ts
+// lib/db.ts — as generated
+type Post = { id: string; slug: string; title: string; body: string; published: boolean }
+type Comment = { id: string; postId: string; text: string }
+
+const posts = new Map<string, Post>([
+  ['hello-world', { id: 'p1', slug: 'hello-world', title: 'Hello, world', body: 'First post body.', published: false }],
+])
+const comments: Comment[] = []
+
+export const db = {
+  post: {
+    findBySlug: async (slug: string) => posts.get(slug) ?? null,
+    publish: async (id: string) => {
+      for (const p of posts.values()) if (p.id === id) p.published = true
+    },
+  },
+  comment: {
+    listForPost: async (postId: string) => comments.filter((c) => c.postId === postId),
+    create: async (postId: string, text: string) => {
+      const c = { id: `c${comments.length + 1}`, postId, text }
+      comments.push(c)
+      return c
+    },
+  },
+}
+```
+
+```ts
+// app/lib/dal.ts — as generated
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session) redirect('/login')
+  return session
+})
+```
+
+```ts
+// app/blog/[slug]/actions.ts — as generated
+'use server'
+
+import { db } from '@/lib/db'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+export async function publishPost(id: string, slug: string) {
+  await db.post.publish(id)
+  revalidatePath(`/blog/${slug}`)
+
+  try {
+    redirect('/blog')
+  } catch (err) {
+    console.error('publishPost: caught instead of redirecting:', err)
+  }
+}
+
+export async function addComment(slug: string, formData: FormData) {
+  const text = String(formData.get('text') ?? '')
+  const post = await db.post.findBySlug(slug)
+  if (!post) return
+  await db.comment.create(post.id, text)
+  revalidatePath(`/blog/${slug}`)
+}
+```
+
+```tsx
+// app/blog/[slug]/admin-panel.tsx — as generated
+'use client'
+
+import { verifySession } from '@/app/lib/dal'
+import { publishPost } from './actions'
+
+export function AdminPanel({ id, slug }: { id: string; slug: string }) {
+  async function checkAndPublish() {
+    const session = await verifySession()
+    if (session) await publishPost(id, slug)
+  }
+  return (
+    <form action={checkAndPublish}>
+      <button type="submit">Publish</button>
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-list.tsx — as generated
+type Comment = { id: string; text: string }
+
+export function CommentList({
+  comments,
+  onDelete,
+}: {
+  comments: Comment[]
+  onDelete: (id: string) => void
+}) {
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>
+          {c.text} <button onClick={() => onDelete(c.id)}>Delete</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-form.tsx — as generated
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+export function CommentForm({ slug }: { slug: string }) {
+  const { pending } = useFormStatus()
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/page.tsx — as generated
+import { db } from '@/lib/db'
+import { AdminPanel } from './admin-panel'
+import { CommentList } from './comment-list'
+import { CommentForm } from './comment-form'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  return (
+    <main>
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+      <p>Published: {String(post.published)}</p>
+      <AdminPanel id={post.id} slug={post.slug} />
+      <CommentList comments={comments} onDelete={(id) => console.log('deleted', id)} />
+      <CommentForm slug={slug} />
+    </main>
+  )
+}
+```
+
+## The review walk
+
+### Boundaries: a Client Component importing a server-only module
+
+`admin-panel.tsx` starts with `'use client'`, then imports `verifySession` from `app/lib/dal.ts` — a file that itself starts with `import 'server-only'`. The whole point of `verifySession` was to be the one place that authorizes a caller; instead it just got pulled into the browser bundle.
+
+<SpotTheBug code={`'use client'
+
+import { verifySession } from '@/app/lib/dal'
+import { publishPost } from './actions'
+
+export function AdminPanel({ id, slug }: { id: string; slug: string }) {
+  async function checkAndPublish() {
+    const session = await verifySession()
+    if (session) await publishPost(id, slug)
+  }
+  return (
+    <form action={checkAndPublish}>
+      <button type="submit">Publish</button>
+    </form>
+  )
+}`}>
+`'use client'` marks this whole module as a Client Component, and everything it imports has to be safe to ship to the browser. `app/lib/dal.ts` starts with `import 'server-only'` specifically to make that impossible — and Turbopack catches it at build time, not at runtime:
+
+```text
+Error: Turbopack build failed with 2 errors:
+./app/lib/dal.ts:1:1
+Error: You're importing a module that depends on "server-only" into a React Client Component module. This API is only available in Server Components but one of its parents is marked with "use client", so this module is also a Client Component.
+    Learn more: https://nextjs.org/docs/app/building-your-application/rendering
+
+./app/lib/dal.ts:1:1
+Error: 'server-only' cannot be imported from a Client Component module
+It should only be used from a Server Component.
+```
+
+This is a build error, not a warning — the project cannot ship until it's fixed. The fix moves the authorization check to where it belongs: inside the `publishPost` Server Action itself (see the caching/auth review below), and `AdminPanel` goes back to being a plain client form with no import of the DAL at all.
+</SpotTheBug>
+
+### Boundaries: a non-serializable prop from a Server Component
+
+`page.tsx` is a Server Component — it has no `'use client'` at the top, so it renders on the server. It hands `CommentList`, a Client Component, an inline arrow function as the `onDelete` prop.
+
+<SpotTheBug code={`import { db } from '@/lib/db'
+import { CommentList } from './comment-list'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  return (
+    <CommentList comments={comments} onDelete={(id) => console.log('deleted', id)} />
+  )
+}`}>
+Props crossing from a Server Component into a Client Component have to be serializable — Next.js has to be able to turn them into the RSC payload sent to the browser, and a closure has no serializable form. Building this exact page fails prerendering, not at the import line but where the value is actually used:
+
+```text
+Error: Event handlers cannot be passed to Client Component props.
+  {onDelete: function onDelete}
+             ^^^^^^^^^^^^^^^^^
+If you need interactivity, consider converting part of this to a Client Component.
+```
+
+The fix isn't to convert `page.tsx` itself into a Client Component (that would push the whole page's data fetching into the browser) — it's to pass a **Server Action reference** instead of a closure. An exported `'use server'` function is specially recognized and serialized across the boundary; a plain inline arrow function is not.
+</SpotTheBug>
+
+### Boundaries: `useFormStatus` in the same component as the `<form>`
+
+`CommentForm` calls `useFormStatus()` directly, in the same function component that renders `<form>`.
+
+<SpotTheBug code={`'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+export function CommentForm({ slug }: { slug: string }) {
+  const { pending } = useFormStatus()
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+    </form>
+  )
+}`}>
+`useFormStatus` reports the pending state of the nearest **ancestor** `<form>` in the render tree — and the component that renders `<form>` is not its own descendant. This compiles and runs with zero errors or warnings; it just never works. Filling the text field and clicking submit, then reading the button's DOM state 50ms later, in a real browser against this exact code:
+
+```text
+text: "Add comment"
+disabled: false
+```
+
+The comment is still being written (this demo's `addComment` takes 3 seconds), but the button never shows it. The fix is to move `useFormStatus` into a separate child component rendered *inside* the `<form>`, exactly as the [forms and progressive enhancement](/nextjs/en/server-actions-and-mutations/forms-and-progressive-enhancement/) lesson first showed.
+</SpotTheBug>
+
+### Data flow: `revalidateTag` — not used here, but the one-argument form is a type error
+
+This feature only calls `revalidatePath`, which takes one argument and is fine. The AI-generated draft of this same feature in an earlier pass used tag-based invalidation instead, and got the call wrong the way `revalidateTag` almost always gets written from memory:
+
+<SpotTheBug code={`import { revalidateTag } from 'next/cache'
+
+export async function publishPost(id: string) {
+  await db.post.publish(id)
+  revalidateTag('posts')
+}`}>
+In Next.js 16, `revalidateTag`'s second argument — a cache-life profile — is required. The one-argument form isn't a runtime warning, it's a compile error:
+
+```text
+error TS2554: Expected 2 arguments, but got 1.
+```
+
+`tsc --noEmit` catches this one before the code ever reaches `next build`. The fix is `revalidateTag('posts', 'max')` — or, since this action already has the post's own path in hand, `revalidatePath` as shown in the generated code above, which needs no profile argument at all.
+</SpotTheBug>
+
+### Auth: `publishPost` never calls `verifySession`
+
+Now the action that actually runs. `AdminPanel`'s bug hid a second, more serious one: once `verifySession` is moved out of the Client Component, where does it go?
+
+<SpotTheBug code={`'use server'
+
+import { db } from '@/lib/db'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+export async function publishPost(id: string, slug: string) {
+  await db.post.publish(id)
+  revalidatePath(\`/blog/\${slug}\`)
+
+  try {
+    redirect('/blog')
+  } catch (err) {
+    console.error('publishPost: caught instead of redirecting:', err)
+  }
+}`}>
+`publishPost` is a Server Action — a public POST endpoint, reachable by its action ID from anywhere, exactly as the [Server Actions](/nextjs/en/server-actions-and-mutations/what-are-server-actions/) lesson establishes. This action never calls `verifySession()` or checks a role at all; it just publishes. Built and requested for real, from a browser tab with **zero cookies set** — no session, no login, nothing — clicking the rendered Publish button flips the post from draft to published:
+
+```text
+before clicking Publish (anonymous visitor, no session cookie): Published: false
+after clicking Publish (same anonymous visitor):                Published: true
+```
+
+The Publish button being rendered at all here has nothing to do with it — even if `page.tsx` only rendered `AdminPanel` for logged-in admins, the action itself has no idea who called it. Render-time gating decides what the UI shows; it says nothing about what the server accepts.
+</SpotTheBug>
+
+### Errors and redirects: `redirect()` swallowed by `try/catch`
+
+The same `publishPost` action has a second, independent bug once the first one is fixed: the redirect back to the blog list after a successful publish never fires.
+
+<SpotTheBug code={`try {
+  redirect('/blog')
+} catch (err) {
+  console.error('publishPost: caught instead of redirecting:', err)
+}`}>
+`redirect()` works by throwing a control-flow error that Next.js catches further up the tree. This `try/catch` has no filter — it catches that throw exactly like any other error, logs it, and swallows it. Built, started for real, and clicked through a browser: the page URL never changes away from `/blog/hello-world`, and the server's own log shows exactly what got caught:
+
+```text
+publishPost: caught instead of redirecting: Error: NEXT_REDIRECT
+    at i (.next/server/chunks/ssr/_0mwdxwe._.js:149:34576)
+    at j (.next/server/chunks/ssr/_0mwdxwe._.js:149:34754)
+    at f (.next/server/chunks/ssr/_0mwdxwe._.js:150:463) {
+  digest: 'NEXT_REDIRECT;push;/blog;307;'
+}
+```
+
+The digest string is Next.js's own encoding of the destination (`/blog`), the navigation type (`push`, the default when `redirect()` is called from a Server Action bound to a form), and the status (`307`) — all computed, all then discarded by this `catch` block. The fix, exactly as the [mutations and revalidation](/nextjs/en/server-actions-and-mutations/mutations-and-revalidation/) lesson proves for `notFound()`, is to keep `redirect()` outside any `try/catch` that doesn't explicitly rethrow it.
+</SpotTheBug>
+
+## The corrected code
+
+```ts
+// lib/db.ts
+type Post = { id: string; slug: string; title: string; body: string; published: boolean }
+type Comment = { id: string; postId: string; text: string }
+
+const posts = new Map<string, Post>([
+  ['hello-world', { id: 'p1', slug: 'hello-world', title: 'Hello, world', body: 'First post body.', published: false }],
+])
+const comments: Comment[] = []
+
+export const db = {
+  post: {
+    findBySlug: async (slug: string) => posts.get(slug) ?? null,
+    publish: async (id: string) => {
+      for (const p of posts.values()) if (p.id === id) p.published = true
+    },
+  },
+  comment: {
+    listForPost: async (postId: string) => comments.filter((c) => c.postId === postId),
+    create: async (postId: string, text: string) => {
+      const c = { id: `c${comments.length + 1}`, postId, text }
+      comments.push(c)
+      return c
+    },
+    remove: async (id: string) => {
+      const i = comments.findIndex((c) => c.id === id)
+      if (i !== -1) comments.splice(i, 1)
+    },
+  },
+}
+```
+
+```ts
+// app/lib/session.ts
+import 'server-only'
+import { cookies } from 'next/headers'
+
+export async function getSession() {
+  const role = (await cookies()).get('session')?.value
+  return role ? { role } : null
+}
+```
+
+```ts
+// app/lib/dal.ts
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+// FIX (boundary bug): the one real authorization check, called from every
+// action that touches protected data — never imported into a Client
+// Component, so 'server-only' can never leak across the 'use client' line.
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session) redirect('/login')
+  return session
+})
+```
+
+```ts
+// app/blog/[slug]/actions.ts
+'use server'
+
+import { db } from '@/lib/db'
+import { verifySession } from '@/app/lib/dal'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+// FIX (auth bug): authorize, then check the role, before mutating anything.
+export async function publishPost(id: string, slug: string) {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    return { error: 'Forbidden' }
+  }
+
+  await db.post.publish(id)
+  revalidatePath(`/blog/${slug}`)
+  // FIX (redirect bug): redirect() lives outside any try/catch now — nothing
+  // can swallow the throw.
+  redirect('/blog')
+}
+
+export async function addComment(slug: string, formData: FormData) {
+  const text = String(formData.get('text') ?? '')
+  const post = await db.post.findBySlug(slug)
+  if (!post) return
+  await new Promise((r) => setTimeout(r, 3000))
+  await db.comment.create(post.id, text)
+  revalidatePath(`/blog/${slug}`)
+}
+
+// FIX (prop bug): exported straight from a 'use server' module, so this is a
+// Server Action reference, not a plain closure — safe to pass as a prop.
+export async function deleteComment(slug: string, id: string) {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    return { error: 'Forbidden' }
+  }
+  await db.comment.remove(id)
+  revalidatePath(`/blog/${slug}`)
+}
+```
+
+```tsx
+// app/blog/[slug]/publish-button.tsx
+'use client'
+
+import { useActionState } from 'react'
+import { publishPost } from './actions'
+
+type State = { error?: string } | null
+
+export function PublishButton({ id, slug }: { id: string; slug: string }) {
+  const [state, formAction, pending] = useActionState<State, FormData>(
+    async () => (await publishPost(id, slug)) ?? null,
+    null,
+  )
+  return (
+    <form action={formAction}>
+      <button disabled={pending} type="submit">Publish</button>
+      {state?.error && <p role="alert">{state.error}</p>}
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-list.tsx
+type Comment = { id: string; text: string }
+
+export function CommentList({
+  comments,
+  isAdmin,
+  onDelete,
+}: {
+  comments: Comment[]
+  isAdmin: boolean
+  onDelete: (id: string) => Promise<{ error: string } | undefined>
+}) {
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>
+          {c.text}
+          {isAdmin && <button onClick={() => onDelete(c.id)}>Delete</button>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-form.tsx
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+// FIX (useFormStatus bug): a child of <form> — the only place useFormStatus
+// can see this form's pending state.
+function SubmitButton() {
+  const { pending } = useFormStatus()
+  return <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+}
+
+export function CommentForm({ slug }: { slug: string }) {
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <SubmitButton />
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/page.tsx
+import { db } from '@/lib/db'
+import { getSession } from '@/app/lib/session'
+import { PublishButton } from './publish-button'
+import { CommentForm } from './comment-form'
+import { CommentList } from './comment-list'
+import { deleteComment } from './actions'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  // A page-level read only decides what UI to show — publishPost and
+  // deleteComment still verifySession() and check the role themselves.
+  const session = await getSession()
+  const isAdmin = session?.role === 'admin'
+
+  return (
+    <main>
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+      <p>Published: {String(post.published)}</p>
+      {isAdmin && <PublishButton id={post.id} slug={post.slug} />}
+      <CommentList comments={comments} isAdmin={isAdmin} onDelete={deleteComment.bind(null, slug)} />
+      <CommentForm slug={slug} />
+    </main>
+  )
+}
+```
+
+Built clean against Next.js 16.3.6 — `next build` reports 0 errors, 0 warnings. Requesting the page with no session cookie at all returns the page with no Publish button and no error; requesting it with a `session=admin` cookie shows the Publish button, and clicking it flips the post to published and redirects to `/blog`. Requesting it with a `session=editor` cookie (a real session, wrong role) and forcing the Publish button to render anyway shows the action itself rejects the write:
+
+```text
+anonymous (no cookie), clicking Publish anyway  -> redirected to /login (verifySession has no session at all)
+session=editor (authenticated, wrong role)       -> "Published: false" unchanged, page shows "Forbidden"
+session=admin                                    -> "Published: true", redirected to /blog
+```
+
+## What changed and why
+
+| # | Bug | Category | Fix |
+|---|---|---|---|
+| 1 | `publishPost` never checked who was calling | Auth | Call `verifySession()` and check `session.role === 'admin'` before any write |
+| 2 | `revalidateTag('posts')` — one argument | Data flow | Add the required profile argument, or use `revalidatePath` when there's no tag to invalidate |
+| 3 | `redirect('/blog')` inside an unconditional `try/catch` | Errors/redirects | Move `redirect()` outside the `try/catch`, or rethrow with `unstable_rethrow` |
+| 4 | `AdminPanel` (`'use client'`) imported `verifySession` from a `server-only` module | Boundaries | Never import the DAL into a Client Component — pass a boolean like `isAdmin` down as a prop instead |
+| 5 | `onDelete={(id) => console.log(...)}` passed from a Server Component to a Client Component | Boundaries | Pass an exported Server Action reference (`deleteComment.bind(null, slug)`), not an inline closure |
+| 6 | `useFormStatus()` called in the same component that renders `<form>` | Boundaries | Move the hook into a child `SubmitButton` component rendered inside the form |
+
+## Mental Model
+
+Every one of these six bugs compiles and looks plausible in isolation — that is exactly why an AI assistant writes them with full confidence. Three of them (`server-only` import, non-serializable prop, `revalidateTag` arity) are build-time facts the compiler already knows and will tell you the moment you build. The other three (missing auth, a swallowed redirect, a misplaced hook) are runtime facts that no compiler checks — the only way to catch them is to run the exact request that would trigger them, which is why this review used curl, a real `next build`, and a real browser instead of reasoning about the code from the page.
+
+## Common Misconceptions
+
+- **"It compiled and the page renders correctly, so it's fine."** Four of these six bugs produce a perfectly normal-looking page. The Publish button flips and the page redirects (when it isn't broken) — the bugs are all in who is allowed to trigger that, and what happens when something throws.
+- **"The admin check on the Client Component is the security boundary."** `AdminPanel` deciding whether to *render* a button has nothing to do with whether `publishPost` accepts the request that button sends.
+- **"A `try/catch` around a mutation is always the safe, defensive choice."** Here it hid the one thing (a redirect back to the fresh list) the feature needed to actually deliver.
+
+<Mermaid title="Where each bug sits in the reading order" code={wr1Diagram} />
+
+export const wr1Diagram = `flowchart TD
+  A["1. Boundaries"] --> A1["server-only import into 'use client'"]
+  A --> A2["non-serializable prop, Server to Client"]
+  A --> A3["useFormStatus in the form's own component"]
+  B["2. Data flow"] --> B1["revalidateTag with one argument"]
+  C["3. Auth"] --> C1["publishPost with no verifySession()"]
+  D["4. Errors/redirects"] --> D1["redirect() inside try/catch"]
+`;
+
+<Callout title="The one-line takeaway">
+Every bug in this review compiles clean and every fix is one of the two moves this course keeps coming back to: keep server-only code out of the client bundle, and never let your own `try/catch` sit between `redirect()`/`notFound()` and the framework that's supposed to catch them.
+</Callout>
+
+export const quizWorkedReview1 = [
+  {
+    q: "`admin-panel.tsx` starts with `'use client'` and imports `verifySession` from `app/lib/dal.ts`, which starts with `import 'server-only'`. What happens when this builds?",
+    options: [
+      'It builds fine — imports across the client boundary are always allowed',
+      "Turbopack fails the build: a module that depends on 'server-only' cannot be imported into a Client Component",
+      'It builds, but verifySession silently returns null in the browser',
+      'It only fails in development mode',
+    ],
+    answer: 1,
+    explain: "'server-only' exists specifically to make this a build-time error rather than a runtime leak. The exact message names the file and explains that one of its parents is marked 'use client'.",
+  },
+  {
+    q: "```tsx\nexport default async function BlogPost() {\n  return <CommentList onDelete={(id) => console.log(id)} />\n}\n```\nWhy does this fail to build, given that `BlogPost` has no `'use client'` directive?",
+    options: [
+      'It does not fail — Server Components can pass any prop',
+      'Event handlers (functions) cannot be passed as props from a Server Component to a Client Component — they have no serializable form',
+      'CommentList must also be a Server Component',
+      'onDelete needs to be renamed to a React-reserved prop name',
+    ],
+    answer: 1,
+    explain: "Props crossing the Server-to-Client boundary must be serializable into the RSC payload. A closure has no serializable representation, so Next.js rejects it at build/prerender time with 'Event handlers cannot be passed to Client Component props.'",
+  },
+  {
+    q: 'In the buggy CommentForm, `useFormStatus()` is called directly inside the component that renders `<form>`. What is observed 50ms after clicking submit on a slow action?',
+    options: [
+      'pending: true, exactly as expected',
+      'pending: false — useFormStatus only reports the status of an ancestor form, and this component is not its own descendant',
+      'A thrown runtime error',
+      'The form does not submit at all',
+    ],
+    answer: 1,
+    explain: 'useFormStatus reads the nearest form ancestor in the render tree. A component that renders <form> itself is not a descendant of it, so pending never becomes true there — proven directly against a 3-second action.',
+  },
+  {
+    q: '`publishPost` never calls `verifySession()`. What happens when a completely anonymous visitor (no session cookie at all) clicks the rendered Publish button?',
+    options: [
+      'Nothing — Next.js rejects unauthenticated Server Action calls automatically',
+      'The post publishes anyway — proven against a real build, Published flips from false to true with zero session state',
+      'The action throws a TypeScript error at build time',
+      'The button is disabled for non-admins automatically',
+    ],
+    answer: 1,
+    explain: "A Server Action is a public POST endpoint. With no verifySession() call anywhere in publishPost, there is nothing checking who is calling it — an anonymous visitor's click publishes the post exactly as an admin's would.",
+  },
+  {
+    q: '```ts\ntry {\n  redirect(\'/blog\')\n} catch (err) {\n  console.error(err)\n}\n```\nRequested for real after a successful publish, what does the server log show and where does the browser end up?',
+    options: [
+      'The server logs nothing, and the browser lands on /blog',
+      'The server logs the caught NEXT_REDIRECT digest, and the browser stays on the same post page',
+      'The server crashes with an unhandled exception',
+      'The redirect happens, but only after a 5-second delay',
+    ],
+    answer: 1,
+    explain: "redirect() throws an Error with digest 'NEXT_REDIRECT;push;/blog;307;'. This try/catch has no filter, so it intercepts that throw, logs it, and the browser never navigates away.",
+  },
+  {
+    q: '```ts\nrevalidateTag(\'posts\')\n```\nWhat happens when this line is compiled against Next.js 16?',
+    options: [
+      'It compiles and revalidates the posts tag in the background',
+      'error TS2554: Expected 2 arguments, but got 1 — the profile argument is required',
+      'It silently does nothing at runtime, with no compiler complaint',
+      'It only works inside a Route Handler, never a Server Action',
+    ],
+    answer: 1,
+    explain: 'revalidateTag requires a second, cache-life-profile argument in Next.js 16. tsc --noEmit rejects the one-argument form outright — this is caught before next build even runs.',
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/worked-review-1" questions={quizWorkedReview1} />
+
+<ProgressTracker client:visible id="reading-worked-1" />

@@ -1,0 +1,585 @@
+---
+title: 'รีวิวโค้ดชุดที่ 3: แคตตาล็อกสินค้าอีคอมเมิร์ซที่มีรูปภาพ, metadata, และตะกร้า'
+description: 'แคตตาล็อกสินค้าที่ AI เขียน — static params, next/image, metadata, widget ที่รันฝั่ง client เท่านั้น, และตะกร้าแบบ Server Action — รีวิวทีละ bug เทียบกับการ build และรันจริงบน Next.js 16.3.6'
+sidebar:
+  order: 7
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## ฟีเจอร์นี้คืออะไร
+
+โจทย์ที่ให้ AI คือ: *"สร้างแคตตาล็อกสินค้าที่มี grid, หน้าสินค้าแต่ละชิ้น, และปุ่ม Add to cart"* โปรเจกต์นี้เปิด `cacheComponents: true` เช่นกัน และหน้าสินค้าควรถูก prerender ตอน build — เว็บอีคอมเมิร์ซจริงรับไม่ไหวถ้าต้องมี server round trip ต่อผู้เยี่ยมชมหนึ่งคนสำหรับหน้าที่แทบไม่เปลี่ยนแปลง อ่านตาม[ลำดับการอ่าน](/nextjs/th/reading-nextjs/index/)เดียวกับสองรีวิวแรก: boundary ก่อน แล้วค่อย routing แล้วค่อย caching model แล้วค่อยรายละเอียดด้าน optimization ที่เว็บช็อปปิ้งอยู่หรือตายเพราะมัน โค้ดชุดนี้มี **bug จริง 6 จุด** และ `next build` จับได้ตรงๆ ถึง 4 จุด
+
+## โค้ดที่ AI เขียน
+
+```ts
+// next.config.ts — as generated
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+```ts
+// lib/products.ts — as generated
+export type Product = { id: string; name: string; price: number; image: string }
+
+const products: Product[] = [
+  { id: '1', name: 'Desk lamp', price: 2900, image: '/product.png' },
+  { id: '2', name: 'Ceramic mug', price: 1200, image: '/product.png' },
+  { id: '3', name: 'Notebook', price: 800, image: '/product.png' },
+]
+
+export async function listProducts() {
+  return products
+}
+
+export async function getProduct(id: string) {
+  return products.find((p) => p.id === id) ?? null
+}
+```
+
+```tsx
+// app/products/page.tsx — as generated
+import Image from 'next/image'
+import { listProducts } from '@/lib/products'
+
+export default async function ProductsPage() {
+  const products = await listProducts()
+  return (
+    <main>
+      <h1>Products</h1>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        {products.map((p) => (
+          <a key={p.id} href={`/products/${p.id}`}>
+            <div style={{ position: 'relative', height: 200 }}>
+              <Image src={p.image} alt={p.name} fill style={{ objectFit: 'cover' }} />
+            </div>
+            <p>{p.name}</p>
+          </a>
+        ))}
+      </div>
+    </main>
+  )
+}
+```
+
+```tsx
+// app/products/[id]/page.tsx — as generated
+import Image from 'next/image'
+import type { Metadata } from 'next'
+import { getProduct } from '@/lib/products'
+import { addToCart } from './actions'
+import { RecentlyViewed } from './recently-viewed'
+
+export const runtime = 'edge'
+
+export async function generateStaticParams() {
+  return []
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}): Promise<Metadata> {
+  const { id } = await params
+  const product = await getProduct(id)
+  return {
+    title: product?.name ?? 'Product',
+    viewport: 'width=device-width, initial-scale=1',
+    openGraph: { images: [product?.image ?? '/product.png'] },
+  }
+}
+
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const product = await getProduct(id)
+  if (!product) return <p>Not found</p>
+
+  return (
+    <main>
+      <h1>{product.name}</h1>
+      <div style={{ position: 'relative', width: 400, height: 400 }}>
+        <Image src={product.image} alt={product.name} fill style={{ objectFit: 'cover' }} />
+      </div>
+      <p>${(product.price / 100).toFixed(2)}</p>
+      <form action={addToCart.bind(null, product.id)}>
+        <button type="submit">Add to cart</button>
+      </form>
+      <RecentlyViewed />
+    </main>
+  )
+}
+```
+
+```ts
+// app/products/[id]/actions.ts — as generated
+'use server'
+
+export async function addToCart(productId: string) {
+  console.log('added to cart', productId)
+}
+```
+
+```tsx
+// app/products/[id]/recently-viewed.tsx — as generated
+import dynamic from 'next/dynamic'
+
+const RecentlyViewedWidget = dynamic(() => import('./recently-viewed-widget'), { ssr: false })
+
+export function RecentlyViewed() {
+  return <RecentlyViewedWidget />
+}
+```
+
+```tsx
+// app/products/[id]/recently-viewed-widget.tsx — as generated
+'use client'
+
+export default function RecentlyViewedWidget() {
+  const raw = typeof window !== 'undefined' ? window.localStorage.getItem('recent') : null
+  return <p>Recently viewed: {raw ?? 'none yet'}</p>
+}
+```
+
+## เดินรีวิวทีละจุด
+
+### Boundary: `ssr: false` ส่งให้ `next/dynamic` ข้างใน Server Component
+
+`recently-viewed.tsx` ไม่มี directive `'use client'` เลย — มันคือ Server Component — และมันเรียก `dynamic(() => import(...), { ssr: false })`
+
+<SpotTheBug code={`import dynamic from 'next/dynamic'
+
+const RecentlyViewedWidget = dynamic(() => import('./recently-viewed-widget'), { ssr: false })
+
+export function RecentlyViewed() {
+  return <RecentlyViewedWidget />
+}`}>
+`ssr: false` แปลว่า "ห้าม render สิ่งนี้บนเซิร์ฟเวอร์เลย" — เป็นคำขอที่มีแค่ Client Component เท่านั้นที่ทำได้กับตัวเอง เพราะ Server Component ไม่มีทางเลือกฝั่ง client ให้ fallback กลับไปได้ build ไฟล์นี้เป๊ะๆ ล้มเหลวทันที:
+
+```text
+Error: Turbopack build failed with 1 error:
+./app/products/[id]/recently-viewed.tsx:4:20
+Error: `ssr: false` is not allowed with `next/dynamic` in Server Components. Please move it into a Client Component.
+```
+
+วิธีแก้ที่ข้อความ error ของ Next.js เองบอกไว้ก็คือคำตอบที่ถูกต้อง: เพิ่ม `'use client'` ไว้บนสุดของไฟล์นี้ ตัวเลือก `ssr: false` ของ `next/dynamic` จะกลายเป็นคำขอที่ framework ทำตามได้จริง เพราะทั้งโมดูลเป็น client-only อยู่แล้ว
+</SpotTheBug>
+
+### Routing: `<a>` ธรรมดาสำหรับ route ภายใน
+
+grid สินค้าลิงก์ไปแต่ละหน้าสินค้าด้วย `<a href={...}>` แทนที่จะเป็น `<Link>`
+
+<SpotTheBug code={`<a key={p.id} href={\`/products/\${p.id}\`}>
+  <div style={{ position: 'relative', height: 200 }}>
+    <Image src={p.image} alt={p.name} fill style={{ objectFit: 'cover' }} />
+  </div>
+  <p>{p.name}</p>
+</a>`}>
+`<a>` ธรรมดาก็ยัง navigate ได้ — นี่คือเหตุผลที่ bug นี้พลาดง่ายมากตอนดูผ่านๆ build แล้วคลิกใน browser จริง ความต่างจะปรากฏใน network log ไม่ใช่ที่ว่าหน้าเว็บทำงานหรือไม่ คลิก `<Link href="/products/1">` ในหน้าเดียวกันจะได้ request เล็กๆ สองอันที่มี query parameter `_rsc` และไม่มีอะไรอื่นเลย:
+
+```text
+GET /products/1?_rsc=rq0KtoLEX-G_daAz -> 200
+GET /products/1?_rsc=Uj6tDUbDhWjKIlIB -> 200
+```
+
+คลิก `<a href="/products/2">` ธรรมดาแทน จะได้ full document request ที่ไม่มี parameter `_rsc` เลย ตามด้วยทุก static asset — font, CSS, ทุก JS chunk — โหลดใหม่ทั้งหมดตั้งแต่ต้น เหมือนกับตอนโหลดหน้าครั้งแรกเป๊ะ:
+
+```text
+GET /products/2 -> 200   (a full navigation, not an RSC fetch)
+GET /_next/static/media/797e433ab948586e-s.p.0r6juujl39pe6.woff2 -> 200
+GET /_next/static/chunks/3n8-9sbopjxwd.css -> 200
+GET /_next/static/chunks/3s6nzrbk-8mnv.js -> 200
+... (every other static chunk, re-downloaded)
+```
+
+วิธีแก้คือ `<Link href={...}>` จาก `next/link` — หน้าตาและการทำงานเหมือนกันทุกประการสำหรับผู้ใช้ที่ไม่เคยเปิด network panel เลย แต่มันข้ามการ reload หน้าทั้งหมดและการโหลด asset ที่ browser มีอยู่แล้วซ้ำ
+</SpotTheBug>
+
+### Caching model: `generateStaticParams` ที่ว่างเปล่า
+
+`generateStaticParams` บนหน้าสินค้าคืนค่า `[]`
+
+<SpotTheBug code={`export async function generateStaticParams() {
+  return []
+}`}>
+ภายใต้ Cache Components `generateStaticParams` ที่ว่างเปล่าไม่ใช่แค่ "ไม่มีหน้าไหนถูก prerender" — มันคือ build error ตรงๆ เพราะ framework ไม่สามารถทำ build-time validation ได้อีกต่อไปว่าไม่มีอะไร dynamic รั่วผ่านมาสำหรับชุด param ที่มันไม่เคยเห็นเลย:
+
+```text
+Error: When using Cache Components, all `generateStaticParams` functions must return at least one result. This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.
+
+Learn more: https://nextjs.org/docs/messages/empty-generate-static-params
+```
+
+วิธีแก้คือคืนค่าชุด param จริงๆ — `listProducts()` มีอยู่แล้วในโค้ดชุดนี้เองสำหรับหน้า grid `generateStaticParams` แค่ต้อง map มันเป็น object `{ id }` เหมือนที่บท[static และ dynamic rendering](/nextjs/th/rendering/static-and-dynamic-rendering/)แสดงไว้สำหรับกรณีทั่วไป
+</SpotTheBug>
+
+### Caching model: `export const runtime = 'edge'` อยู่ข้างๆ `cacheComponents`
+
+หน้าสินค้ายัง export `runtime = 'edge'` ด้วย
+
+<SpotTheBug code={`export const runtime = 'edge'`}>
+นี่คือความล้มเหลวหมวดเดียวกับที่บท[route segment config](/nextjs/th/rendering/route-segment-config-and-runtimes/)พิสูจน์ไว้สำหรับ route segment config export ทุกตัว — `runtime` ถูกปฏิเสธภายใต้ Cache Components ไม่ว่าค่าจะเป็นอะไร ไม่ใช่แค่ `'edge'` เพราะ Cache Components ต้องการ Node.js runtime และไม่มีอะไรให้ config เหลืออยู่แล้ว:
+
+```text
+Error: Turbopack build failed with 1 error:
+./app/r3b5/page.tsx:2:14
+Error: Route segment config "runtime" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+วิธีแก้ก็แค่ลบ export นี้ทิ้ง ไม่ต้องมีตัวแทนใดๆ เลย — Node.js runtime ค่า default คือตัวเดียวที่ Cache Components รองรับ
+</SpotTheBug>
+
+### Optimization: `next/image` ที่ใช้ `fill` โดยไม่มี `sizes`
+
+ทั้งรูป thumbnail ใน grid และรูปในหน้ารายละเอียดสินค้าใช้ `fill` โดยไม่มี prop `sizes`
+
+<SpotTheBug code={`<div style={{ position: 'relative', width: 400, height: 400 }}>
+  <Image src={product.image} alt={product.name} fill style={{ objectFit: 'cover' }} />
+</div>`}>
+เมื่อไม่มี prop `sizes` Next.js จะตั้งค่า default ของรูป `fill` เป็น `sizes="100vw"` — เท่ากับบอก browser ว่ารูปนี้กว้างเท่า viewport ไม่ว่ากล่องจริงจะเล็กแค่ไหน build หน้า grid แล้วอ่าน HTML ที่ render ออกมา จะเห็นต้นทุนที่แท้จริง: ด้วย grid cell กว้าง 300px และไม่มี `sizes` browser เลือก candidate ที่กว้าง **640px** — ตัวที่เล็กที่สุดที่ "ครอบคลุม" viewport 400px เต็มภายใต้สมมติฐาน `100vw`:
+
+```text
+sizes="100vw"
+srcSet="/_next/image?url=%2Fproduct.png&w=640&q=75 640w, ... up to ... &w=3840&q=75 3840w"
+```
+
+วิธีแก้คือค่า `sizes` ที่ตรงกับความกว้างที่ render จริง: `sizes="(max-width: 768px) 100vw, 33vw"` สำหรับ grid cell ที่กว้างประมาณหนึ่งในสาม และ `sizes="400px"` แบบตายตัวสำหรับรูปในหน้ารายละเอียดสินค้าที่มีขนาดคงที่ เมื่อ build พร้อมวิธีแก้แล้ว รูปในหน้ารายละเอียดสินค้าจะขอ candidate ขนาด 400px แทนที่จะเป็นตัวที่ใหญ่ที่สุดใน `deviceSizes`
+</SpotTheBug>
+
+### Optimization: `viewport` อยู่ข้างใน `metadata`
+
+`generateMetadata` ตั้ง `viewport` เป็น field ใน object `Metadata` ที่คืนค่า
+
+<SpotTheBug code={`export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}): Promise<Metadata> {
+  const { id } = await params
+  const product = await getProduct(id)
+  return {
+    title: product?.name ?? 'Product',
+    viewport: 'width=device-width, initial-scale=1',
+    openGraph: { images: [product?.image ?? '/product.png'] },
+  }
+}`}>
+`viewport` เคยเป็น field ของ `metadata` ใน Next.js เวอร์ชันเก่า วันนี้มันเป็น export ของตัวเอง (`viewport` หรือ `generateViewport`) การใส่มันไว้ข้างใน `metadata` ไม่ทำให้เกิด error — มันแค่ถูกทิ้งไป พร้อม warning ที่พลาดดูง่ายมากใน build log ยาวๆ:
+
+```text
+⚠ Unsupported metadata viewport is configured in metadata export in /r3b3. Please move it to viewport export instead.
+Read more: https://nextjs.org/docs/app/api-reference/functions/generate-viewport
+```
+
+ผู้เยี่ยมชมทุกคนบนมือถือจะได้พฤติกรรม viewport ค่า default ของ browser (ปกติไม่ responsive) แทนที่จะเป็นค่าที่โค้ดนี้ตั้งใจจะตั้งไว้อย่างชัดเจน วิธีแก้คือ export คู่กัน `export const viewport: Viewport = { width: 'device-width', initialScale: 1 }` ใน root layout — ตั้งครั้งเดียวแล้วใช้กับทุกหน้า รวมถึงหน้านี้ด้วย
+</SpotTheBug>
+
+## โค้ดหลังแก้
+
+```tsx
+// app/layout.tsx (excerpt — the metadata/viewport exports only)
+import type { Metadata, Viewport } from 'next'
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://shop.example.com'),
+  title: 'Create Next App',
+  description: 'Generated by create next app',
+}
+
+// FIX (viewport bug): viewport is its own export, never a field on metadata.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+}
+```
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+```ts
+// lib/products.ts
+export type Product = { id: string; name: string; price: number; image: string }
+
+const products: Product[] = [
+  { id: '1', name: 'Desk lamp', price: 2900, image: '/product.png' },
+  { id: '2', name: 'Ceramic mug', price: 1200, image: '/product.png' },
+  { id: '3', name: 'Notebook', price: 800, image: '/product.png' },
+]
+
+export async function listProducts() {
+  return products
+}
+
+export async function getProduct(id: string) {
+  return products.find((p) => p.id === id) ?? null
+}
+```
+
+```tsx
+// app/products/page.tsx
+import Link from 'next/link'
+import Image from 'next/image'
+import { listProducts } from '@/lib/products'
+
+export default async function ProductsPage() {
+  const products = await listProducts()
+  return (
+    <main>
+      <h1>Products</h1>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        {products.map((p) => (
+          // FIX (routing bug): <Link>, not a plain <a>, for an internal route.
+          <Link key={p.id} href={`/products/${p.id}`}>
+            <div style={{ position: 'relative', height: 200 }}>
+              {/* FIX (sizes bug): sizes matches the actual ~33vw grid cell */}
+              <Image src={p.image} alt={p.name} fill sizes="(max-width: 768px) 100vw, 33vw" style={{ objectFit: 'cover' }} />
+            </div>
+            <p>{p.name}</p>
+          </Link>
+        ))}
+      </div>
+    </main>
+  )
+}
+```
+
+```ts
+// app/products/[id]/actions.ts
+'use server'
+
+export async function addToCart(productId: string) {
+  console.log('added to cart', productId)
+}
+```
+
+```tsx
+// app/products/[id]/recently-viewed-widget.tsx
+'use client'
+
+export default function RecentlyViewedWidget() {
+  const raw = typeof window !== 'undefined' ? window.localStorage.getItem('recent') : null
+  return <p>Recently viewed: {raw ?? 'none yet'}</p>
+}
+```
+
+```tsx
+// app/products/[id]/recently-viewed.tsx
+'use client'
+
+import dynamic from 'next/dynamic'
+
+// FIX (boundary bug): ssr: false now lives inside a Client Component
+// ('use client' above), which next/dynamic explicitly allows — it was only
+// rejected when the Server Component page itself called dynamic() with
+// ssr: false.
+const RecentlyViewedWidget = dynamic(() => import('./recently-viewed-widget'), { ssr: false })
+
+export function RecentlyViewed() {
+  return <RecentlyViewedWidget />
+}
+```
+
+```tsx
+// app/products/[id]/page.tsx
+import Image from 'next/image'
+import Link from 'next/link'
+import type { Metadata } from 'next'
+import { getProduct, listProducts } from '@/lib/products'
+import { addToCart } from './actions'
+import { RecentlyViewed } from './recently-viewed'
+
+// FIX (caching bug): a real, non-empty list of params — required under
+// cacheComponents.
+export async function generateStaticParams() {
+  const products = await listProducts()
+  return products.map((p) => ({ id: p.id }))
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}): Promise<Metadata> {
+  const { id } = await params
+  const product = await getProduct(id)
+  return {
+    title: product?.name ?? 'Product',
+    openGraph: { images: [product?.image ?? '/product.png'] },
+  }
+}
+
+// FIX (runtime bug): no runtime export at all — the default Node.js runtime
+// is required under cacheComponents, and 'edge' is deprecated regardless.
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const product = await getProduct(id)
+  if (!product) return <p>Not found</p>
+
+  return (
+    <main>
+      <p><Link href="/products">Back to products</Link></p>
+      <h1>{product.name}</h1>
+      <div style={{ position: 'relative', width: 400, height: 400 }}>
+        {/* FIX (sizes bug): a fixed sizes value for this fixed-size box */}
+        <Image src={product.image} alt={product.name} fill sizes="400px" style={{ objectFit: 'cover' }} />
+      </div>
+      <p>${(product.price / 100).toFixed(2)}</p>
+      <form action={addToCart.bind(null, product.id)}>
+        <button type="submit">Add to cart</button>
+      </form>
+      <RecentlyViewed />
+    </main>
+  )
+}
+```
+
+build ผ่านสะอาดกับ Next.js 16.3.6 พร้อม `cacheComponents: true` — `next build` รายงาน error เป็นศูนย์ warning เป็นศูนย์ และ prerender ทุกหน้าสินค้าจริงตอน build:
+
+```text
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /products
+└   /products/[id]
+  ├ ◐ /products/[id]
+  ├ ○ /products/1
+  ├ ○ /products/2
+  └ ○ /products/3
+```
+
+start เซิร์ฟเวอร์ที่ build แล้วและยิง request ไปที่หน้าสินค้าจริง ยืนยันการแก้ทุกจุดตั้งแต่ต้นจนจบ: og:image ที่ resolve ออกมาเป็น URL production จริงแบบ absolute (ไม่ใช่ `localhost`), รูปทั้งใน grid และหน้ารายละเอียดขอ candidate ขนาดที่เหมาะสม, ลิงก์สินค้าใน grid เป็น `<a>` จริงที่ render โดย `<Link>` (navigate ฝั่ง client ได้), widget ที่รันฝั่ง client เท่านั้น render ถูกต้อง, และ cart action log บนเซิร์ฟเวอร์พอดีหนึ่งครั้งต่อการคลิกหนึ่งครั้ง:
+
+```text
+<meta property="og:image" content="https://shop.example.com/product.png"/>
+sizes="400px"                                    (product detail image)
+sizes="(max-width: 768px) 100vw, 33vw"           (grid thumbnails, ×3)
+<a href="/products/1">                           (rendered by <Link>)
+"Recently viewed: none yet"                      (client-only widget, correctly client-rendered)
+server log: added to cart 1
+```
+
+## สิ่งที่เปลี่ยนและเหตุผล
+
+| # | Bug | หมวด | วิธีแก้ |
+|---|---|---|---|
+| 1 | `dynamic(..., { ssr: false })` ข้างใน Server Component | Boundaries | เพิ่ม `'use client'` ให้ไฟล์ที่เรียก `dynamic()` |
+| 2 | `<a href={...}>` สำหรับ route ภายใน | Routing | `<Link href={...}>` จาก `next/link` |
+| 3 | `generateStaticParams` คืนค่า `[]` | Caching model | คืนค่าชุด param จริงจาก `listProducts()` |
+| 4 | `export const runtime = 'edge'` อยู่ข้างๆ `cacheComponents` | Caching model | ลบ export ทิ้ง — Node.js คือ runtime เดียวที่รองรับ |
+| 5 | `next/image` ใช้ `fill` โดยไม่มี `sizes` | Optimization | ค่า `sizes` ที่ตรงกับความกว้างที่ render จริง |
+| 6 | `viewport` เป็น field ข้างใน `metadata` | Optimization | `export const viewport: Viewport` แยกต่างหาก |
+
+## Mental Model
+
+สี่ในหก bug ของรีวิวนี้เป็นข้อเท็จจริงตอน build ที่ `next build` ปฏิเสธตรงๆ อยู่แล้ว — `ssr: false` ข้างใน Server Component, `generateStaticParams` ที่ว่างเปล่า, และ `runtime` ภายใต้ Cache Components ล้วนล้มเหลวดังๆ ใน build เดียวกัน อีกสองจุด — `<a>` ธรรมดา และ `sizes` ที่หายไป — build ผ่านสะอาดหมดจด และมีต้นทุนจริงก็ต่อเมื่อ browser ของผู้เยี่ยมชมโหลดหน้านั้นจริงๆ: การ reload หน้าทั้งหมดแทนที่จะเป็นการ navigate ฝั่ง client แบบทันที และข้อมูลรูปภาพหลายเท่าตัวเกินกว่าที่ layout ต้องการ ทั้งสองอย่างไม่ปรากฏจากการอ่าน JSX เลย แต่ปรากฏใน network panel ทั้งคู่
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`ssr: false` เป็นแค่ hint ด้าน performance ที่คอมโพเนนต์ไหนก็ใช้ได้"** มันคือคำขอที่มีแค่ Client Component เท่านั้นที่ทำได้กับตัวเอง — Server Component ไม่มี client fallback ให้ opt out *ไปหา*
+- **"`generateStaticParams` ที่ว่างเปล่าแปลว่า `next build` แค่ข้ามการ prerender เหมือนเดิม"** ภายใต้ Cache Components โดยเฉพาะ มันคือ build error ตรงๆ ไม่ใช่ no-op เงียบๆ — framework ต้องการ param อย่างน้อยหนึ่งตัวเพื่อ validate
+- **"`<a>` ธรรมดาสำหรับลิงก์ภายในก็ยังใช้งานได้ แปลว่าไม่ใช่ bug จริง"** มัน navigate ได้ถูกต้อง นี่แหละคือเหตุผลที่มันรอดจาก code review — ต้นทุนปรากฏก็ต่อเมื่อดูใน network panel เป็นการ reload ทั้งหมดและโหลด static asset ทุกตัวซ้ำ
+
+<Mermaid title="แต่ละ bug อยู่ตรงไหนในลำดับการอ่าน" code={wr3Diagram} />
+
+export const wr3Diagram = `flowchart TD
+  A["1. Boundaries"] --> A1["ssr: false inside a Server Component"]
+  B["2. Routing"] --> B1["a plain a instead of Link"]
+  C["3. Caching model"] --> C1["empty generateStaticParams"]
+  C --> C2["runtime = edge next to cacheComponents"]
+  D["Optimization"] --> D1["fill image with no sizes"]
+  D --> D2["viewport inside metadata"]
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+หน้าแคตตาล็อกอยู่หรือตายเพราะรายละเอียดที่ไม่มีทางเห็นแค่จากการอ่าน JSX — `ssr: false` ต้องการ Client Component จริงๆ ให้มันอยู่ `generateStaticParams` ต้องการรายการ param จริงภายใต้ Cache Components และ `sizes`/`viewport` ต้องตรงกับที่หน้าเว็บ render จริงๆ ไม่ใช่แค่ compile ผ่าน
+</Callout>
+
+export const quizWorkedReview3 = [
+  {
+    q: "```tsx\n// no 'use client' in this file\nimport dynamic from 'next/dynamic'\nconst Widget = dynamic(() => import('./widget'), { ssr: false })\n```\nเกิดอะไรขึ้นตอน build?",
+    options: [
+      'build ผ่านปกติ — ssr: false แค่ข้ามการ render บนเซิร์ฟเวอร์สำหรับคอมโพเนนต์ตัวนั้น',
+      'Turbopack ทำให้ build ล้มเหลว: `ssr: false` ใช้กับ next/dynamic ใน Server Component ไม่ได้ — ต้องย้ายไปอยู่ใน Client Component',
+      'build ผ่าน แต่ widget ไม่ render เงียบๆ',
+      'ล้มเหลวเฉพาะเมื่อ widget ใช้ localStorage เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'ssr: false คือคำขอที่คอมโพเนนต์ทำกับตัวเองเกี่ยวกับความเป็น client-only ของมัน — Server Component ไม่มี client-side fallback ให้ opt out ไปหา Next.js จึงปฏิเสธตอน build พร้อมระบุวิธีแก้ที่ชัดเจน',
+  },
+  {
+    q: 'grid ลิงก์ไปหน้าสินค้าด้วย `<a href={...}>` แทนที่จะเป็น `<Link>` ความต่างที่สังเกตได้จริงใน browser จริงคืออะไร?',
+    options: [
+      'ไม่มีเลย — <a> ธรรมดากับ <Link> ทำงานเหมือนกันทุกประการสำหรับ route ภายใน',
+      'คลิก <Link> จะยิง RSC fetch เล็กๆ (มี query parameter _rsc); คลิก <a> ธรรมดาจะทำให้เกิด full document reload ที่โหลด static asset ทุกตัวใหม่ตั้งแต่ต้น',
+      '<a> ธรรมดา navigate ไม่ได้เลย',
+      '<Link> ใช้ได้เฉพาะกับ URL ภายนอกเท่านั้น',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย network log จริง: คลิก <Link> ได้ GET เล็กๆ สองอันที่มี ?_rsc=...; คลิก <a> ธรรมดาได้ full-document GET ที่ไม่มี _rsc ตามด้วยทุก font, CSS, JS chunk โหลดใหม่เหมือนตอนโหลดครั้งแรก',
+  },
+  {
+    q: "```ts\nexport async function generateStaticParams() {\n  return []\n}\n```\nเมื่อเปิด `cacheComponents: true` เกิดอะไรขึ้นตอน build?",
+    options: [
+      'build ผ่านปกติ — ไม่มี param ไหนถูก prerender และ route ก็ fallback ไป render แบบ dynamic เต็มรูปแบบ',
+      'build ล้มเหลวทันที: Cache Components ต้องการให้ generateStaticParams ทุกตัวคืนค่าอย่างน้อยหนึ่งผลลัพธ์',
+      'prerender หน้า /products/undefined ค่า default เงียบๆ',
+      'ล้มเหลวเฉพาะเมื่อหน้านั้นใช้ \'use cache\' ด้วย',
+    ],
+    answer: 1,
+    explain: "error จริงชัดเจนมาก: 'When using Cache Components, all generateStaticParams functions must return at least one result. This is to ensure that we can perform build-time validation...' — array ว่างเปล่าถูกปฏิเสธ ไม่ใช่ยอมรับเงียบๆ",
+  },
+  {
+    q: "```ts\n// next.config.ts\nconst nextConfig = { cacheComponents: true }\n```\n```tsx\n// app/products/[id]/page.tsx\nexport const runtime = 'edge'\n```\nเกิดอะไรขึ้นเมื่อโปรเจกต์นี้ build?",
+    options: [
+      'build ผ่านปกติ — edge เป็นตัวเลือก runtime ที่ใช้ได้กับทุก route',
+      'build ล้มเหลว: export runtime ถูกปฏิเสธภายใต้ cacheComponents ไม่ว่าค่าจะเป็นอะไร เพราะ Cache Components ต้องการ Node.js runtime',
+      'มันเพิกเฉยต่อ export นี้เงียบๆ แล้วใช้ Node.js อยู่ดี',
+      'ล้มเหลวเฉพาะ \'edge\' เท่านั้น ไม่ใช่ \'nodejs\'',
+    ],
+    answer: 1,
+    explain: "export runtime ของ Route Segment Config ขัดแย้งกับ cacheComponents ไม่ว่าค่าจะเป็นอะไร error จริงระบุชื่อ export ตรงๆ: 'Route segment config \"runtime\" is not compatible with `nextConfig.cacheComponents`. Please remove it.'",
+  },
+  {
+    q: "```tsx\n<div style={{ position: 'relative', width: 300, height: 200 }}>\n  <Image src=\"/hero.jpg\" alt=\"\" fill style={{ objectFit: 'cover' }} />\n</div>\n```\nเมื่อไม่มี prop `sizes` browser จะขอรูปประมาณขนาดไหนสำหรับกล่องกว้าง 300px นี้บน viewport 400px?",
+    options: [
+      'candidate ขนาด 300px เพราะ Next.js อ่านความกว้าง CSS ของกล่อง',
+      'candidate ขนาด 640px — deviceSizes ตัวที่เล็กที่สุดที่ "ครอบคลุม" viewport เต็ม 100vw ซึ่งเป็นสมมติฐาน sizes ค่า default สำหรับรูป fill',
+      'ไฟล์ต้นฉบับที่ไม่ได้ resize เลย',
+      'build ล้มเหลวถ้าไม่มี prop sizes ชัดเจน',
+    ],
+    answer: 1,
+    explain: 'เมื่อไม่มี sizes ค่า default คือ 100vw Next.js ไม่มีทางอ่านความกว้าง CSS จริงของกล่องได้ จึงสมมติว่ารูปต้องครอบคลุม viewport เต็มและเลือก candidate deviceSizes ที่เล็กที่สุดที่ทำได้ — 640w บน viewport นี้ ซึ่งมากกว่าพื้นที่พิกเซลที่กล่อง 300px ต้องการหลายเท่า',
+  },
+  {
+    q: "```tsx\nexport const metadata: Metadata = {\n  title: 'Product',\n  viewport: 'width=device-width, initial-scale=1',\n}\n```\nNext.js ทำอะไรกับ field `viewport` ตรงนี้?",
+    options: [
+      'ใช้งานตามปกติ — viewport เป็น field ของ metadata มาโดยตลอด',
+      'ทิ้งมันไปพร้อม warning ที่บอกให้ย้ายไปเป็น export viewport (หรือ generateViewport) ของตัวเอง',
+      'ทำให้ build ล้มเหลวทันที',
+      'merge เข้า <head> ของหน้าเงียบๆ อยู่ดี',
+    ],
+    answer: 1,
+    explain: "viewport ย้ายไปเป็น export ของตัวเองใน Next.js เวอร์ชันปัจจุบัน การใส่ไว้ข้างใน metadata ทำให้เกิด 'Unsupported metadata viewport is configured in metadata export... Please move it to viewport export instead' และ tag ไม่เคยถูกใช้เลย — ไม่ใช่ build ล้มเหลว แค่ warning ที่ถูกทิ้งและพลาดดูง่าย",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/worked-review-3" questions={quizWorkedReview3} />
+
+<ProgressTracker client:visible id="reading-worked-3" />

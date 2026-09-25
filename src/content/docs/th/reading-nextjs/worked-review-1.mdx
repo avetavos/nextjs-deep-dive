@@ -1,0 +1,671 @@
+---
+title: 'รีวิวโค้ดชุดที่ 1: บล็อกที่มีคอมเมนต์และปุ่ม publish สำหรับแอดมิน'
+description: 'ฟีเจอร์บล็อกที่ AI เขียน — Server Components, ฟอร์มคอมเมนต์, ปุ่ม publish สำหรับแอดมิน — รีวิวทีละ bug เทียบกับการ build และรันจริงบน Next.js 16.3.6'
+sidebar:
+  order: 5
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## ฟีเจอร์นี้คืออะไร
+
+โจทย์ที่ให้ AI คือ: *"เพิ่มหน้าโพสต์บล็อกที่มีคอมเมนต์ แอดมินที่ login แล้วจะเห็นปุ่ม Publish สำหรับเปลี่ยนโพสต์จาก draft เป็น published"* ผลลัพธ์ด้านล่างคือแบบที่ AI assistant เขียนให้ในรอบแรก — compile ผ่าน, `next build` จบด้วย error เป็นศูนย์ และทุกชิ้นส่วนก็หน้าตาเหมือนสิ่งที่เคยเห็นในคอร์สนี้มาแล้ว อ่านตาม[ลำดับการอ่าน](/nextjs/th/reading-nextjs/index/)ที่โมดูลนี้แนะนำ: boundary ก่อน แล้วค่อย data flow, auth, และ error path โค้ดชุดนี้มี **bug จริง 6 จุด** ที่ `next build` จับไม่ได้เลยสักจุด
+
+## โค้ดที่ AI เขียน
+
+```ts
+// lib/db.ts — as generated
+type Post = { id: string; slug: string; title: string; body: string; published: boolean }
+type Comment = { id: string; postId: string; text: string }
+
+const posts = new Map<string, Post>([
+  ['hello-world', { id: 'p1', slug: 'hello-world', title: 'Hello, world', body: 'First post body.', published: false }],
+])
+const comments: Comment[] = []
+
+export const db = {
+  post: {
+    findBySlug: async (slug: string) => posts.get(slug) ?? null,
+    publish: async (id: string) => {
+      for (const p of posts.values()) if (p.id === id) p.published = true
+    },
+  },
+  comment: {
+    listForPost: async (postId: string) => comments.filter((c) => c.postId === postId),
+    create: async (postId: string, text: string) => {
+      const c = { id: `c${comments.length + 1}`, postId, text }
+      comments.push(c)
+      return c
+    },
+  },
+}
+```
+
+```ts
+// app/lib/dal.ts — as generated
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session) redirect('/login')
+  return session
+})
+```
+
+```ts
+// app/blog/[slug]/actions.ts — as generated
+'use server'
+
+import { db } from '@/lib/db'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+export async function publishPost(id: string, slug: string) {
+  await db.post.publish(id)
+  revalidatePath(`/blog/${slug}`)
+
+  try {
+    redirect('/blog')
+  } catch (err) {
+    console.error('publishPost: caught instead of redirecting:', err)
+  }
+}
+
+export async function addComment(slug: string, formData: FormData) {
+  const text = String(formData.get('text') ?? '')
+  const post = await db.post.findBySlug(slug)
+  if (!post) return
+  await db.comment.create(post.id, text)
+  revalidatePath(`/blog/${slug}`)
+}
+```
+
+```tsx
+// app/blog/[slug]/admin-panel.tsx — as generated
+'use client'
+
+import { verifySession } from '@/app/lib/dal'
+import { publishPost } from './actions'
+
+export function AdminPanel({ id, slug }: { id: string; slug: string }) {
+  async function checkAndPublish() {
+    const session = await verifySession()
+    if (session) await publishPost(id, slug)
+  }
+  return (
+    <form action={checkAndPublish}>
+      <button type="submit">Publish</button>
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-list.tsx — as generated
+type Comment = { id: string; text: string }
+
+export function CommentList({
+  comments,
+  onDelete,
+}: {
+  comments: Comment[]
+  onDelete: (id: string) => void
+}) {
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>
+          {c.text} <button onClick={() => onDelete(c.id)}>Delete</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-form.tsx — as generated
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+export function CommentForm({ slug }: { slug: string }) {
+  const { pending } = useFormStatus()
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/page.tsx — as generated
+import { db } from '@/lib/db'
+import { AdminPanel } from './admin-panel'
+import { CommentList } from './comment-list'
+import { CommentForm } from './comment-form'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  return (
+    <main>
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+      <p>Published: {String(post.published)}</p>
+      <AdminPanel id={post.id} slug={post.slug} />
+      <CommentList comments={comments} onDelete={(id) => console.log('deleted', id)} />
+      <CommentForm slug={slug} />
+    </main>
+  )
+}
+```
+
+## เดินรีวิวทีละจุด
+
+### Boundary: Client Component import โมดูลที่เป็น server-only
+
+`admin-panel.tsx` ขึ้นต้นด้วย `'use client'` แล้ว import `verifySession` จาก `app/lib/dal.ts` — ไฟล์ที่ขึ้นต้นด้วย `import 'server-only'` เอง จุดประสงค์ทั้งหมดของ `verifySession` คือเป็นจุดเดียวที่ authorize ผู้เรียก แต่กลับถูกดึงเข้าไปอยู่ใน bundle ของ browser แทน
+
+<SpotTheBug code={`'use client'
+
+import { verifySession } from '@/app/lib/dal'
+import { publishPost } from './actions'
+
+export function AdminPanel({ id, slug }: { id: string; slug: string }) {
+  async function checkAndPublish() {
+    const session = await verifySession()
+    if (session) await publishPost(id, slug)
+  }
+  return (
+    <form action={checkAndPublish}>
+      <button type="submit">Publish</button>
+    </form>
+  )
+}`}>
+`'use client'` ทำให้ทั้งโมดูลนี้เป็น Client Component และทุกอย่างที่มัน import ต้องปลอดภัยพอที่จะส่งไปที่ browser `app/lib/dal.ts` ขึ้นต้นด้วย `import 'server-only'` เพื่อป้องกันเรื่องนี้โดยเฉพาะ — และ Turbopack จับได้ตอน build ไม่ใช่ตอน runtime:
+
+```text
+Error: Turbopack build failed with 2 errors:
+./app/lib/dal.ts:1:1
+Error: You're importing a module that depends on "server-only" into a React Client Component module. This API is only available in Server Components but one of its parents is marked with "use client", so this module is also a Client Component.
+    Learn more: https://nextjs.org/docs/app/building-your-application/rendering
+
+./app/lib/dal.ts:1:1
+Error: 'server-only' cannot be imported from a Client Component module
+It should only be used from a Server Component.
+```
+
+นี่คือ build error ไม่ใช่แค่ warning — โปรเจกต์ deploy ไม่ได้จนกว่าจะแก้ วิธีแก้คือย้าย authorization check ไปอยู่ในตัว Server Action `publishPost` เอง (ดูรีวิว auth/caching ด้านล่าง) แล้ว `AdminPanel` ก็กลับไปเป็นฟอร์ม client ธรรมดาที่ไม่ import DAL เลย
+</SpotTheBug>
+
+### Boundary: prop ที่ serialize ไม่ได้จาก Server Component
+
+`page.tsx` เป็น Server Component — ไม่มี `'use client'` อยู่บนสุด จึง render บนฝั่งเซิร์ฟเวอร์ แต่ส่ง arrow function แบบ inline เป็น prop `onDelete` ให้ `CommentList` ซึ่งเป็น Client Component
+
+<SpotTheBug code={`import { db } from '@/lib/db'
+import { CommentList } from './comment-list'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  return (
+    <CommentList comments={comments} onDelete={(id) => console.log('deleted', id)} />
+  )
+}`}>
+prop ที่ข้ามจาก Server Component ไปยัง Client Component ต้อง serialize ได้ — Next.js ต้องแปลงมันเป็น RSC payload ที่ส่งไป browser ได้ แต่ closure ไม่มีรูปแบบที่ serialize ได้เลย build หน้านี้จริงแล้วล้มเหลวตอน prerender ไม่ใช่ที่บรรทัด import แต่ที่จุดที่ค่านั้นถูกใช้จริง:
+
+```text
+Error: Event handlers cannot be passed to Client Component props.
+  {onDelete: function onDelete}
+             ^^^^^^^^^^^^^^^^^
+If you need interactivity, consider converting part of this to a Client Component.
+```
+
+วิธีแก้ไม่ใช่เปลี่ยน `page.tsx` เองให้เป็น Client Component (จะดันการ fetch ข้อมูลทั้งหน้าไปที่ browser) — แต่คือส่ง **Server Action reference** แทน closure ฟังก์ชันที่ export จากไฟล์ `'use server'` จะถูกจดจำและ serialize ข้ามขอบเขตได้เป็นพิเศษ ส่วน arrow function แบบ inline ธรรมดาไม่ได้
+</SpotTheBug>
+
+### Boundary: `useFormStatus` อยู่ใน component เดียวกับ `<form>`
+
+`CommentForm` เรียก `useFormStatus()` ตรงๆ ในคอมโพเนนต์เดียวกับที่ render `<form>`
+
+<SpotTheBug code={`'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+export function CommentForm({ slug }: { slug: string }) {
+  const { pending } = useFormStatus()
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+    </form>
+  )
+}`}>
+`useFormStatus` รายงานสถานะ pending ของ `<form>` ที่เป็น **ancestor** ที่ใกล้ที่สุดใน render tree — และคอมโพเนนต์ที่ render `<form>` เองไม่ใช่ descendant ของตัวมันเอง โค้ดนี้ compile และรันได้โดยไม่มี error หรือ warning เลย มันแค่ไม่เคยทำงาน กรอกช่องข้อความแล้วกด submit จากนั้นอ่านสถานะ DOM ของปุ่มหลังจากนั้น 50ms ในเบราว์เซอร์จริงกับโค้ดนี้เป๊ะๆ:
+
+```text
+text: "Add comment"
+disabled: false
+```
+
+คอมเมนต์ยังกำลังถูกเขียนอยู่ (`addComment` ใน demo นี้ใช้เวลา 3 วินาที) แต่ปุ่มไม่เคยแสดงสถานะนั้นเลย วิธีแก้คือย้าย `useFormStatus` ไปอยู่ใน child component แยกต่างหากที่ render *อยู่ข้างใน* `<form>` เหมือนที่บท[ฟอร์มและ progressive enhancement](/nextjs/th/server-actions-and-mutations/forms-and-progressive-enhancement/)แสดงไว้ตั้งแต่แรก
+</SpotTheBug>
+
+### Data flow: `revalidateTag` — ในฟีเจอร์นี้ไม่ได้ใช้ แต่รูปแบบอาร์กิวเมนต์เดียวคือ type error
+
+ฟีเจอร์นี้เรียกแค่ `revalidatePath` ซึ่งรับอาร์กิวเมนต์เดียวและใช้ได้ปกติ แต่โค้ดร่างก่อนหน้าของฟีเจอร์เดียวกันนี้ที่ AI เขียน ใช้ tag-based invalidation แทน และเขียนการเรียกผิดแบบที่ `revalidateTag` มักถูกเขียนผิดจากความจำ:
+
+<SpotTheBug code={`import { revalidateTag } from 'next/cache'
+
+export async function publishPost(id: string) {
+  await db.post.publish(id)
+  revalidateTag('posts')
+}`}>
+ใน Next.js 16 อาร์กิวเมนต์ตัวที่สองของ `revalidateTag` — cache-life profile — เป็นสิ่งจำเป็น รูปแบบอาร์กิวเมนต์เดียวไม่ใช่แค่ runtime warning แต่เป็น compile error:
+
+```text
+error TS2554: Expected 2 arguments, but got 1.
+```
+
+`tsc --noEmit` จับจุดนี้ได้ก่อนที่โค้ดจะไปถึง `next build` ด้วยซ้ำ วิธีแก้คือ `revalidateTag('posts', 'max')` — หรือในเมื่อ action นี้มี path ของโพสต์อยู่ในมืออยู่แล้ว ก็ใช้ `revalidatePath` แบบในโค้ดที่ AI เขียนด้านบน ซึ่งไม่ต้องมีอาร์กิวเมนต์ profile เลย
+</SpotTheBug>
+
+### Auth: `publishPost` ไม่เคยเรียก `verifySession`
+
+ทีนี้มาดู action ที่รันจริง bug ของ `AdminPanel` ซ่อน bug ที่ร้ายแรงกว่าไว้อีกจุดหนึ่ง: พอย้าย `verifySession` ออกจาก Client Component แล้ว มันควรไปอยู่ที่ไหน?
+
+<SpotTheBug code={`'use server'
+
+import { db } from '@/lib/db'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+export async function publishPost(id: string, slug: string) {
+  await db.post.publish(id)
+  revalidatePath(\`/blog/\${slug}\`)
+
+  try {
+    redirect('/blog')
+  } catch (err) {
+    console.error('publishPost: caught instead of redirecting:', err)
+  }
+}`}>
+`publishPost` เป็น Server Action — คือ public POST endpoint ที่เรียกได้จาก action ID ของมันจากที่ไหนก็ได้ ตามที่บท[Server Actions](/nextjs/th/server-actions-and-mutations/what-are-server-actions/)กำหนดไว้ action นี้ไม่เคยเรียก `verifySession()` หรือเช็ค role ใดๆ เลย มันแค่ publish อย่างเดียว build และยิง request จริง จาก browser tab ที่**ไม่มี cookie เลยสักตัว** — ไม่มี session ไม่มี login ไม่มีอะไรทั้งนั้น — กดปุ่ม Publish ที่ render อยู่แล้วโพสต์ก็เปลี่ยนจาก draft เป็น published:
+
+```text
+before clicking Publish (anonymous visitor, no session cookie): Published: false
+after clicking Publish (same anonymous visitor):                Published: true
+```
+
+การที่ปุ่ม Publish ถูก render ออกมาหรือไม่ ไม่เกี่ยวอะไรกับเรื่องนี้เลย — ต่อให้ `page.tsx` render `AdminPanel` เฉพาะสำหรับแอดมินที่ login แล้ว ตัว action ก็ไม่รู้อยู่ดีว่าใครเป็นคนเรียก การ gate ตอน render ตัดสินว่า UI แสดงอะไร แต่ไม่ได้บอกอะไรเลยว่าเซิร์ฟเวอร์ยอมรับอะไรบ้าง
+</SpotTheBug>
+
+### Error/redirect: `redirect()` ถูกกลืนโดย `try/catch`
+
+action `publishPost` เดียวกันนี้มี bug ที่สองที่แยกออกจากกัน หลังแก้ตัวแรกแล้ว: การ redirect กลับไปหน้ารายการบล็อกหลัง publish สำเร็จไม่เคยเกิดขึ้นเลย
+
+<SpotTheBug code={`try {
+  redirect('/blog')
+} catch (err) {
+  console.error('publishPost: caught instead of redirecting:', err)
+}`}>
+`redirect()` ทำงานโดยการ throw control-flow error ที่ Next.js จะดักจับที่ระดับสูงกว่าใน tree `try/catch` นี้ไม่มีการกรองใดๆ เลย — มันดักจับ throw นั้นเหมือนกับ error ทั่วไป แล้ว log แล้วก็กลืนมันไป build, start จริง แล้วคลิกผ่าน browser: URL ของหน้าไม่เคยเปลี่ยนออกจาก `/blog/hello-world` และ log ของเซิร์ฟเวอร์ก็แสดงสิ่งที่ถูกดักจับไว้พอดี:
+
+```text
+publishPost: caught instead of redirecting: Error: NEXT_REDIRECT
+    at i (.next/server/chunks/ssr/_0mwdxwe._.js:149:34576)
+    at j (.next/server/chunks/ssr/_0mwdxwe._.js:149:34754)
+    at f (.next/server/chunks/ssr/_0mwdxwe._.js:150:463) {
+  digest: 'NEXT_REDIRECT;push;/blog;307;'
+}
+```
+
+digest string คือรูปแบบเข้ารหัสของ Next.js เองสำหรับปลายทาง (`/blog`), ชนิดของการนำทาง (`push` ค่า default เมื่อ `redirect()` ถูกเรียกจาก Server Action ที่ผูกกับฟอร์ม) และ status (`307`) — คำนวณไว้หมดแล้ว แต่ถูก `catch` block นี้ทิ้งไป วิธีแก้ เหมือนที่บท[mutations และ revalidation](/nextjs/th/server-actions-and-mutations/mutations-and-revalidation/)พิสูจน์ไว้สำหรับ `notFound()` คือให้ `redirect()` อยู่นอก `try/catch` ที่ไม่ rethrow อย่างชัดเจน
+</SpotTheBug>
+
+## โค้ดหลังแก้
+
+```ts
+// lib/db.ts
+type Post = { id: string; slug: string; title: string; body: string; published: boolean }
+type Comment = { id: string; postId: string; text: string }
+
+const posts = new Map<string, Post>([
+  ['hello-world', { id: 'p1', slug: 'hello-world', title: 'Hello, world', body: 'First post body.', published: false }],
+])
+const comments: Comment[] = []
+
+export const db = {
+  post: {
+    findBySlug: async (slug: string) => posts.get(slug) ?? null,
+    publish: async (id: string) => {
+      for (const p of posts.values()) if (p.id === id) p.published = true
+    },
+  },
+  comment: {
+    listForPost: async (postId: string) => comments.filter((c) => c.postId === postId),
+    create: async (postId: string, text: string) => {
+      const c = { id: `c${comments.length + 1}`, postId, text }
+      comments.push(c)
+      return c
+    },
+    remove: async (id: string) => {
+      const i = comments.findIndex((c) => c.id === id)
+      if (i !== -1) comments.splice(i, 1)
+    },
+  },
+}
+```
+
+```ts
+// app/lib/session.ts
+import 'server-only'
+import { cookies } from 'next/headers'
+
+export async function getSession() {
+  const role = (await cookies()).get('session')?.value
+  return role ? { role } : null
+}
+```
+
+```ts
+// app/lib/dal.ts
+import 'server-only'
+import { cache } from 'react'
+import { redirect } from 'next/navigation'
+import { getSession } from '@/app/lib/session'
+
+// FIX (boundary bug): the one real authorization check, called from every
+// action that touches protected data — never imported into a Client
+// Component, so 'server-only' can never leak across the 'use client' line.
+export const verifySession = cache(async () => {
+  const session = await getSession()
+  if (!session) redirect('/login')
+  return session
+})
+```
+
+```ts
+// app/blog/[slug]/actions.ts
+'use server'
+
+import { db } from '@/lib/db'
+import { verifySession } from '@/app/lib/dal'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+// FIX (auth bug): authorize, then check the role, before mutating anything.
+export async function publishPost(id: string, slug: string) {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    return { error: 'Forbidden' }
+  }
+
+  await db.post.publish(id)
+  revalidatePath(`/blog/${slug}`)
+  // FIX (redirect bug): redirect() lives outside any try/catch now — nothing
+  // can swallow the throw.
+  redirect('/blog')
+}
+
+export async function addComment(slug: string, formData: FormData) {
+  const text = String(formData.get('text') ?? '')
+  const post = await db.post.findBySlug(slug)
+  if (!post) return
+  await new Promise((r) => setTimeout(r, 3000))
+  await db.comment.create(post.id, text)
+  revalidatePath(`/blog/${slug}`)
+}
+
+// FIX (prop bug): exported straight from a 'use server' module, so this is a
+// Server Action reference, not a plain closure — safe to pass as a prop.
+export async function deleteComment(slug: string, id: string) {
+  const session = await verifySession()
+  if (session.role !== 'admin') {
+    return { error: 'Forbidden' }
+  }
+  await db.comment.remove(id)
+  revalidatePath(`/blog/${slug}`)
+}
+```
+
+```tsx
+// app/blog/[slug]/publish-button.tsx
+'use client'
+
+import { useActionState } from 'react'
+import { publishPost } from './actions'
+
+type State = { error?: string } | null
+
+export function PublishButton({ id, slug }: { id: string; slug: string }) {
+  const [state, formAction, pending] = useActionState<State, FormData>(
+    async () => (await publishPost(id, slug)) ?? null,
+    null,
+  )
+  return (
+    <form action={formAction}>
+      <button disabled={pending} type="submit">Publish</button>
+      {state?.error && <p role="alert">{state.error}</p>}
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-list.tsx
+type Comment = { id: string; text: string }
+
+export function CommentList({
+  comments,
+  isAdmin,
+  onDelete,
+}: {
+  comments: Comment[]
+  isAdmin: boolean
+  onDelete: (id: string) => Promise<{ error: string } | undefined>
+}) {
+  return (
+    <ul>
+      {comments.map((c) => (
+        <li key={c.id}>
+          {c.text}
+          {isAdmin && <button onClick={() => onDelete(c.id)}>Delete</button>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/comment-form.tsx
+'use client'
+
+import { useFormStatus } from 'react-dom'
+import { addComment } from './actions'
+
+// FIX (useFormStatus bug): a child of <form> — the only place useFormStatus
+// can see this form's pending state.
+function SubmitButton() {
+  const { pending } = useFormStatus()
+  return <button disabled={pending} type="submit">{pending ? 'Submitting...' : 'Add comment'}</button>
+}
+
+export function CommentForm({ slug }: { slug: string }) {
+  const action = addComment.bind(null, slug)
+  return (
+    <form action={action}>
+      <input name="text" />
+      <SubmitButton />
+    </form>
+  )
+}
+```
+
+```tsx
+// app/blog/[slug]/page.tsx
+import { db } from '@/lib/db'
+import { getSession } from '@/app/lib/session'
+import { PublishButton } from './publish-button'
+import { CommentForm } from './comment-form'
+import { CommentList } from './comment-list'
+import { deleteComment } from './actions'
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  const post = await db.post.findBySlug(slug)
+  if (!post) return <p>Not found</p>
+  const comments = await db.comment.listForPost(post.id)
+  // A page-level read only decides what UI to show — publishPost and
+  // deleteComment still verifySession() and check the role themselves.
+  const session = await getSession()
+  const isAdmin = session?.role === 'admin'
+
+  return (
+    <main>
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+      <p>Published: {String(post.published)}</p>
+      {isAdmin && <PublishButton id={post.id} slug={post.slug} />}
+      <CommentList comments={comments} isAdmin={isAdmin} onDelete={deleteComment.bind(null, slug)} />
+      <CommentForm slug={slug} />
+    </main>
+  )
+}
+```
+
+build ผ่านสะอาดกับ Next.js 16.3.6 — `next build` รายงาน error เป็นศูนย์ warning เป็นศูนย์ ยิง request หน้านี้โดยไม่มี session cookie เลยจะได้หน้าที่ไม่มีปุ่ม Publish และไม่มี error; ยิงพร้อม cookie `session=admin` จะเห็นปุ่ม Publish และกดแล้วโพสต์เปลี่ยนเป็น published พร้อม redirect ไป `/blog` ยิงพร้อม cookie `session=editor` (มี session จริงแต่ role ผิด) แล้วบังคับให้ปุ่ม Publish render ออกมาด้วย จะเห็นว่าตัว action เองปฏิเสธการเขียน:
+
+```text
+anonymous (no cookie), clicking Publish anyway  -> redirected to /login (verifySession has no session at all)
+session=editor (authenticated, wrong role)       -> "Published: false" unchanged, page shows "Forbidden"
+session=admin                                    -> "Published: true", redirected to /blog
+```
+
+## สิ่งที่เปลี่ยนและเหตุผล
+
+| # | Bug | หมวด | วิธีแก้ |
+|---|---|---|---|
+| 1 | `publishPost` ไม่เคยเช็คว่าใครเป็นคนเรียก | Auth | เรียก `verifySession()` แล้วเช็ค `session.role === 'admin'` ก่อนเขียนข้อมูลใดๆ |
+| 2 | `revalidateTag('posts')` — อาร์กิวเมนต์เดียว | Data flow | เพิ่มอาร์กิวเมนต์ profile ที่จำเป็น หรือใช้ `revalidatePath` เมื่อไม่มี tag ให้ invalidate |
+| 3 | `redirect('/blog')` อยู่ใน `try/catch` แบบไม่มีเงื่อนไข | Errors/redirects | ย้าย `redirect()` ออกนอก `try/catch` หรือ rethrow ด้วย `unstable_rethrow` |
+| 4 | `AdminPanel` (`'use client'`) import `verifySession` จากโมดูลที่เป็น `server-only` | Boundaries | ห้าม import DAL เข้า Client Component เด็ดขาด — ส่ง boolean อย่าง `isAdmin` เป็น prop ลงไปแทน |
+| 5 | `onDelete={(id) => console.log(...)}` ส่งจาก Server Component ไปยัง Client Component | Boundaries | ส่ง Server Action reference ที่ export ไว้ (`deleteComment.bind(null, slug)`) แทน closure แบบ inline |
+| 6 | `useFormStatus()` ถูกเรียกในคอมโพเนนต์เดียวกับที่ render `<form>` | Boundaries | ย้าย hook ไปไว้ใน component ลูกชื่อ `SubmitButton` ที่ render อยู่ข้างในฟอร์ม |
+
+## Mental Model
+
+Bug ทั้ง 6 จุดนี้ compile ผ่านและดูสมเหตุสมผลเมื่อดูแยกกัน — นี่คือเหตุผลที่ AI assistant เขียนมันออกมาด้วยความมั่นใจเต็มที่ สามจุด (import `server-only`, prop ที่ serialize ไม่ได้, arity ของ `revalidateTag`) เป็นข้อเท็จจริงตอน build ที่ compiler รู้อยู่แล้วและจะบอกทันทีที่ build ส่วนอีกสามจุด (auth หายไป, redirect ถูกกลืน, hook อยู่ผิดที่) เป็นข้อเท็จจริงตอน runtime ที่ไม่มี compiler ตัวไหนเช็คให้ — วิธีเดียวที่จะจับได้คือรัน request จริงที่จะกระตุ้นมัน ซึ่งเป็นเหตุผลที่รีวิวนี้ใช้ curl, การ `next build` จริง และ browser จริง แทนที่จะนั่งอ่านโค้ดเฉยๆ
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"compile ผ่านและหน้าเว็บ render ถูกต้อง แปลว่าใช้ได้แล้ว"** สี่ในหกจุดนี้ทำให้หน้าเว็บดูปกติสมบูรณ์แบบ ปุ่ม Publish ก็ทำงาน หน้าก็ redirect (เมื่อไม่ได้พัง) — bug ทั้งหมดอยู่ที่ว่าใครมีสิทธิ์กระตุ้นมันได้ และเกิดอะไรขึ้นเมื่อมันเกิด throw
+- **"การเช็คแอดมินใน Client Component คือ security boundary"** การที่ `AdminPanel` ตัดสินใจว่าจะ *render* ปุ่มหรือไม่ ไม่เกี่ยวอะไรเลยกับว่า `publishPost` จะยอมรับ request ที่ปุ่มนั้นส่งไปหรือไม่
+- **"`try/catch` รอบการเขียนข้อมูลคือทางเลือกที่ปลอดภัยที่สุดเสมอ"** ในกรณีนี้มันซ่อนสิ่งเดียว (redirect กลับไปหน้ารายการที่เพิ่งอัปเดต) ที่ฟีเจอร์นี้ต้องการส่งมอบจริงๆ
+
+<Mermaid title="แต่ละ bug อยู่ตรงไหนในลำดับการอ่าน" code={wr1Diagram} />
+
+export const wr1Diagram = `flowchart TD
+  A["1. Boundaries"] --> A1["server-only import into 'use client'"]
+  A --> A2["non-serializable prop, Server to Client"]
+  A --> A3["useFormStatus in the form's own component"]
+  B["2. Data flow"] --> B1["revalidateTag with one argument"]
+  C["3. Auth"] --> C1["publishPost with no verifySession()"]
+  D["4. Errors/redirects"] --> D1["redirect() inside try/catch"]
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Bug ทุกจุดในรีวิวนี้ compile ผ่านสะอาด และวิธีแก้แต่ละอันก็เป็นหนึ่งในสองแนวทางที่คอร์สนี้ย้ำซ้ำๆ: อย่าให้โค้ดที่เป็น server-only หลุดเข้าไปใน client bundle และห้ามให้ `try/catch` ของตัวเองไปขวางระหว่าง `redirect()`/`notFound()` กับ framework ที่ควรจะดักจับมัน
+</Callout>
+
+export const quizWorkedReview1 = [
+  {
+    q: "`admin-panel.tsx` ขึ้นต้นด้วย `'use client'` และ import `verifySession` จาก `app/lib/dal.ts` ซึ่งขึ้นต้นด้วย `import 'server-only'` เกิดอะไรขึ้นตอน build?",
+    options: [
+      'build ผ่านปกติ — import ข้าม client boundary อนุญาตได้เสมอ',
+      "Turbopack ทำให้ build ล้มเหลว: โมดูลที่พึ่งพา 'server-only' import เข้า Client Component ไม่ได้",
+      'build ผ่าน แต่ verifySession คืนค่า null เงียบๆ ใน browser',
+      'ล้มเหลวเฉพาะตอน development เท่านั้น',
+    ],
+    answer: 1,
+    explain: "'server-only' มีไว้เพื่อทำให้นี่เป็น build-time error แทนที่จะเป็น runtime leak ข้อความ error บอกชื่อไฟล์และอธิบายว่า parent ตัวหนึ่งถูกทำเครื่องหมายด้วย 'use client'",
+  },
+  {
+    q: "```tsx\nexport default async function BlogPost() {\n  return <CommentList onDelete={(id) => console.log(id)} />\n}\n```\nทำไมโค้ดนี้ build ไม่ผ่าน ทั้งที่ `BlogPost` ไม่มี directive `'use client'` เลย?",
+    options: [
+      'ไม่ล้มเหลวหรอก — Server Component ส่ง prop อะไรก็ได้',
+      'event handler (function) ส่งเป็น prop จาก Server Component ไปยัง Client Component ไม่ได้ — มันไม่มีรูปแบบที่ serialize ได้',
+      'CommentList ต้องเป็น Server Component ด้วย',
+      'onDelete ต้องเปลี่ยนชื่อเป็น prop ที่ React สงวนไว้',
+    ],
+    answer: 1,
+    explain: "prop ที่ข้ามจาก Server ไป Client ต้อง serialize เข้า RSC payload ได้ closure ไม่มีรูปแบบ serialize เลย Next.js จึงปฏิเสธตอน build/prerender ด้วยข้อความ 'Event handlers cannot be passed to Client Component props.'",
+  },
+  {
+    q: 'ใน CommentForm เวอร์ชันที่มี bug `useFormStatus()` ถูกเรียกตรงๆ ในคอมโพเนนต์เดียวกับที่ render `<form>` สิ่งที่สังเกตได้ 50ms หลังกด submit บน action ที่ทำงานช้าคืออะไร?',
+    options: [
+      'pending: true ตามที่คาดไว้',
+      'pending: false — useFormStatus รายงานสถานะของ form ที่เป็น ancestor เท่านั้น และคอมโพเนนต์นี้ไม่ใช่ descendant ของตัวมันเอง',
+      'เกิด runtime error',
+      'ฟอร์มไม่ submit เลย',
+    ],
+    answer: 1,
+    explain: 'useFormStatus อ่านค่าจาก form ที่เป็น ancestor ที่ใกล้ที่สุดใน render tree คอมโพเนนต์ที่ render <form> เองไม่ใช่ descendant ของมัน pending จึงไม่เคยเป็น true ที่นั่น — พิสูจน์ตรงกับ action ที่ใช้เวลา 3 วินาที',
+  },
+  {
+    q: '`publishPost` ไม่เคยเรียก `verifySession()` เกิดอะไรขึ้นเมื่อผู้เยี่ยมชมที่ไม่ระบุตัวตนโดยสิ้นเชิง (ไม่มี session cookie เลย) กดปุ่ม Publish ที่ render อยู่?',
+    options: [
+      'ไม่มีอะไรเกิดขึ้น — Next.js ปฏิเสธการเรียก Server Action ที่ไม่ authenticate โดยอัตโนมัติ',
+      'โพสต์ publish ไปเลย — พิสูจน์กับ build จริง Published เปลี่ยนจาก false เป็น true โดยไม่มี session state ใดๆ',
+      'action เกิด TypeScript error ตอน build',
+      'ปุ่มถูก disable สำหรับผู้ที่ไม่ใช่แอดมินโดยอัตโนมัติ',
+    ],
+    answer: 1,
+    explain: 'Server Action คือ public POST endpoint เมื่อไม่มีการเรียก verifySession() เลยใน publishPost ก็ไม่มีอะไรเช็คว่าใครเป็นคนเรียก การกดของผู้เยี่ยมชมที่ไม่ระบุตัวตนจึง publish โพสต์ได้เหมือนกับที่แอดมินกด',
+  },
+  {
+    q: '```ts\ntry {\n  redirect(\'/blog\')\n} catch (err) {\n  console.error(err)\n}\n```\nยิง request จริงหลัง publish สำเร็จ server log แสดงอะไรและ browser ไปจบที่ไหน?',
+    options: [
+      'server ไม่ log อะไรเลย และ browser ไปจบที่ /blog',
+      'server log digest ของ NEXT_REDIRECT ที่ถูกดักจับ และ browser ยังอยู่ที่หน้าโพสต์เดิม',
+      'server crash ด้วย unhandled exception',
+      'redirect เกิดขึ้น แต่หลังจากหน่วงไป 5 วินาที',
+    ],
+    answer: 1,
+    explain: "redirect() throw Error ที่มี digest 'NEXT_REDIRECT;push;/blog;307;' try/catch นี้ไม่มีการกรองใดๆ จึงดักจับ throw นั้น log มัน และ browser ไม่เคยนำทางออกไปเลย",
+  },
+  {
+    q: '```ts\nrevalidateTag(\'posts\')\n```\nเกิดอะไรขึ้นเมื่อบรรทัดนี้ถูก compile กับ Next.js 16?',
+    options: [
+      'compile ผ่านและ revalidate tag posts ในพื้นหลัง',
+      'error TS2554: Expected 2 arguments, but got 1 — จำเป็นต้องมีอาร์กิวเมนต์ profile',
+      'มันไม่ทำอะไรเงียบๆ ตอน runtime โดยที่ compiler ไม่บ่นอะไรเลย',
+      'ใช้ได้เฉพาะใน Route Handler เท่านั้น ไม่ใช่ Server Action',
+    ],
+    answer: 1,
+    explain: 'revalidateTag ต้องการอาร์กิวเมนต์ตัวที่สองซึ่งเป็น cache-life profile ใน Next.js 16 tsc --noEmit ปฏิเสธรูปแบบอาร์กิวเมนต์เดียวทันที — จับได้ก่อนที่ next build จะรันด้วยซ้ำ',
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/worked-review-1" questions={quizWorkedReview1} />
+
+<ProgressTracker client:visible id="reading-worked-1" />

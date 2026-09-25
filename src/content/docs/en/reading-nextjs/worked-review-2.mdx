@@ -1,0 +1,597 @@
+---
+title: 'Worked review 2: a dashboard with login, streaming charts, and a settings form'
+description: 'An AI-generated dashboard — proxy-based auth, a streamed chart under Cache Components, and a settings form — reviewed bug by bug against a real Next.js 16.3.6 build and browser.'
+sidebar:
+  order: 6
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## The feature
+
+The prompt was: *"Build a dashboard behind login, with a streamed chart and a settings form the user can save."* This project already has `cacheComponents: true` in `next.config.ts` — the AI assistant was told that, and mostly wrote for it, but it still reaches for a few patterns straight out of its pre-16 training data. Read it in the same [reading order](/nextjs/en/reading-nextjs/index/) as the first review: boundaries and rendering first, then the caching model, then config. It has **6 real bugs**, and `next build` only catches two of them.
+
+## The generated code
+
+```ts
+// middleware.ts — as generated
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+import { randomUUID } from 'node:crypto'
+
+export const config = { runtime: 'edge' }
+
+export function middleware(request: NextRequest) {
+  const requestId = randomUUID()
+  const response = NextResponse.next()
+  response.headers.set('x-request-id', requestId)
+  return response
+}
+```
+
+```ts
+// next.config.ts — as generated
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+```tsx
+// app/dashboard/page.tsx — as generated
+import { cookies } from 'next/headers'
+import { Suspense } from 'react'
+import { Chart } from './chart'
+import { SettingsForm } from './settings-form'
+import { LastRefreshed } from './last-refreshed'
+import { AnalyticsWidget } from './analytics-widget'
+
+export const revalidate = 60
+
+export default async function DashboardPage() {
+  const theme = (await cookies()).get('theme')?.value ?? 'light'
+  return (
+    <main>
+      <h1>Dashboard</h1>
+      <p>theme: {theme}</p>
+      <Suspense fallback={<p>Loading chart…</p>}>
+        <Chart />
+      </Suspense>
+      <LastRefreshed />
+      <SettingsForm />
+      <AnalyticsWidget />
+    </main>
+  )
+}
+```
+
+```tsx
+// app/dashboard/chart.tsx — as generated
+async function getChartData() {
+  await new Promise((r) => setTimeout(r, 50))
+  return { points: [3, 7, 5, 9] }
+}
+
+export async function Chart() {
+  const data = await getChartData()
+  return <p>chart points: {data.points.join(',')}</p>
+}
+```
+
+```tsx
+// app/dashboard/settings-form.tsx — as generated
+'use client'
+
+import { useFormState } from 'react-dom'
+import { saveSettings } from './actions'
+
+export function SettingsForm() {
+  const [state, formAction] = useFormState(saveSettings, { ok: false, name: '' })
+  return (
+    <form action={formAction}>
+      <input name="name" defaultValue={state.name} />
+      <button type="submit">Save</button>
+      {state.ok && state.name && <p>Saved {state.name}</p>}
+    </form>
+  )
+}
+```
+
+```ts
+// app/dashboard/actions.ts — as generated
+'use server'
+
+export async function saveSettings(prevState: unknown, formData: FormData) {
+  const name = String(formData.get('name') ?? '')
+  return { ok: true, name }
+}
+```
+
+```tsx
+// app/dashboard/last-refreshed.tsx — as generated
+'use client'
+
+export function LastRefreshed() {
+  return <p>Last refreshed: {Date.now()}</p>
+}
+```
+
+```tsx
+// app/dashboard/analytics-widget.tsx — as generated
+'use client'
+
+export function AnalyticsWidget() {
+  return <div data-analytics-id={process.env.NEXT_PUBLIC_ANALYTICS_KEY} />
+}
+```
+
+## The review walk
+
+### Boundaries and rendering: `Date.now()` read directly in a Client Component's render
+
+`LastRefreshed` prints `Date.now()` straight into JSX.
+
+<SpotTheBug code={`'use client'
+
+export function LastRefreshed() {
+  return <p>Last refreshed: {Date.now()}</p>
+}`}>
+Every Client Component renders twice: once on the server for the initial HTML, once again in the browser during hydration. `Date.now()` has millisecond resolution, so the two renders almost never agree. Loading this exact component in a real browser against `next dev` produces React 19's own hydration-mismatch error, with the actual two values it disagreed on:
+
+```text
+Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+...
+  <Page params={Promise} searchParams={Promise}>
+    <p>
++                           1790318503755
+-                           1790318503711
+```
+
+The fix is the same one the [static and dynamic rendering](/nextjs/en/rendering/static-and-dynamic-rendering/) lesson proves: `useSyncExternalStore` with a fixed `getServerSnapshot`, so the SSR render and the hydration render agree on a placeholder by construction, and the real clock value only appears after hydration finishes.
+</SpotTheBug>
+
+### Boundaries and rendering: `useFormState` instead of `useActionState`
+
+`SettingsForm` imports `useFormState` from `react-dom`.
+
+<SpotTheBug code={`'use client'
+
+import { useFormState } from 'react-dom'
+import { saveSettings } from './actions'
+
+export function SettingsForm() {
+  const [state, formAction] = useFormState(saveSettings, { ok: false, name: '' })
+  return (
+    <form action={formAction}>
+      <input name="name" defaultValue={state.name} />
+      <button type="submit">Save</button>
+      {state.ok && state.name && <p>Saved {state.name}</p>}
+    </form>
+  )
+}`}>
+`useFormState` was React 18's canary-era name; React 19 renamed it `useActionState` and moved it to the `react` package. `react-dom` still exports `useFormState` for backward compatibility, but it logs a real console error, naming the exact component, the moment it runs — captured verbatim against React 19.2.8 in a real browser:
+
+```text
+[ERROR] ReactDOM.useFormState has been renamed to React.useActionState. Please update %s to use React.useActionState. SettingsForm
+```
+
+The build succeeds either way — this is a runtime-only signal, invisible to `next build` and `tsc`. The fix is `import { useActionState } from 'react'` in place of `useFormState` from `react-dom`; the call signature is unchanged.
+</SpotTheBug>
+
+### Caching model: `cookies()` read above the `<Suspense>` boundary
+
+`next.config.ts` has `cacheComponents: true`. `DashboardPage` reads `cookies()` at the top of the function, before returning any JSX — including the `<Suspense>` boundary around `Chart`.
+
+<SpotTheBug code={`import { cookies } from 'next/headers'
+import { Suspense } from 'react'
+import { Chart } from './chart'
+
+export default async function DashboardPage() {
+  const theme = (await cookies()).get('theme')?.value ?? 'light'
+  return (
+    <main>
+      <p>theme: {theme}</p>
+      <Suspense fallback={<p>Loading chart…</p>}>
+        <Chart />
+      </Suspense>
+    </main>
+  )
+}`}>
+Under Cache Components, a request-time API has to sit inside a `<Suspense>` boundary — the framework needs to know exactly which part of the tree is allowed to wait for request data so it can prerender everything else as a static shell. `cookies()` here runs before the function returns any JSX at all, so there's no boundary around it yet. Building this exact page fails outright, not with a vague warning:
+
+```text
+Error: Route "/dashboard": Next.js encountered uncached or runtime data during prerendering.
+
+`fetch(...)`, `cookies()`, `headers()`, `params`, `searchParams`, or `connection()` accessed outside of `<Suspense>` prevents the route from being prerendered, blocking the page load and leading to a slower user experience.
+
+Ways to fix this:
+  - [stream] Provide a placeholder with `<Suspense fallback={...}>` around the data access
+  - [cache] For uncached data (`fetch`, database calls): cache the access with `"use cache"` (does not apply to `connection()`)
+  - [block] Set `export const instant = false` to allow a blocking route
+```
+
+The fix is to push the `cookies()` read down into its own small async component and wrap that in its own `<Suspense>`, exactly the way a slow `await` gets its own boundary in the [streaming and Suspense](/nextjs/en/rendering/streaming-and-suspense/) lesson.
+</SpotTheBug>
+
+### Caching model: a Route Segment Config export next to `cacheComponents`
+
+`app/dashboard/page.tsx` also has `export const revalidate = 60` sitting at the top of the file.
+
+<SpotTheBug code={`export const revalidate = 60
+
+export default async function DashboardPage() {
+  // ...
+}`}>
+Route Segment Config (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`) is the *previous* caching model. It is mutually exclusive with Cache Components — every one of those exports fails the build the instant `cacheComponents: true` is set, regardless of the value:
+
+```text
+Error: Turbopack build failed with 1 error:
+./app/dashboard/page.tsx:2:14
+Error: Route segment config "revalidate" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+There is no direct replacement for a page-level `revalidate` under Cache Components — the equivalent is wrapping the specific cached work in `'use cache'` with a `cacheLife` profile, exactly at the granularity that actually needs it, as the [route segment config](/nextjs/en/rendering/route-segment-config-and-runtimes/) lesson's full mapping table shows.
+</SpotTheBug>
+
+### Config: `middleware.ts` assuming the Edge runtime
+
+The project has a `middleware.ts` (not `proxy.ts`) that reads `randomUUID` from `node:crypto` and opts into the Edge runtime.
+
+<SpotTheBug code={`import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+import { randomUUID } from 'node:crypto'
+
+export const config = { runtime: 'edge' }
+
+export function middleware(request: NextRequest) {
+  const requestId = randomUUID()
+  const response = NextResponse.next()
+  response.headers.set('x-request-id', requestId)
+  return response
+}`}>
+Three separate, real signals fire on this file, in order. First, the filename itself:
+
+```text
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+
+  To migrate automatically, run:
+  npx @next/codemod@canary middleware-to-proxy .
+```
+
+Second, the Edge runtime genuinely cannot load a Node.js built-in:
+
+```text
+Warning: A Node.js module is loaded ('node:crypto' at line 3) which is not supported in the Edge Runtime.
+```
+
+Third, the build fails outright, because Edge itself is deprecated for rendering:
+
+```text
+Error: Page /middleware provided runtime 'edge', the edge runtime for rendering is currently experimental. Use runtime 'experimental-edge' instead.
+```
+
+The fix is the file rename plus dropping both the runtime opt-in and the Node-only import: `proxy.ts`, no `config.runtime`, and `NextResponse.next()` alone is enough for a header-forwarding proxy — the default (and now only sensible) runtime is Node.js, exactly as the [middleware and the request lifecycle](/nextjs/en/production-and-ecosystem/middleware-and-the-request-lifecycle/) lesson establishes.
+</SpotTheBug>
+
+### Config: a real secret behind `NEXT_PUBLIC_`
+
+`AnalyticsWidget` reads `process.env.NEXT_PUBLIC_ANALYTICS_KEY` — a name that sounds like the public analytics id every other lesson in this course uses as its example, but here it holds a live API key.
+
+<SpotTheBug code={`'use client'
+
+export function AnalyticsWidget() {
+  return <div data-analytics-id={process.env.NEXT_PUBLIC_ANALYTICS_KEY} />
+}`}>
+The `NEXT_PUBLIC_` prefix does exactly what it says regardless of what the variable is actually named — it tells Next.js to inline the value, as a literal, into the JavaScript shipped to every visitor's browser. Setting `NEXT_PUBLIC_ANALYTICS_KEY` to a live-looking secret in `.env.local` and building this exact component, then grepping the emitted client chunk, finds the value sitting in plain text:
+
+```text
+["default",0,function(){return(0,e.jsx)("div",{"data-key":"sk_live_51H8xNOTAREALSE...
+```
+
+Nothing here is a build error or even a warning — `NEXT_PUBLIC_` values are inlined by design, and Next.js has no way to know that this particular one is a real credential rather than a harmless public id. The fix is to never prefix a value that must stay secret; a real API key belongs in an unprefixed server-only variable (`ANALYTICS_SECRET_KEY`), read only inside a Server Component, a Server Action, or a Route Handler, exactly as the [environment and configuration](/nextjs/en/production-and-ecosystem/environment-and-configuration/) lesson proves for the reverse case (a genuinely public value accessed the wrong way).
+</SpotTheBug>
+
+## The corrected code
+
+```ts
+// proxy.ts
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+// FIX (config bug): current file name (proxy.ts), default Node.js runtime —
+// no runtime export, no Edge opt-in, no Node-only import that Edge would
+// reject.
+export function proxy(request: NextRequest) {
+  return NextResponse.next()
+}
+
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+}
+```
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+```
+
+```tsx
+// app/dashboard/theme-badge.tsx
+import { cookies } from 'next/headers'
+
+// FIX (caching bug): the cookies() read now lives inside the component that
+// a <Suspense> boundary wraps, not above it.
+export async function ThemeBadge() {
+  const theme = (await cookies()).get('theme')?.value ?? 'light'
+  return <p>theme: {theme}</p>
+}
+```
+
+```tsx
+// app/dashboard/chart.tsx
+import { cacheLife } from 'next/cache'
+
+async function getChartData() {
+  'use cache'
+  cacheLife('minutes')
+  await new Promise((r) => setTimeout(r, 50))
+  return { points: [3, 7, 5, 9] }
+}
+
+// FIX (segment config bug): no route segment config export anywhere in this
+// project — caching is expressed with 'use cache' + cacheLife instead.
+export async function Chart() {
+  const data = await getChartData()
+  return <p>chart points: {data.points.join(',')}</p>
+}
+```
+
+```ts
+// app/dashboard/actions.ts
+'use server'
+
+export async function saveSettings(prevState: unknown, formData: FormData) {
+  const name = String(formData.get('name') ?? '')
+  return { ok: true, name }
+}
+```
+
+```tsx
+// app/dashboard/settings-form.tsx
+'use client'
+
+// FIX (useFormState bug): useActionState from 'react', not useFormState from
+// 'react-dom'.
+import { useActionState } from 'react'
+import { useFormStatus } from 'react-dom'
+import { saveSettings } from './actions'
+
+function SubmitButton() {
+  const { pending } = useFormStatus()
+  return <button disabled={pending} type="submit">{pending ? 'Saving...' : 'Save'}</button>
+}
+
+export function SettingsForm() {
+  const [state, formAction] = useActionState(saveSettings, { ok: false, name: '' })
+  return (
+    <form action={formAction}>
+      <input name="name" defaultValue={state.name} />
+      <SubmitButton />
+      {state.ok && state.name && <p>Saved {state.name}</p>}
+    </form>
+  )
+}
+```
+
+```tsx
+// app/dashboard/last-refreshed.tsx
+'use client'
+
+// FIX (hydration bug): useSyncExternalStore with a deterministic
+// getServerSnapshot — the SSR render and the hydration render both see 0, so
+// there is nothing to mismatch; the real clock value only appears after
+// hydration finishes.
+import { useSyncExternalStore } from 'react'
+
+function subscribe() {
+  return () => {}
+}
+function getSnapshot() {
+  return Date.now()
+}
+function getServerSnapshot() {
+  return 0
+}
+
+export function LastRefreshed() {
+  const ts = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  return <p>Last refreshed: {ts === 0 ? '—' : new Date(ts).toLocaleTimeString()}</p>
+}
+```
+
+```tsx
+// app/dashboard/analytics-widget.tsx
+'use client'
+
+// FIX (secret bug): only a genuinely public analytics id carries the
+// NEXT_PUBLIC_ prefix; the real secret stays server-only.
+export function AnalyticsWidget() {
+  return <div data-analytics-id={process.env.NEXT_PUBLIC_ANALYTICS_ID} />
+}
+```
+
+```tsx
+// app/dashboard/page.tsx
+import { Suspense } from 'react'
+import { ThemeBadge } from './theme-badge'
+import { Chart } from './chart'
+import { SettingsForm } from './settings-form'
+import { LastRefreshed } from './last-refreshed'
+import { AnalyticsWidget } from './analytics-widget'
+
+export default function DashboardPage() {
+  return (
+    <main>
+      <h1>Dashboard</h1>
+      <Suspense fallback={<p>Loading theme…</p>}>
+        <ThemeBadge />
+      </Suspense>
+      <Suspense fallback={<p>Loading chart…</p>}>
+        <Chart />
+      </Suspense>
+      <LastRefreshed />
+      <SettingsForm />
+      <AnalyticsWidget />
+    </main>
+  )
+}
+```
+
+Built clean against Next.js 16.3.6 with `cacheComponents: true` — `next build` reports 0 errors, 0 warnings, and lists `/dashboard` as a Partial Prerender with the `'minutes'` cache profile's real numbers:
+
+```text
+Route (app)           Revalidate  Expire
+┌ ○ /
+├ ○ /_not-found
+└ ◐ /dashboard                1m      1h
+
+ƒ Proxy (Middleware)
+```
+
+Starting the built server and requesting `/dashboard` confirms every fix end to end — `theme: light` (the fixed `cookies()` read inside its own `<Suspense>`), `chart points: 3,7,5,9` (a `'use cache'` value, not a route segment config), the real analytics id present in the client bundle, and the real secret genuinely absent from every static chunk:
+
+```text
+theme: light
+chart points: 3,7,5,9
+grep for the secret value across .next/static/chunks/ -> no matches
+grep for NEXT_PUBLIC_ANALYTICS_ID's value across .next/static/chunks/ -> 1 match (expected — it's meant to be public)
+```
+
+## What changed and why
+
+| # | Bug | Category | Fix |
+|---|---|---|---|
+| 1 | `Date.now()` read directly in a Client Component's render | Boundaries/rendering | `useSyncExternalStore` with a fixed `getServerSnapshot` |
+| 2 | `useFormState` from `react-dom` | Boundaries/rendering | `useActionState` from `react` |
+| 3 | `cookies()` read above the `<Suspense>` boundary | Caching model | Push the read into its own component, inside its own `<Suspense>` |
+| 4 | `export const revalidate = 60` next to `cacheComponents: true` | Caching model | Remove it; use `'use cache'` + `cacheLife` at the granularity that needs it |
+| 5 | `middleware.ts` with `runtime: 'edge'` and a `node:crypto` import | Config | Rename to `proxy.ts`, drop the runtime export and the Node-only import |
+| 6 | A live API key named `NEXT_PUBLIC_ANALYTICS_KEY` | Config | Never prefix a secret; keep it in an unprefixed, server-only variable |
+
+## Mental Model
+
+This review's bugs split cleanly into two kinds, and the split tracks exactly what tooling can see. `cookies()` above `<Suspense>` and the segment-config-next-to-`cacheComponents` bug are both build-time facts — `next build` already knows the caching model this project runs and rejects code written for the other one. `Date.now()` in render, `useFormState`, the Edge-runtime assumption, and the leaked secret are all runtime facts: the code is syntactically valid Next.js either way, and only running it — a real browser, a real request, a real grep through the built output — tells you which one you actually have.
+
+## Common Misconceptions
+
+- **"`cacheComponents: true` in `next.config.ts` means every file in the project already writes for it."** This exact project has the flag on and still shipped a Route Segment Config export and a `middleware.ts` written like a pre-16 tutorial — the flag doesn't retroactively fix code written against the old model.
+- **"A variable name like `NEXT_PUBLIC_ANALYTICS_KEY` is fine because it *sounds* like the public id every example uses."** The prefix inlines whatever the variable actually holds, regardless of what the rest of its name implies.
+- **"`useFormState` still works, so it's not really a bug."** It runs, but React 19 logs a real error naming the exact broken component — treating "it doesn't crash" as "it's fine" misses a signal the framework is actively trying to give you.
+
+<Mermaid title="Where each bug sits in the reading order" code={wr2Diagram} />
+
+export const wr2Diagram = `flowchart TD
+  A["1. Boundaries and rendering"] --> A1["Date.now() in a Client Component's render"]
+  A --> A2["useFormState instead of useActionState"]
+  B["2. Caching model"] --> B1["cookies() above the Suspense boundary"]
+  B --> B2["revalidate export next to cacheComponents"]
+  C["5. Config"] --> C1["middleware.ts assuming the Edge runtime"]
+  C --> C2["a real secret named NEXT_PUBLIC_..."]
+`;
+
+<Callout title="The one-line takeaway">
+A project with `cacheComponents: true` still needs every file to actually be written for it — check that request-time reads sit inside `<Suspense>`, that no Route Segment Config export survived from an older draft, and that `proxy.ts` (never `middleware.ts` assuming Edge) is the only thing running in front of every request.
+</Callout>
+
+export const quizWorkedReview2 = [
+  {
+    q: "```tsx\n'use client'\nexport function LastRefreshed() {\n  return <p>Last refreshed: {Date.now()}</p>\n}\n```\nWhat happens when this Client Component is server-rendered and then hydrates in the browser?",
+    options: [
+      'Nothing — Date.now() always returns the same value within one request',
+      "A hydration mismatch — millisecond resolution means the server render and the hydration render almost never agree, producing React's own hydration-failed error with the two literal numbers",
+      'A TypeScript compile error',
+      'Next.js automatically freezes the value at build time',
+    ],
+    answer: 1,
+    explain: "Date.now() runs again during the browser's hydration render, producing a different millisecond value than the server render did — proven with a real captured error showing two different timestamps.",
+  },
+  {
+    q: "What is the real, observable difference between `useFormState` (react-dom) and `useActionState` (react) in React 19.2.8?",
+    options: [
+      'They are aliases with identical behavior and no observable difference',
+      "useFormState still runs, but logs a console error naming the component and telling you to switch to useActionState",
+      'useFormState throws immediately and crashes the app',
+      'useFormState only works in Server Components',
+    ],
+    answer: 1,
+    explain: "react-dom keeps useFormState as a backward-compatible alias, but it logs 'ReactDOM.useFormState has been renamed to React.useActionState. Please update %s...' with the real component name — a runtime signal invisible to next build or tsc.",
+  },
+  {
+    q: "```tsx\nexport default async function DashboardPage() {\n  const theme = (await cookies()).get('theme')?.value\n  return (\n    <main>\n      <Suspense fallback={<p>...</p>}>\n        <Chart />\n      </Suspense>\n    </main>\n  )\n}\n```\nWith `cacheComponents: true`, why does this fail to build?",
+    options: [
+      'cookies() is not allowed anywhere in this project',
+      'cookies() is read before any JSX (including the Suspense boundary) is returned, so it is effectively outside <Suspense> — Cache Components requires request-time reads to be wrapped',
+      'Chart must be a Client Component',
+      'Suspense cannot wrap an async Server Component',
+    ],
+    answer: 1,
+    explain: 'The exact error is "Next.js encountered uncached or runtime data during prerendering" — cookies() here executes before any Suspense boundary exists in the returned tree, so nothing shields the rest of the route from it.',
+  },
+  {
+    q: "```ts\n// next.config.ts\nconst nextConfig = { cacheComponents: true }\n```\n```tsx\n// app/dashboard/page.tsx\nexport const revalidate = 60\n```\nWhat happens when this project runs `next build`?",
+    options: [
+      'It builds fine — revalidate just confirms the cache duration',
+      'The build fails: Route Segment Config exports are rejected once cacheComponents is on, regardless of the value',
+      'It silently falls back to the old caching model for this one route',
+      'It only fails in development mode',
+    ],
+    answer: 1,
+    explain: 'Route Segment Config and Cache Components are mutually exclusive models. The real error names the export directly: \'Route segment config "revalidate" is not compatible with `nextConfig.cacheComponents`. Please remove it.\'',
+  },
+  {
+    q: "A project has `middleware.ts` (not `proxy.ts`) with `export const config = { runtime: \'edge\' }` and an `import { randomUUID } from \'node:crypto\'`. Which of these actually happens when it builds?",
+    options: [
+      'Only a deprecation warning for the filename — everything else works fine on Edge',
+      'Three separate real signals: a filename-deprecation warning, a warning that node:crypto is unsupported on Edge, and a build error because Edge is deprecated for rendering',
+      'Nothing — Node built-ins work fine on the Edge runtime in Next.js 16',
+      'A silent fallback to the Node.js runtime with no warnings at all',
+    ],
+    answer: 1,
+    explain: "All three fire in this exact order: the middleware-file-convention deprecation warning, 'A Node.js module is loaded (\\'node:crypto\\'...) which is not supported in the Edge Runtime', and finally a hard build error naming the Edge runtime as deprecated for rendering.",
+  },
+  {
+    q: 'An analytics widget reads `process.env.NEXT_PUBLIC_ANALYTICS_KEY`, and that variable actually holds a live, sensitive API key. What does `next build` do about it?',
+    options: [
+      'Refuses to build, since NEXT_PUBLIC_ names that look like secrets are rejected',
+      'Nothing — it inlines the value into the client bundle exactly as it would for any other NEXT_PUBLIC_ variable, with no warning that this one looks sensitive',
+      'Automatically encrypts the value before shipping it',
+      'Strips the variable and replaces it with undefined',
+    ],
+    answer: 1,
+    explain: "The NEXT_PUBLIC_ prefix inlines whatever the variable holds, unconditionally — grepping the built client chunk finds the live key in plain text. Next.js has no way to know the value is sensitive; the prefix is the only signal, and it was used incorrectly here.",
+  },
+];
+
+<Quiz client:visible id="reading-nextjs/worked-review-2" questions={quizWorkedReview2} />
+
+<ProgressTracker client:visible id="reading-worked-2" />
