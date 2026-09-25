@@ -1,6 +1,6 @@
 ---
 title: 'Static and Dynamic Rendering'
-description: 'How Next.js renders routes statically by default, what flips a route to dynamic (Dynamic APIs, uncached fetch, force-dynamic), how generateStaticParams prerenders dynamic segments, and how to read the build output.'
+description: 'How Next.js renders routes statically by default, what flips a route to dynamic, how generateStaticParams prerenders dynamic segments, how to read the build output, and how to read a real React 19 hydration error.'
 sidebar:
   order: 1
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
 This lesson describes the default model, with `cacheComponents` **off** in `next.config.ts`. The Partial Prerendering and `use cache` lessons turn `cacheComponents: true` on, and under that flag two things below change: `export const dynamic = 'force-dynamic'` fails the build (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`), and a route is no longer flipped wholesale to dynamic — reading `cookies()` at the top of a page outside `<Suspense>` fails the build instead (`Next.js encountered uncached or runtime data during prerendering`), so the request-time part must sit inside a `<Suspense>` boundary.
@@ -23,13 +24,13 @@ Next.js prerenders every route as static HTML at build time unless the route rea
 A route with no request-time inputs is rendered once at build time and served as static HTML. Nothing runs per request; the same bytes go to everyone.
 
 ```tsx
-// app/about/page.tsx — no dynamic APIs, so this is prerendered at build time
+// app/about/page.tsx
 export default function AboutPage() {
   return <h1>About us</h1>;
 }
 ```
 
-This is the fastest path: the HTML sits on a CDN and returns instantly. Most marketing, docs, and content pages should stay here.
+No Dynamic API is used, so this page is prerendered at build time. This is the fastest path: the HTML sits on a CDN and returns instantly. Most marketing, docs, and content pages should stay here.
 
 ## What flips a route to dynamic
 
@@ -40,7 +41,7 @@ A route switches to **dynamic rendering** the moment it depends on something onl
 - An explicit **`export const dynamic = 'force-dynamic'`**.
 
 ```tsx
-// app/dashboard/page.tsx — reading cookies() flips this route to dynamic
+// app/dashboard/page.tsx
 import { cookies } from 'next/headers';
 
 export default async function Dashboard() {
@@ -50,7 +51,7 @@ export default async function Dashboard() {
 }
 ```
 
-You can also force the mode yourself with a segment config export:
+Reading `cookies()` flips this route to dynamic. You can also force the mode yourself with a segment config export:
 
 ```tsx
 // Force a route to render on every request, even with no dynamic API
@@ -94,6 +95,115 @@ Route (app)          Revalidate  Expire
 
 If a route you expected to be static shows `ƒ`, something inside it reached for request-time data — trace back to the Dynamic API or uncached fetch that caused it.
 
+## Reading a hydration error
+
+Every Client Component renders twice: once on the server (SSR, producing the HTML the browser first paints), and once on the client during **hydration**, which re-renders the same tree in the browser and attaches event handlers to the existing DOM instead of replacing it. If the two renders don't produce identical output, React can't reconcile them and throws a hydration error.
+
+**The five documented causes** (this is the exact list React 19 puts in the error itself, verified below):
+
+- A server/client branch — `typeof window !== 'undefined'` (or similar) reads differently on the server, where `window` doesn't exist, than in the browser.
+- Variable input — `Date.now()`, `Math.random()`, `crypto.randomUUID()` — that returns a different value each time it runs.
+- Date/locale formatting that resolves differently on the server than in the visitor's browser (different timezone or `Intl` locale).
+- External, changing data read without a snapshot shipped alongside the HTML.
+- Invalid HTML tag nesting — the browser's own HTML parser silently repairs the DOM (moving a `<div>` out of a `<p>`, for example) before React ever sees it, so the DOM React hydrates against isn't the DOM it rendered.
+- A browser extension that mutates the DOM before React attaches.
+
+### Reproducing a real mismatch
+
+This Client Component branches on `typeof window`, so the server render (`window` is `undefined` in Node.js) and the client render (hydrating in the browser) produce different text:
+
+```tsx
+// app/hydration-test/page.tsx
+'use client';
+
+// BUG: typeof window differs between the server render (undefined) and the
+// client hydration render (defined) — a classic hydration mismatch source.
+export default function Page() {
+  return (
+    <main>
+      <h1>Hydration mismatch demo</h1>
+      <p>{typeof window === 'undefined' ? 'server' : 'client'}</p>
+    </main>
+  );
+}
+```
+
+Loading this in a real browser against `next dev` produces this exact React 19 console error (captured verbatim, only the internal component-stack frames trimmed):
+
+```text
+Error: Hydration failed because the server rendered text didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+```
+
+The invalid-nesting cause produces a second, more specific warning before that same generic error, naming the exact two tags involved:
+
+```text
+In HTML, <div> cannot be a descendant of <p>.
+This will cause a hydration error.
+```
+
+### When suppressHydrationWarning is legitimate
+
+`suppressHydrationWarning` tells React "I know this node's text differs between server and client, don't warn" — it does **not** fix a mismatch, it silences the warning for that one node. It is legitimate only when the difference is genuinely expected and cosmetic, such as rendering a timestamp in the visitor's own timezone. Applying it to the buggy component above makes the console clean again without changing the underlying behavior — the text still differs, React is just told not to complain:
+
+```tsx
+// app/hydration-test/page.tsx
+'use client';
+
+// FIX: suppressHydrationWarning is correct here only because the mismatch is
+// expected and inconsequential — never use it to silence a real bug.
+export default function Page() {
+  return (
+    <main>
+      <h1>Hydration mismatch demo</h1>
+      <p suppressHydrationWarning>{typeof window === 'undefined' ? 'server' : 'client'}</p>
+    </main>
+  );
+}
+```
+
+Reserve it for content you *expect* to differ. If the value should actually be consistent (a feature flag, a computed default), `suppressHydrationWarning` just hides the bug from the console — it doesn't make the two renders agree.
+
+### The correct fix for a browser-only value: useSyncExternalStore
+
+For a value that genuinely depends on the browser (`window.innerWidth`, `localStorage`, `matchMedia`), the React-blessed fix is `useSyncExternalStore` with a `getServerSnapshot` — it gives an explicit, deterministic value for the server/hydration render, so there is no mismatch to suppress in the first place:
+
+```tsx
+// app/components/WindowWidth.tsx
+'use client';
+
+import { useSyncExternalStore } from 'react';
+
+function subscribe(callback: () => void) {
+  window.addEventListener('resize', callback);
+  return () => window.removeEventListener('resize', callback);
+}
+
+function getSnapshot() {
+  return window.innerWidth;
+}
+
+function getServerSnapshot() {
+  return 0; // deterministic default used for SSR and the hydration render
+}
+
+export default function WindowWidth() {
+  const width = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return <p>Window width: {width}px</p>;
+}
+```
+
+`getServerSnapshot` runs during SSR *and* during the client's hydration render, so both agree on `0`. Only after hydration finishes does React call `getSnapshot` and pick up the real `window.innerWidth` — the mismatch window is closed by design instead of suppressed.
+
 <Mermaid title="How Next.js decides static vs dynamic" code={diagramStaticEn} />
 
 export const diagramStaticEn = `flowchart TD
@@ -102,8 +212,48 @@ export const diagramStaticEn = `flowchart TD
   B -- Yes --> D[Dynamic render, on each request]
   E[generateStaticParams] --> C`;
 
+## Mental Model
+
+Think of the build as a photographer, not a live camera feed. A static route gets its photo taken once, at build time, and that same print is handed to every visitor. A dynamic route sends a fresh camera crew for every single request. Hydration is a second, separate contract: the server's photo (HTML) and the client's redrawing of the same scene (the React re-render in the browser) must depict the *exact same moment* — any Dynamic API, any `Date.now()`, any browser-only read that leaks into that redraw breaks the contract, because the client is now drawing a different moment than the one the server photographed.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Static rendering (default) | Fastest possible response, cacheable on a CDN | Nothing is per-request — stale until the next build (or ISR) |
+| Dynamic rendering (`ƒ`) | Always fresh, per-visitor data | No prerendered HTML to serve instantly; server work on every request |
+| `generateStaticParams` | Dynamic segments become static pages | Must know or fetch the full param set at build time |
+| `suppressHydrationWarning` | Silences an expected, cosmetic mismatch | Hides a real bug just as easily as a cosmetic one — it never fixes anything |
+| `useSyncExternalStore` + `getServerSnapshot` | No mismatch window at all — correct by construction | More ceremony than `useState` + `useEffect` for a one-off read |
+
+## Common Misconceptions
+
+- **A hydration error means the page is broken.** Often the visible content is fine — React discards the mismatched subtree and re-renders it client-side, so the *user* may see nothing wrong while the console fills with errors. That doesn't make it safe to ignore: the re-render is extra client work, and a mismatch that changes layout is visibly wrong.
+- **`suppressHydrationWarning` fixes the mismatch.** It suppresses the *warning* for that node only. The server and client values still differ; React is just told not to complain about that specific node.
+- **Any `Date`/`Math.random()` call in a component causes a hydration error.** Only if that code runs again during the client's hydration render — a Server Component's `Date.now()` runs once, only on the server, and never re-executes on the client, so it never mismatches. The risk is specific to Client Components (and Client Components rendered as part of SSR).
+- **A plain `fetch()` with no options makes a route dynamic.** It doesn't by itself — Next.js fetches it once at build time if nothing else in the route reaches for request-time data first.
+
+## Reading AI-generated code
+
+When a generated snippet touches rendering mode or hydration, check for these before trusting it:
+
+- Does a Client Component read `Date.now()`, `Math.random()`, `crypto.randomUUID()`, or `typeof window` directly in its render body (not inside an event handler or effect)? That's a hydration mismatch waiting to happen the moment it's server-rendered.
+- Is `suppressHydrationWarning` used to silence a mismatch that should actually be fixed (a value that *should* be consistent, not one that's expected to differ)?
+- Does a component that needs a browser-only value use `useState` + `useEffect` to read it, instead of `useSyncExternalStore` with an explicit `getServerSnapshot`? The effect-based pattern still renders the wrong value on the very first paint, right before the effect runs.
+- Does the generated JSX nest a block element inside an inline one (`<div>` inside `<p>`, `<ul>` inside `<span>`) — something the HTML parser will silently repair, producing a hydration mismatch that has nothing to do with the component's logic?
+- Does a route that should be static (marketing, docs) call a Dynamic API (`cookies()`, `headers()`) somewhere deep in a shared layout or component, silently flipping the whole route to `ƒ`?
+
+<SpotTheBug code={`// app/components/LastUpdated.tsx
+'use client'
+
+export default function LastUpdated() {
+  return <p>Last updated: {new Date().toLocaleString()}</p>
+}`}>
+This renders on the server first, then hydrates in the browser. `new Date().toLocaleString()` depends on the *server's* timezone and locale during SSR, and the *visitor's* timezone and locale during hydration — the two strings only match by coincidence. This is exactly the "Date formatting in a user's locale which doesn't match the server" cause React's own hydration error names. The fix is either `suppressHydrationWarning` (if showing the visitor's local time is the actual goal) or computing the timestamp with `useSyncExternalStore` so the server and hydration renders agree on a fixed placeholder until the client value is available.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Routes are static by default and only become dynamic when they touch request-time data — a Dynamic API, an uncached fetch, or force-dynamic — while generateStaticParams keeps dynamic segments prerendered.
+Routes are static by default and only become dynamic when they touch request-time data — a Dynamic API, an uncached fetch, or force-dynamic — while a hydration error means the server and client disagreed on the SSR-then-hydrate render, almost always traceable to a Date/random/window/locale read or invalid HTML nesting in a Client Component.
 </Callout>
 
 export const quizStaticEn = [
@@ -111,21 +261,73 @@ export const quizStaticEn = [
     q: 'How does Next.js render a route by default?',
     options: ['Dynamically on each request', 'Statically, prerendered at build time', 'Only on the client', 'It never renders until deployed'],
     answer: 1,
+    explain: 'Static rendering is the default: a route with no Dynamic API or uncached fetch is rendered once at build time and served as static HTML to every visitor.',
   },
   {
     q: 'Which of these flips a route to dynamic rendering?',
     options: ['Importing a CSS file', 'Calling cookies() in the component', 'Exporting a default component', 'Adding a <title> tag'],
     answer: 1,
+    explain: 'cookies() is a Dynamic API — reading it (along with headers(), draftMode(), connection(), or searchParams) opts the whole route into per-request rendering.',
   },
   {
     q: 'What does generateStaticParams do?',
     options: ['Forces a route to be dynamic', 'Disables caching for a route', 'Prerenders specific values of a dynamic segment at build time', 'Runs only in the browser'],
     answer: 2,
+    explain: 'generateStaticParams returns the exact param values to prerender at build time, turning a dynamic segment like [slug] into a set of static pages.',
   },
   {
     q: 'In the build output, what does the ƒ symbol mean?',
     options: ['A static prerendered route', 'A dynamic, server-rendered-on-demand route', 'A client-only route', 'A broken route'],
     answer: 1,
+    explain: 'ƒ marks a route as Dynamic — it renders on the server for every incoming request instead of being prerendered once at build time.',
+  },
+  {
+    q: `\`\`\`tsx
+'use client'
+export default function Page() {
+  return <p>{typeof window === 'undefined' ? 'server' : 'client'}</p>
+}
+\`\`\`
+What happens when this renders through SSR and then hydrates in the browser?`,
+    options: [
+      'Nothing — typeof window always evaluates the same way',
+      'A hydration error, because the server and client renders produce different text',
+      'A TypeScript compile error',
+      'Next.js automatically rewrites it to be consistent',
+    ],
+    answer: 1,
+    explain: "typeof window is undefined during SSR (there's no window in Node.js) and defined during the browser's hydration render, so the text content differs between the two renders — the exact 'server/client branch' cause React's hydration error names.",
+  },
+  {
+    q: 'What does suppressHydrationWarning actually do?',
+    options: [
+      'Makes the server and client values match',
+      'Silences the console warning for that one node, without changing the underlying values',
+      'Disables hydration for the whole page',
+      'Forces the route to render statically',
+    ],
+    answer: 1,
+    explain: "It only suppresses the warning for that specific DOM node. The server and client can still disagree — it's appropriate only when that disagreement is expected and harmless, like a value that's meant to differ per visitor.",
+  },
+  {
+    q: `\`\`\`tsx
+function getServerSnapshot() {
+  return 0
+}
+function getSnapshot() {
+  return window.innerWidth
+}
+useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+\`\`\`
+Why does this pattern avoid a hydration mismatch that useState + useEffect would not?`,
+    options: [
+      'It reads window.innerWidth on the server too',
+      'getServerSnapshot gives an explicit, deterministic value used for both the SSR render and the hydration render, so the two agree by construction',
+      'It disables SSR for this component entirely',
+      'React skips hydration for components using this hook',
+    ],
+    answer: 1,
+    explain: "Both the server render and the client's hydration render call getServerSnapshot, so they render the same value (0) and agree. Only after hydration completes does the real getSnapshot value take over — there's no window where the two renders disagree.",
   },
 ];
 

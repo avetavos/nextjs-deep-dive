@@ -1,6 +1,6 @@
 ---
 title: 'Partial Prerendering'
-description: 'PPR รวม static shell กับ dynamic hole ไว้ใน route เดียว แต่ละ hole ห่อด้วย Suspense แล้ว stream ตอน request เปิดใช้ผ่าน cacheComponents ใน Next.js 16 และต่างจาก route แบบ static ล้วนกับ dynamic ล้วนยังไง'
+description: 'PPR รวม static shell กับ dynamic hole ไว้ใน route เดียว แต่ละ hole ห่อด้วย Suspense แล้ว stream ตอน request connection() กับ io() บังคับ request-time rendering ยังไง static shell ถูก prefetch ผ่าน partialPrefetching ยังไง และต่างจาก route แบบ static ล้วนกับ dynamic ล้วนยังไง'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="บทนี้ใช้โมเดล caching แบบไหน">
 บทนี้รันด้วย `cacheComponents: true` มีผลสองอย่างที่ตามมาจากบทก่อน ๆ — Route Segment Config exports (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`) จะทำให้ build ล้มภายใต้ flag นี้ และ `cookies()`, `headers()`, `searchParams` หรือ `fetch` ที่ไม่ cache ต้องอยู่ใน `<Suspense>` boundary หรือ scope `'use cache'` ไม่อย่างนั้น `next build` จะหยุดด้วย `Next.js encountered uncached or runtime data during prerendering`
@@ -23,7 +24,7 @@ Partial Prerendering เสิร์ฟ static shell ที่ prerender ไว�
 ก่อนมี PPR คุณต้องเลือก mode เดียวต่อ route — static ล้วน (เร็ว แต่ไม่มี data ต่อ request) หรือ dynamic ล้วน (สด แต่ไม่มีอะไร prerender) PPR ตัด "อย่างใดอย่างหนึ่ง" ทิ้ง ส่วนของหน้าที่ไม่เปลี่ยนเลยจะถูก prerender เป็น static shell ส่วนที่ต้องใช้ data ตอน request กลายเป็น dynamic hole แต่ละอันอยู่หลัง `<Suspense>` boundary แล้ว stream เข้ามาเมื่อ resolve
 
 ```tsx
-// app/product/[id]/page.tsx — static shell, dynamic price streamed into a hole
+// app/product/[id]/page.tsx
 import { Suspense } from 'react';
 import { cookies } from 'next/headers';
 
@@ -51,22 +52,86 @@ export default function ProductPage() {
 
 heading กับ description ออกไปทันทีเป็น static HTML ส่วน `LivePrice` คือ dynamic hole ที่ stream เข้ามาต่อ request
 
-## เปิดใช้ PPR ใน Next.js 16
+## Suspense fallback กลายเป็นส่วนหนึ่งของ shell ที่ prerender ไว้
 
-ใน Next.js 16 Partial Prerendering มาเป็นส่วนหนึ่งของ **Cache Components** และเปิดด้วย config flag เดียว flag `ppr` แบบ experimental เดิมและ export ระดับ route `experimental_ppr` ถูก **เอาออกไปแล้ว** — คุณไม่ต้อง opt-in ต่อ route อีก
+static shell ไม่ใช่แค่ content ที่อยู่นอก `<Suspense>` — มัน *รวม* fallback เข้าไปด้วย ตอน build Next.js render fallback UI แล้วฝังมันลงไปใน static HTML แทนที่ hole นั้น ต่อเมื่อมี request จริงเข้ามาเท่านั้น content แบบ dynamic จริงถึงจะเข้ามาแทนที่ build product page ด้านบนแล้วอ่าน legend จริงจาก `next build` ยืนยันว่า route นี้ไม่ใช่ static ล้วนหรือ dynamic ล้วน —
+
+```txt
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ◐ /product/[id]
+
+○  (Static)             prerendered as static content
+◐  (Partial Prerender)  prerendered as static HTML with dynamic server-streamed content
+```
+
+`◐` แปลว่าเป๊ะ ๆ แบบนี้ — ทุกอย่างที่อยู่นอก `<Suspense>` บวกกับ fallback ทุกตัว อยู่ใน static HTML ที่ส่งออกไปทันที ทุกอย่างที่อยู่ข้างใน boundary stream เข้ามาทีหลัง เพราะแบบนี้ content ของ fallback ถึงสำคัญจริง ๆ — ผู้เข้าชมที่ connection ช้าอาจจะเห็นมันอยู่พักหนึ่ง และ search crawler ที่รอ content แบบ stream ไม่ได้จะเห็น fallback เป็น state สุดท้ายเลย เว้นแต่มันจะ re-render แบบ dynamic
+
+## บังคับ request-time rendering: connection() กับ io()
+
+โค้ดบางอย่างไม่มี Dynamic API ให้ใช้ แต่ยังต้องรันต่อ request ไม่ใช่ครั้งเดียวตอน build — `Math.random()`, `crypto.randomUUID()` หรือ synchronous database driver สอง function จาก `next/server` / `next/cache` ทำให้โค้ดแบบนี้หลุดออกจาก static shell —
+
+```tsx
+// app/lib/visitor-count.ts
+import { connection } from 'next/server';
+
+// Stands in for any synchronous data source (a sync DB driver, an in-memory
+// counter) that would otherwise complete during prerendering with no
+// Dynamic API of its own to stop it.
+declare function readVisitorCountSync(): number;
+
+export async function getVisitorCount() {
+  await connection(); // prerendering stops here — the rest only runs at request time
+  return readVisitorCountSync();
+}
+```
+
+```tsx
+// app/components/CurrentTime.tsx
+import { Suspense } from 'react';
+import { io } from 'next/cache';
+
+export default function CurrentTimeSection() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <CurrentTime />
+    </Suspense>
+  );
+}
+
+async function CurrentTime() {
+  await io(); // suspends during prerendering, so the fallback ships in the shell
+  return <p>{new Date().toISOString()}</p>;
+}
+```
+
+`connection()` คือเครื่องมือเก่าและกว้างกว่า — มันรอ request จริงเข้ามาก่อนถึงจะทำงานต่อ เต็มรูปแบบ มันมาแทน `unstable_noStore` ส่วน `io()` คือทางเลือกเฉพาะของ Cache Components และ docs แนะนำให้ใช้เป็นตัวเลือก default ภายใต้ `cacheComponents` — มันทำงานแบบเดียวกัน แต่ค่าที่มันกันออกไปนั้น *cache หรือ prefetch ได้ด้วย* เพราะ `io()` ที่อยู่ใน scope `'use cache'` เป็น no-op — ค่าจะถูก capture ลงใน static shell ตรงนั้นแทน ไม่ต้องมี `<Suspense>` boundary เลย ใช้ `connection()` เฉพาะตอนที่ rendering ต้องรอ user request จริง ๆ เท่านั้น ใช้ `io()` ที่เหลือทั้งหมดภายใต้ Cache Components
+
+## Prefetch static shell: partialPrefetching
+
+static shell ไม่ใช่แค่สิ่งที่ส่งออกไปตอนโหลดครั้งแรก — มันคือสิ่งที่ `<Link>` prefetch ล่วงหน้าก่อนคลิกด้วย ใน Next.js 16.3 นี่คือ config flag แยกต่างหากชัดเจน — **`partialPrefetching`** ซึ่งต้องมี `cacheComponents` เปิดอยู่แล้วก่อน
 
 ```ts
-// next.config.ts — enable Partial Prerendering (Next.js 16)
+// next.config.ts
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  partialPrefetching: true,
 };
 
 export default nextConfig;
 ```
 
-พอตั้ง `cacheComponents: true` route ใดที่ผสม content ที่ prerender กับ content ที่เป็น dynamic ห่อด้วย Suspense จะถูก partially prerender ให้อัตโนมัติ และ `next build` จะแสดง route นั้นด้วยสัญลักษณ์ตัวที่สี่ — `◐ (Partial Prerender) prerendered as static HTML with dynamic server-streamed content`
+ถ้าไม่เปิด Next.js จะ prefetch เต็ม route ต่อ `<Link>` ที่มองเห็นหนึ่งตัว — หน้าที่มี link เยอะ ๆ ก็ทำให้เกิด prefetch request แยกกันหลายตัว พอเปิด `partialPrefetching: true` Next.js จะ prefetch **App Shell** ที่ใช้ซ้ำได้หนึ่งตัวต่อ *route* แชร์กันโดยทุก link ที่ชี้ไปที่นั่น แล้ว resolve content เฉพาะ URL (`params`, `searchParams`) หลังจากที่ navigate จริงเท่านั้น segment หนึ่งสามารถ override ค่า default ระดับแอปด้วย export `prefetch` ของตัวเอง (`'auto'` เป็น default, `'partial'` หรือ `'force-disabled'`) —
+
+```tsx
+// app/product/[id]/page.tsx
+export const prefetch = 'partial'; // opt this segment in without flipping the flag app-wide
+```
+
+`partialPrefetching` เพิ่งมาใน **16.3.0** — มันไม่มีอยู่ใน release ก่อนหน้าของ 16.x และเป็น flag แยกจาก `cacheComponents` เอง ไม่ใช่ค่าที่ส่งเข้าไปใน `cacheComponents`
 
 ## ต่างจาก static ล้วนกับ dynamic ล้วน
 
@@ -74,18 +139,64 @@ export default nextConfig;
 
 - **static ล้วน** — ทั้ง route ถูก prerender ไม่มีอะไรต่อ request เร็วที่สุด แต่ไม่มี data สด
 - **dynamic ล้วน** — ทั้ง route render ทุก request สดเสมอ แต่ไม่มีอะไร prerender TTFB จึงรอ data ที่ช้าที่สุด
-- **PPR** — shell ถูก prerender เหมือน static และมีแค่ hole ที่เป็น dynamic first paint เร็ว *และ* มี data ต่อ request ใน route เดียว
+- **PPR** — shell (รวม fallback ทุกตัว) ถูก prerender เหมือน static และมีแค่ hole ที่เป็น dynamic first paint เร็ว *และ* มี data ต่อ request ใน route เดียว
 
 <Mermaid title="route แบบ PPR: static shell กับ dynamic hole ที่ stream เข้ามา" code={diagramPprTh} />
 
 export const diagramPprTh = `flowchart LR
   A[Request] --> B[Static shell served instantly]
-  B --> E[Shell prerendered at build time]
+  B --> E[Shell prerendered at build time, fallback included]
   B --> C[Dynamic hole in Suspense]
   C --> D[Streamed at request time]`;
 
+## Mental Model
+
+route แบบ PPR คือ brochure ที่พิมพ์ไว้ พร้อมจอเล็ก ๆ แบบ live ฝังอยู่ในนั้น brochure — ทุกตัวอักษรของมัน รวมถึง placeholder text ที่อยู่ในกรอบของจอนั้น — ถูกพิมพ์ครั้งเดียวเป็นจำนวนมากล่วงหน้า มีแค่จอเล็ก ๆ นั้นที่ update ต่อผู้เข้าชม และมัน update *หลังจาก* brochure อยู่ในมือคนแล้ว `partialPrefetching` คือตัวตัดสินว่า brochure นั้นถูกแจกจ่ายล่วงหน้าเร็วแค่ไหนก่อนที่ใครจะเดินผ่านมาขอด้วยซ้ำ — brochure ที่ออกแบบไว้ตัวเดียวต่อปลายทาง แทนที่จะพิมพ์ใหม่ทีละคนที่เดินผ่าน
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| PPR (`cacheComponents: true`) | shell เร็วเท่า static บวก hole ต่อ request ใน route เดียว | ทุกการอ่านแบบ dynamic ต้องอยู่ใน `<Suspense>` หรือ `'use cache'` — ไม่มี mode dynamic ทั้ง route แบบ implicit อีกแล้ว |
+| `connection()` | "รอ request จริง" แบบตรงไปตรงมา ไม่มีเงื่อนไข | กันค่าออกจาก static shell แบบเด็ดขาด — cache หรือ prefetch ไม่ได้เลย |
+| `io()` | กันออกแบบเดียวกัน แต่เป็น no-op (และ cache ได้) ใน `'use cache'` | เฉพาะ Cache Components เท่านั้น ไม่ใช่ตัวแทนที่ใช้แทนกันได้นอกบริบทนั้น |
+| `partialPrefetching: true` | prefetch App Shell ที่แชร์กันตัวเดียวต่อ route แทนที่จะเป็นหนึ่งต่อ link | ต้องมี `cacheComponents` เปิดอยู่แล้ว เป็น feature ของ 16.3+ ไม่มีใน 16.x รุ่นก่อนหน้า |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **Suspense fallback เป็นแค่ spinner โหลดที่หายไปเร็ว ๆ** มันถูกฝังลงใน static shell และเสิร์ฟให้ทุกผู้เข้าชม รวมถึง client ที่รอ stream ไม่ได้ (crawler บางตัว) — ปฏิบัติกับ content ของมันจริงจังเท่ากับส่วนที่เหลือของหน้า static
+- **`connection()` กับ `io()` ใช้แทนกันได้** `io()` คือตัวเลือกที่ native กับ Cache Components — มันเป็น no-op (เลย cache ได้) ใน scope `'use cache'` ส่วน `connection()` กันโค้ดออกจาก shell แบบไม่มีเงื่อนไขเสมอ
+- **`partialPrefetching` เป็นแค่ชื่ออีกชื่อของ `cacheComponents`** มันคือ config key แยกที่เพิ่งมาใน 16.3.0 ที่ต้องมี `cacheComponents: true` ตั้งไว้แล้วก่อน — เปิดแค่ `cacheComponents` เฉย ๆ ไม่ได้เปิด App Shell prefetching แบบใหม่นี้
+- **PPR แปลว่าทั้งหน้าเป็น dynamic ถ้ามีส่วนไหนเป็น dynamic** ตรงข้ามเลยคือประเด็นทั้งหมด — มีแค่โค้ดที่อยู่ใน `<Suspense>` boundary (หรือนอก scope `'use cache'`) เท่านั้นที่ถูกกันออกจาก static shell ส่วนที่เหลือยัง prerender ตามปกติ
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาแตะ PPR หรือ Cache Components ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน —
+
+- component อ่าน `cookies()`, `headers()`, `searchParams` หรือ `fetch` ที่ไม่ cache *โดยไม่มี* `<Suspense>` boundary หรือ scope `'use cache'` ห่ออยู่หรือเปล่า? ภายใต้ `cacheComponents` นั่นคือ build ล้ม ไม่ใช่ surprise ตอน runtime
+- โค้ดใช้ `Math.random()`, `Date.now()` หรือ DB call แบบ synchronous ตรง ๆ โดยสมมติว่ามันจะทำงานได้เองตอน request time โดยไม่มี `connection()` หรือ `io()` มากันออกจาก static shell หรือเปล่า?
+- `partialPrefetching` ถูกตั้งโดยไม่มี `cacheComponents: true` อยู่ก่อนแล้วหรือเปล่า? framework จะ throw ตอน validate config — สอง flag นี้แยกกันแต่พึ่งพากัน
+- fallback UI ของ Suspense boundary มีอะไรที่ไม่ควรโชว์ให้ผู้เข้าชมทุกคนเห็นเป็น default หรือเปล่า (ราคาที่ดูเหมือนของจริง, username ปลอม) — ลืมไปว่า fallback อยู่ใน static shell ไม่ใช่แค่ loading state ชั่วคราว?
+- โค้ดสมมติว่า `export const experimental_ppr = true` หรือ `experimental.ppr` ใน `next.config` ยังทำอะไรได้ใน Next.js 16 หรือเปล่า? ทั้งคู่ถูกเอาออกไปแล้ว — PPR เปิดอยู่แค่ผ่าน `cacheComponents: true` เท่านั้น
+
+<SpotTheBug code={`// app/dashboard/page.tsx — next.config.ts has cacheComponents: true
+import { cookies } from 'next/headers'
+
+export default async function Dashboard() {
+  const store = await cookies()
+  const theme = store.get('theme')?.value ?? 'light'
+  return (
+    <main>
+      <h1>Dashboard</h1>
+      <p>Active theme: {theme}</p>
+    </main>
+  )
+}`}>
+ภายใต้ `cacheComponents: true` `cookies()` ไม่ทำให้ทั้ง route flip เป็น dynamic แบบโมเดลเดิมอีกแล้ว — ตอนนี้มันต้องการ `<Suspense>` boundary ชัดเจนรอบโค้ดที่อ่านมัน page นี้ทำให้ `next build` ล้มด้วย `Next.js encountered uncached or runtime data during prerendering. fetch(...), cookies(), headers(), params, searchParams, or connection() accessed outside of <Suspense> prevents the route from being prerendered...` เป๊ะ ๆ ทางแก้คือย้ายการอ่าน `cookies()` ไปไว้ใน child component แล้วห่อ child นั้นด้วย `<Suspense fallback={...}>` เพื่อให้ heading prerender เป็น static shell และมีแค่ paragraph ที่พึ่ง theme เท่านั้นที่กลายเป็น dynamic hole
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-PPR ให้ route เดียวมี static shell ที่ prerender ไว้ บวก dynamic hole ห่อ Suspense ที่ stream ตอน request — เปิดใช้ใน Next.js 16 ผ่าน cacheComponents เพราะ flag ppr แบบ experimental ถูกเอาออกไปแล้ว
+PPR ให้ route เดียวมี static shell ที่ prerender ไว้ — รวม fallback ด้วย — บวก dynamic hole ห่อ Suspense ที่ stream ตอน request เปิดใช้ใน Next.js 16 ผ่าน cacheComponents connection() หรือ io() บังคับโค้ดที่ไม่มี Dynamic API ของตัวเองให้ยังรันต่อ request และ partialPrefetching (16.3.0 ต้องมี cacheComponents ก่อน) คือ flag แยกที่ทำให้ `<Link>` prefetch App Shell ที่แชร์กันหนึ่งตัวต่อ route แทนที่จะเป็นหนึ่งต่อ link
 </Callout>
 
 export const quizPprTh = [
@@ -93,21 +204,64 @@ export const quizPprTh = [
     q: 'Partial Prerendering รวมอะไรไว้ใน route เดียว?',
     options: ['สองหน้าแยกกัน', 'static shell กับ dynamic hole ที่ stream ตอน request', 'client กับ server component เท่านั้น', 'caching กับ revalidation'],
     answer: 1,
+    explain: 'PPR prerender ทุกอย่างที่อยู่นอก Suspense boundary ให้เป็น static shell แล้ว stream dynamic hole ที่ห่อ Suspense เข้ามาตอน request — ทั้งหมดใน route เดียว',
   },
   {
     q: 'dynamic hole แต่ละอันใน PPR route ถูกส่งมายังไง?',
     options: ['prerender ตอน build', 'ห่อด้วย Suspense แล้ว stream ตอน request', 'fetch จาก client', 'render ครั้งเดียวแล้ว cache ตลอดไป'],
     answer: 1,
+    explain: 'dynamic hole คือโค้ดใด ๆ ที่อยู่ใน Suspense boundary ที่อ่าน data ตอน request — มัน stream เข้า shell หลังจาก request จริงเข้ามาแล้ว',
   },
   {
     q: 'เปิดใช้ PPR ใน Next.js 16 ยังไง?',
     options: ['export const experimental_ppr = true', 'flag ppr แบบ experimental ใน config', 'cacheComponents: true ใน next.config', 'เปิดตลอดและตั้งค่าไม่ได้'],
     answer: 2,
+    explain: 'ทั้ง config flag experimental.ppr และ route segment export experimental_ppr ถูกเอาออกใน Next.js 16 — cacheComponents: true คือสวิตช์เดียวตอนนี้',
   },
   {
     q: 'PPR ต่างจาก route แบบ dynamic ล้วนยังไง?',
     options: ['ไม่ render อะไรเลยตอน build', 'shell ถูก prerender ส่วนที่ dynamic มีแค่ hole', 'เอา Suspense boundary ออก', 'รันบน edge เท่านั้น'],
     answer: 1,
+    explain: 'route แบบ dynamic ล้วน render ทุกอย่างต่อ request PPR prerender ทุกอย่างนอก Suspense ให้เป็น shell แล้ว re-render แค่ hole ต่อ request เท่านั้น',
+  },
+  {
+    q: 'อะไรที่ถูกส่งอยู่ใน static shell ของ PPR route จริง ๆ?',
+    options: [
+      'แค่ content ที่อยู่นอก Suspense boundary ทุกตัว',
+      'Suspense fallback ทุกตัว บวกกับ content ที่อยู่นอก boundary',
+      'ไม่มีเลย — shell ถูกสร้างใหม่ทุก request',
+      'แค่ Suspense boundary ตัวแรกที่เจอ',
+    ],
+    answer: 1,
+    explain: 'fallback UI ของแต่ละ Suspense boundary ถูก render ตอน build แล้วฝังลงใน static HTML แทนที่ hole นั้น — มันเป็นส่วนหนึ่งของ shell ไม่ใช่แค่ loading state ตอน runtime ชั่วคราว',
+  },
+  {
+    q: `\`\`\`tsx
+async function getVisitorCount() {
+  await connection()
+  return db.prepare('SELECT value FROM counters WHERE name = ?').get('visitors')
+}
+\`\`\`
+ทำไม connection() ถึงจำเป็นตรงนี้ ทั้งที่ query ไม่มี cookies(), headers() หรือ fetch() เลย?`,
+    options: [
+      'ไม่จำเป็น — synchronous DB call ถูกกันออกอัตโนมัติเสมอ',
+      'synchronous database driver ไม่มี Dynamic API ของตัวเอง connection() เลยกันมันออกจาก static shell อย่างชัดเจน บังคับให้รันต่อ request',
+      'connection() cache ผลลัพธ์ของ query',
+      'connection() เปลี่ยน function ให้เป็น Server Action',
+    ],
+    answer: 1,
+    explain: 'ถ้าไม่มี Dynamic API, query แบบ synchronous จะทำงานเสร็จตอน prerendering แล้วถูกฝังลง static shell ไปเลย connection() กันมัน (และทุกอย่างหลังจากนั้น) ออกจาก prerendering ชัดเจน',
+  },
+  {
+    q: 'config flag partialPrefetching ต้องการอะไร และมันเปลี่ยนอะไรไปจากเดิม?',
+    options: [
+      'ไม่ต้องการอะไรเลย — ทำงานได้เดี่ยว ๆ และแทนที่ cacheComponents',
+      'ต้องมี cacheComponents: true และมาเป็น flag แยกใน 16.3.0 เปลี่ยนการ prefetch ต่อ link ให้เป็น App Shell ที่แชร์กันหนึ่งตัวต่อ route',
+      'เกี่ยวกับ Pages Router เท่านั้น',
+      'ปิด prefetching ทั้งหมดเพื่อ performance',
+    ],
+    answer: 1,
+    explain: 'partialPrefetching คือ flag แยกที่เพิ่งมาใน Next.js 16.3.0 ที่ต้องมี cacheComponents เปิดอยู่ก่อนแล้ว มันย้าย prefetching จากหนึ่ง request ต่อ link ที่มองเห็น ให้เป็น App Shell ที่แชร์กันและ cache ไว้หนึ่งตัวต่อ route',
   },
 ];
 

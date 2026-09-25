@@ -1,6 +1,6 @@
 ---
 title: 'Partial Prerendering'
-description: 'How PPR combines a static shell with dynamic holes in one route, each hole wrapped in Suspense and streamed at request time, enabled via cacheComponents in Next.js 16, and how it contrasts with fully static and fully dynamic routes.'
+description: 'How PPR combines a static shell with dynamic holes in one route, each hole wrapped in Suspense and streamed at request time, how connection() and io() force request-time rendering, how the static shell gets prefetched via partialPrefetching, and how it contrasts with fully static and fully dynamic routes.'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
 This lesson runs with `cacheComponents: true`. Two consequences carry over from the previous lessons: the Route Segment Config exports (`dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`) fail the build under this flag, and any `cookies()`, `headers()`, `searchParams`, or uncached `fetch` must sit inside a `<Suspense>` boundary or a `'use cache'` scope — otherwise `next build` stops with `Next.js encountered uncached or runtime data during prerendering`.
@@ -23,7 +24,7 @@ Partial Prerendering serves a prerendered static shell instantly and streams the
 Before PPR you picked one mode per route: fully static (fast, but no per-request data) or fully dynamic (fresh, but nothing prerendered). PPR removes the either/or. The parts of the page that never change are prerendered into a static shell; the parts that need request-time data become dynamic holes, each behind a `<Suspense>` boundary, streamed in as they resolve.
 
 ```tsx
-// app/product/[id]/page.tsx — static shell, dynamic price streamed into a hole
+// app/product/[id]/page.tsx
 import { Suspense } from 'react';
 import { cookies } from 'next/headers';
 
@@ -51,22 +52,86 @@ export default function ProductPage() {
 
 The heading and description ship instantly as static HTML; `LivePrice` is the dynamic hole that streams in per request.
 
-## Enabling PPR in Next.js 16
+## The Suspense fallback becomes part of the prerendered shell
 
-In Next.js 16, Partial Prerendering ships as part of **Cache Components** and is turned on with a single config flag. The old experimental `ppr` flag and the route-level `experimental_ppr` export have been **removed** — you no longer opt in per route.
+The static shell isn't just the content outside `<Suspense>` — it *includes* the fallback itself. At build time, Next.js renders the fallback UI and bakes it into the static HTML in place of the hole; only when a real request comes in does the actual dynamic content replace it. Building the product page above and reading the real `next build` legend confirms the route is neither fully static nor fully dynamic:
+
+```txt
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+└ ◐ /product/[id]
+
+○  (Static)             prerendered as static content
+◐  (Partial Prerender)  prerendered as static HTML with dynamic server-streamed content
+```
+
+`◐` means exactly this: everything outside `<Suspense>`, plus every fallback, is in the static HTML that ships instantly; everything inside a boundary streams in afterward. This is why the fallback content matters for real — visitors on a slow connection may sit on it for a moment, and search crawlers that can't wait for streamed content see the fallback as the final state unless they re-render dynamically.
+
+## Forcing request-time rendering: connection() and io()
+
+Some code has no Dynamic API to reach for, but still needs to run per-request rather than once at build time — `Math.random()`, `crypto.randomUUID()`, or a synchronous database driver. Two functions from `next/server` / `next/cache` opt code like that out of the static shell:
+
+```tsx
+// app/lib/visitor-count.ts
+import { connection } from 'next/server';
+
+// Stands in for any synchronous data source (a sync DB driver, an in-memory
+// counter) that would otherwise complete during prerendering with no
+// Dynamic API of its own to stop it.
+declare function readVisitorCountSync(): number;
+
+export async function getVisitorCount() {
+  await connection(); // prerendering stops here — the rest only runs at request time
+  return readVisitorCountSync();
+}
+```
+
+```tsx
+// app/components/CurrentTime.tsx
+import { Suspense } from 'react';
+import { io } from 'next/cache';
+
+export default function CurrentTimeSection() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <CurrentTime />
+    </Suspense>
+  );
+}
+
+async function CurrentTime() {
+  await io(); // suspends during prerendering, so the fallback ships in the shell
+  return <p>{new Date().toISOString()}</p>;
+}
+```
+
+`connection()` is the older, broader tool: it waits for a real incoming request before continuing, full stop — it replaced `unstable_noStore`. `io()` is the Cache Components-specific alternative, and the docs recommend it as the default choice under `cacheComponents`: it works the same way but the value it excludes can *also* be cached or prefetched, since `io()` inside a `'use cache'` scope is a no-op — the value is captured into the static shell there instead, no `<Suspense>` boundary required. Reach for `connection()` only when rendering must wait for an actual user request; reach for `io()` everywhere else under Cache Components.
+
+## Prefetching the static shell: partialPrefetching
+
+The static shell isn't just what ships on first load — it's also what `<Link>` prefetches ahead of a click. In Next.js 16.3, this is a distinct, separate config flag: **`partialPrefetching`**, which requires `cacheComponents` to already be `true`.
 
 ```ts
-// next.config.ts — enable Partial Prerendering (Next.js 16)
+// next.config.ts
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  partialPrefetching: true,
 };
 
 export default nextConfig;
 ```
 
-With `cacheComponents: true`, any route that mixes prerendered content with Suspense-wrapped dynamic content is partially prerendered automatically, and `next build` lists it with a fourth symbol: `◐ (Partial Prerender) prerendered as static HTML with dynamic server-streamed content`.
+Without it, Next.js prefetches one full route per visible `<Link>` — a page with many links can trigger many separate prefetch requests. With `partialPrefetching: true`, Next.js instead prefetches one reusable **App Shell** per *route*, shared by every link that points there, and resolves URL-specific content (`params`, `searchParams`) only after the actual navigation. A segment can override the app-wide default with its own `prefetch` export (`'auto'` the default, `'partial'`, or `'force-disabled'`):
+
+```tsx
+// app/product/[id]/page.tsx
+export const prefetch = 'partial'; // opt this segment in without flipping the flag app-wide
+```
+
+`partialPrefetching` shipped in **16.3.0** — it did not exist in earlier 16.x releases, and it is a separate flag from `cacheComponents` itself, not a value passed to it.
 
 ## Contrast with all-static and all-dynamic
 
@@ -74,18 +139,64 @@ The three models line up along one axis — how much of the route is known at bu
 
 - **All static** — the entire route is prerendered; nothing is per-request. Fastest, but no fresh data.
 - **All dynamic** — the entire route renders on each request. Always fresh, but nothing is prerendered, so TTFB waits on the slowest data.
-- **PPR** — the shell is prerendered like static, and only the holes are dynamic. Fast first paint *and* per-request data in the same route.
+- **PPR** — the shell (including every Suspense fallback) is prerendered like static, and only the holes are dynamic. Fast first paint *and* per-request data in the same route.
 
 <Mermaid title="A PPR route: static shell with a streamed dynamic hole" code={diagramPprEn} />
 
 export const diagramPprEn = `flowchart LR
   A[Request] --> B[Static shell served instantly]
-  B --> E[Shell prerendered at build time]
+  B --> E[Shell prerendered at build time, fallback included]
   B --> C[Dynamic hole in Suspense]
   C --> D[Streamed at request time]`;
 
+## Mental Model
+
+A PPR route is a printed brochure with a small live display embedded in it. The brochure — every word of it, including whatever placeholder text sits in the display's frame — is printed once, in bulk, ahead of time. Only the little screen updates per visitor, and it updates *after* the brochure is already in their hands. `partialPrefetching` decides how eagerly that brochure gets handed out before someone even asks for it: one shared brochure design per destination, rather than reprinting one per person who might walk by.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| PPR (`cacheComponents: true`) | Static-speed shell plus per-request holes, one route | Every dynamic read must sit inside `<Suspense>` or `'use cache'` — no implicit whole-route dynamic mode |
+| `connection()` | Simple, unconditional "wait for a real request" | Excludes the value from the static shell entirely — never cacheable, never prefetchable |
+| `io()` | Same exclusion, but a no-op (and cacheable) inside `'use cache'` | Cache Components-only; not a drop-in replacement outside it |
+| `partialPrefetching: true` | One shared App Shell prefetch per route instead of one per link | Requires `cacheComponents` already on; a 16.3+ feature, not available in earlier 16.x |
+
+## Common Misconceptions
+
+- **The Suspense fallback is just a loading spinner that disappears quickly.** It's baked into the static shell and served to every visitor and to any client that can't wait for the stream (some crawlers) — treat its content as seriously as the rest of the static page.
+- **`connection()` and `io()` are interchangeable.** `io()` is the Cache Components-native choice: it's a no-op (and thus cacheable) inside a `'use cache'` scope, while `connection()` always excludes its code from the shell, unconditionally.
+- **`partialPrefetching` is just another name for `cacheComponents`.** It's a separate config key introduced in 16.3.0 that requires `cacheComponents: true` to already be set — enabling `cacheComponents` alone does not turn on the new App Shell prefetching behavior.
+- **PPR means the whole page is dynamic if any part of it is.** The opposite is the entire point: only the code inside a `<Suspense>` boundary (or outside a `'use cache'` scope) is excluded from the static shell — everything else still prerenders.
+
+## Reading AI-generated code
+
+When a generated snippet touches PPR or Cache Components, check for these before trusting it:
+
+- Does a component read `cookies()`, `headers()`, `searchParams`, or an uncached `fetch` *without* a `<Suspense>` boundary or `'use cache'` scope around it? Under `cacheComponents`, that's a build failure, not a runtime surprise.
+- Does the code use `Math.random()`, `Date.now()`, or a synchronous DB call directly, assuming it will just work at request time, without `connection()` or `io()` to exclude it from the static shell?
+- Is `partialPrefetching` set without `cacheComponents: true` already present? The framework throws at config validation — the two flags are separate but dependent.
+- Does the fallback UI for a Suspense boundary contain something that shouldn't be shown to every visitor by default (a real-looking price, a fake username) — forgetting that the fallback ships in the static shell, not just as a transient loading state?
+- Does the code assume `export const experimental_ppr = true` or `experimental.ppr` in `next.config` still does anything in Next.js 16? Both were removed — PPR is enabled solely through `cacheComponents: true`.
+
+<SpotTheBug code={`// app/dashboard/page.tsx — next.config.ts has cacheComponents: true
+import { cookies } from 'next/headers'
+
+export default async function Dashboard() {
+  const store = await cookies()
+  const theme = store.get('theme')?.value ?? 'light'
+  return (
+    <main>
+      <h1>Dashboard</h1>
+      <p>Active theme: {theme}</p>
+    </main>
+  )
+}`}>
+Under `cacheComponents: true`, `cookies()` no longer flips the whole route to dynamic the way it does in the previous model — it now requires an explicit `<Suspense>` boundary around the code that reads it. This exact page fails `next build` with: `Next.js encountered uncached or runtime data during prerendering. fetch(...), cookies(), headers(), params, searchParams, or connection() accessed outside of <Suspense> prevents the route from being prerendered...`. The fix is to move the `cookies()` read into a child component and wrap that child in `<Suspense fallback={...}>`, so the heading prerenders into the static shell and only the theme-dependent paragraph becomes a dynamic hole.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-PPR gives one route a prerendered static shell plus Suspense-wrapped dynamic holes streamed at request time — enabled in Next.js 16 through cacheComponents, since the experimental ppr flag was removed.
+PPR gives one route a prerendered static shell — fallbacks included — plus Suspense-wrapped dynamic holes streamed at request time, enabled in Next.js 16 through cacheComponents; connection() or io() force code that has no Dynamic API of its own to still run per request, and partialPrefetching (16.3.0, requires cacheComponents) is the separate flag that makes `<Link>` prefetch one shared App Shell per route instead of one per link.
 </Callout>
 
 export const quizPprEn = [
@@ -93,21 +204,64 @@ export const quizPprEn = [
     q: 'What does Partial Prerendering combine in a single route?',
     options: ['Two separate pages', 'A static shell with dynamic holes streamed at request time', 'Client and server components only', 'Caching and revalidation'],
     answer: 1,
+    explain: 'PPR prerenders everything outside Suspense boundaries into a static shell, then streams the Suspense-wrapped dynamic holes in at request time — all in one route.',
   },
   {
     q: 'How is each dynamic hole in a PPR route delivered?',
     options: ['Prerendered at build time', 'Wrapped in Suspense and streamed at request time', 'Fetched from the client', 'Rendered once and cached forever'],
     answer: 1,
+    explain: 'A dynamic hole is any code inside a Suspense boundary that reads request-time data — it streams into the shell after the real request arrives.',
   },
   {
     q: 'How do you enable PPR in Next.js 16?',
     options: ['export const experimental_ppr = true', 'The experimental ppr config flag', 'cacheComponents: true in next.config', 'It is always on and cannot be configured'],
     answer: 2,
+    explain: 'Both the experimental.ppr config flag and the experimental_ppr route segment export were removed in Next.js 16 — cacheComponents: true is now the single switch.',
   },
   {
     q: 'How does PPR differ from an all-dynamic route?',
     options: ['It renders nothing at build time', 'Its shell is prerendered while only the holes are dynamic', 'It removes Suspense boundaries', 'It runs only on the edge'],
     answer: 1,
+    explain: 'An all-dynamic route renders everything per request. PPR prerenders everything outside Suspense into a shell and only re-renders the holes per request.',
+  },
+  {
+    q: 'What actually ships in the static shell for a PPR route?',
+    options: [
+      'Only the content outside every Suspense boundary',
+      'Every Suspense fallback as well as the content outside any boundary',
+      'Nothing — the shell is generated fresh on every request',
+      'Only the first Suspense boundary encountered',
+    ],
+    answer: 1,
+    explain: "The fallback UI for each Suspense boundary is rendered at build time and baked into the static HTML in place of the hole — it's part of the shell, not a purely transient runtime-only loading state.",
+  },
+  {
+    q: `\`\`\`tsx
+async function getVisitorCount() {
+  await connection()
+  return db.prepare('SELECT value FROM counters WHERE name = ?').get('visitors')
+}
+\`\`\`
+Why is connection() needed here, given the query has no cookies(), headers(), or fetch() call?`,
+    options: [
+      'It isn\'t needed — synchronous DB calls are always excluded automatically',
+      'A synchronous database driver has no Dynamic API of its own, so connection() explicitly excludes it from the static shell and forces it to run per request',
+      'connection() caches the query result',
+      'connection() converts the function into a Server Action',
+    ],
+    answer: 1,
+    explain: 'Without a Dynamic API, a synchronous query would otherwise complete during prerendering and get baked into the static shell. connection() explicitly opts it (and everything after it) out of prerendering.',
+  },
+  {
+    q: 'What does the partialPrefetching config flag require, and what did it change from?',
+    options: [
+      'Nothing — it works standalone and replaces cacheComponents',
+      'It requires cacheComponents: true and shipped as a separate flag in 16.3.0, changing per-link prefetching to one shared App Shell prefetch per route',
+      'It is only relevant to the Pages Router',
+      'It disables prefetching entirely for performance',
+    ],
+    answer: 1,
+    explain: 'partialPrefetching is a distinct flag introduced in Next.js 16.3.0 that requires cacheComponents already enabled; it moves prefetching from one request per visible link to one shared, cached App Shell per route.',
   },
 ];
 

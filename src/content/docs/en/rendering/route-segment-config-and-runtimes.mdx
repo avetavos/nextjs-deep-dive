@@ -1,6 +1,6 @@
 ---
 title: 'Route Segment Config and Runtimes'
-description: 'The Route Segment Config exports (dynamic, revalidate, runtime, fetchCache, dynamicParams), the Node.js runtime versus the deprecated Edge runtime, how to enable ISR through revalidate, and why none of this survives cacheComponents.'
+description: 'Every Route Segment Config export — dynamic, dynamicParams, revalidate, fetchCache, runtime, preferredRegion, maxDuration, experimental_ppr — its Cache Components equivalent (if any), and the real build error for each incompatible one.'
 sidebar:
   order: 4
 ---
@@ -9,9 +9,10 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 <Callout title="Which caching model this lesson assumes">
-Route Segment Config is the **previous** caching model, with `cacheComponents` off. Once you set `cacheComponents: true` (the Partial Prerendering and `use cache` lessons), every export on this page — `dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, and `runtime` (even `'nodejs'`) — fails `next build` with `Route segment config "…" is not compatible with nextConfig.cacheComponents. Please remove it.` The replacements: drop `force-dynamic` (routes are dynamic by default), replace `force-static` / `revalidate` / `fetchCache` with `'use cache'` plus `cacheLife(...)` (shown below), replace `dynamicParams = false` with `notFound()` in the page, and remove `runtime` entirely — Cache Components requires Node.js.
+Route Segment Config is the **previous** caching model, with `cacheComponents` off. Once you set `cacheComponents: true` (the Partial Prerendering and `use cache` lessons), every export on this page — `dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, and `experimental_ppr` — fails `next build` with `Route segment config "…" is not compatible with nextConfig.cacheComponents. Please remove it.` (`preferredRegion` and `maxDuration` are the two exceptions — see the table below). The replacements: drop `force-dynamic` (routes are dynamic by default), replace `force-static` / `revalidate` / `fetchCache` with `'use cache'` plus `cacheLife(...)`, replace `dynamicParams = false` with `notFound()` in the page, and remove `runtime` entirely — Cache Components requires Node.js.
 </Callout>
 
 ## The idea in one sentence
@@ -23,7 +24,7 @@ Route Segment Config is a set of file-level `export const` values that let you o
 Each of these is a named export at the top of a `layout.tsx`, `page.tsx`, or `route.ts`. They apply to that segment and its children.
 
 ```tsx
-// app/blog/page.tsx — route segment config exports
+// app/blog/page.tsx
 export const dynamic = 'auto';       // 'auto' | 'force-dynamic' | 'error' | 'force-static'
 export const revalidate = 3600;      // ISR: rebuild this route at most once per hour
 export const runtime = 'nodejs';     // 'nodejs' (default) | 'edge' (deprecated)
@@ -39,7 +40,7 @@ export const dynamicParams = true;   // allow params not returned by generateSta
 
 ## Node.js runtime vs Edge runtime
 
-Every route runs on the default **Node.js** runtime, which gives you the full Node API surface. The **Edge** runtime is a smaller, Web-API-only environment. Since Next.js 16 it is **deprecated** as a route runtime: `next build` prints `The Edge Runtime is deprecated` for any page that exports it, and Cache Components rejects the export outright. Edge lives on for `proxy.ts` (the file formerly known as Middleware).
+Every route runs on the default **Node.js** runtime, which gives you the full Node API surface. The **Edge** runtime is a smaller, Web-API-only environment. Since Next.js 16 it is **deprecated** as a route runtime: `next build` prints `The Edge Runtime is deprecated` for any page that exports it, and Cache Components rejects the export outright — for *either* value, not just `'edge'` (proven below). Edge lives on for `proxy.ts` (the file formerly known as Middleware).
 
 ```tsx
 // Opt a route into the Edge runtime — deprecated since Next.js 16: next build warns, Cache Components rejects it
@@ -56,7 +57,7 @@ What that means in practice:
 Incremental Static Regeneration keeps a route static and fast while still letting it go stale and refresh on a timer. Set `revalidate` to a number of seconds and Next.js serves the cached static page, then rebuilds it in the background after that window.
 
 ```tsx
-// app/products/page.tsx — serve static, refresh in the background every 60s
+// app/products/page.tsx
 export const revalidate = 60;
 
 export default async function Products() {
@@ -70,7 +71,7 @@ The first request after 60 seconds triggers a background rebuild; visitors keep 
 Under `cacheComponents: true` the `revalidate` export is rejected. The equivalent is a `'use cache'` scope with a `cacheLife` profile — `next build` then lists the route as `○ /products  1m  1h`:
 
 ```tsx
-// app/products/page.tsx — the same ISR under Cache Components: cache the page and give it a lifetime
+// app/products-cc/page.tsx
 import { cacheLife } from 'next/cache';
 
 export default async function Products() {
@@ -81,6 +82,41 @@ export default async function Products() {
 }
 ```
 
+## Every export, proven against a real build
+
+Every incompatible export produces the exact same shape of error under `cacheComponents: true` — confirmed one at a time in the probe, real messages, only the file path trimmed:
+
+```text
+Error: Route segment config "dynamic" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+Error: Route segment config "revalidate" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+Error: Route segment config "fetchCache" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+Error: Route segment config "dynamicParams" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+Error: Route segment config "runtime" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+Error: Route segment config "experimental_ppr" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+`preferredRegion` and `maxDuration` are not on that list — built with `cacheComponents: true` and both exports present, the build succeeds. `preferredRegion` prints its own, unrelated deprecation warning (it's deprecated everywhere, with or without Cache Components); `maxDuration` builds silently, with no warning at all:
+
+```text
+⚠ The "preferredRegion" route segment config is deprecated. Learn more: https://nextjs.org/docs/messages/preferred-region-deprecated
+```
+
+| Export | Under Cache Components | Equivalent |
+|---|---|---|
+| `dynamic = 'force-dynamic'` | **Rejected** — build error | Not needed; every route is dynamic by default. Wrap the parts that need prerendering in `'use cache'` instead. |
+| `dynamic = 'force-static'` | **Rejected** — build error | `'use cache'` with a long `cacheLife` (e.g. `'max'`) for the uncached data; move any request-time API into a `<Suspense>` boundary. |
+| `revalidate` | **Rejected** — build error | `cacheLife(...)` inside a `'use cache'` scope — pick the closest built-in profile (`'seconds'`…`'max'`) or define a custom one. |
+| `fetchCache` | **Rejected** — build error | Not needed — every `fetch()` inside a `'use cache'` scope is cached automatically. |
+| `dynamicParams = false` | **Rejected** — build error | Call `notFound()` inside the page when a param that wasn't returned by `generateStaticParams` doesn't resolve to real data. |
+| `runtime` (`'nodejs'` **or** `'edge'`) | **Rejected** — build error, either value | None — the export itself is unsupported. Cache Components requires the Node.js runtime; there is nothing left to configure. |
+| `preferredRegion` | **Builds fine** — unrelated deprecation warning only | None — deprecated independently of Cache Components. Remove it regardless and let the deployment platform pick a region. |
+| `maxDuration` | **Builds fine** — no warning | None needed — it's a deployment-platform execution-time hint, orthogonal to caching, and stays exactly as it was. |
+| `experimental_ppr = true` | **Rejected** — build error | Not needed; PPR is the default behavior the moment `cacheComponents: true` is set. |
+
+<Callout title="A related, Cache Components-only export you'll see in error output">
+Trying to read `cookies()` outside `<Suspense>` under Cache Components produces an error that also mentions a segment config named **`instant`** as one of the ways to opt a route out of that validation (`export const instant = false` allows a blocking, non-instant route). `instant` isn't a Route Segment Config replacement for anything in the table above — it only exists under Cache Components, to tell Next.js whether a segment is expected to navigate instantly. It only works when `cacheComponents` is enabled and cannot be used in a Client Component.
+</Callout>
+
 <Mermaid title="Route segment config and the two runtimes" code={diagramSegmentEn} />
 
 export const diagramSegmentEn = `flowchart TD
@@ -90,8 +126,56 @@ export const diagramSegmentEn = `flowchart TD
   D --> E[nodejs, full APIs, default]
   D --> F[edge, deprecated in 16, limited APIs, no ISR]`;
 
+## Mental Model
+
+Route Segment Config is a set of dials on the *outside* of a file — you never touch the render body to change caching or runtime, you just add an `export const` at the top. Cache Components removes every one of those dials except two (`preferredRegion`, `maxDuration`, both deployment hints that have nothing to do with caching) and replaces the rest with decisions made *inside* the function body instead — `'use cache'` and `cacheLife(...)` sit next to the code they affect, rather than declaring a blanket policy for the whole file from outside it.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Route Segment Config (previous model) | One line per concern, declared at the top of the file, easy to scan | A blanket, file-wide setting — can't cache one fetch differently from another in the same segment |
+| `'use cache'` + `cacheLife` (Cache Components) | Caching decisions live next to the code they cache, at whatever granularity you choose (function, component, page) | More to read inside the function body; no single top-of-file summary of the segment's caching policy |
+| Leaving `runtime` unset | Full Node.js API surface, compatible with Cache Components | Can't opt into Edge's smaller cold-start footprint on a route (Edge is deprecated anyway) |
+| Removing `preferredRegion`/`maxDuration` when not needed | One less config surface to keep in sync with deployment reality | None — these two never conflicted with Cache Components in the first place |
+
+## Common Misconceptions
+
+- **Cache Components only rejects `runtime = 'edge'`, since that's the deprecated value.** It rejects the `runtime` export itself, for either value — `runtime = 'nodejs'` fails exactly the same way, because Cache Components requires Node.js and there's nothing left to configure.
+- **`preferredRegion` and `maxDuration` must also be migrated to `'use cache'`/`cacheLife`.** They're not caching config at all — they're deployment-platform hints (region, execution time limit) and Cache Components doesn't touch them. `preferredRegion` is deprecated for unrelated reasons; `maxDuration` isn't deprecated at all.
+- **`dynamicParams = false` has no replacement under Cache Components.** It does — call `notFound()` inside the page itself when an unlisted param doesn't correspond to real data, rather than declaring the 404 behavior as a blanket file-level export.
+- **Removing `experimental_ppr = true` turns PPR off.** The opposite — that export (and the matching `experimental.ppr` config flag) was removed because PPR became the *default* behavior of `cacheComponents: true`; there's no way to have `cacheComponents` on without PPR active.
+
+## Reading AI-generated code
+
+When a generated snippet exports Route Segment Config, check for these before trusting it:
+
+- Does the project have `cacheComponents: true` in `next.config.ts`, while a page still exports `dynamic`, `revalidate`, `fetchCache`, `dynamicParams`, `runtime`, or `experimental_ppr`? Every one of those fails the build outright — this is a build-time signal, not a subtle bug, but AI-generated code is often written (or copy-pasted from an older example) without checking the project's actual config.
+- Does the code set `runtime = 'nodejs'` explicitly, assuming that's always harmless because it's the default? Under Cache Components, exporting it at all — even the default value — is rejected.
+- Does `dynamicParams = false` appear anywhere in a Cache Components project? It needs to become a `notFound()` call inside the component instead.
+- Is `preferredRegion` or `maxDuration` being "migrated" to `cacheLife` or `'use cache'` unnecessarily, when neither one is actually incompatible with Cache Components?
+- Does old documentation or a stale example still reference `experimental.ppr` or `experimental_ppr` as if it needs to be set for PPR to work in Next.js 16? Both were removed — PPR is on whenever `cacheComponents: true` is.
+
+<SpotTheBug code={`// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+}
+
+export default nextConfig
+
+// app/dashboard/page.tsx
+export const dynamic = 'force-dynamic'
+
+export default function Dashboard() {
+  return <div>Dashboard</div>
+}`}>
+`cacheComponents: true` and `export const dynamic = 'force-dynamic'` cannot coexist. The build fails with `Route segment config "dynamic" is not compatible with nextConfig.cacheComponents. Please remove it.` — under Cache Components every route is already dynamic by default, so `force-dynamic` isn't just redundant, it's a rejected export. The fix is to delete the `dynamic` export entirely; if part of the page genuinely needs to be static (or cached), wrap that part in `'use cache'` instead of declaring a file-wide mode from outside the component.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Route Segment Config exports let a single segment override its rendering, caching, and runtime in the previous model — revalidate turns on ISR, runtime should stay on the default Node.js because Edge is deprecated, and under cacheComponents all of these exports give way to `'use cache'` plus cacheLife.
+Route Segment Config exports let a single segment override its rendering, caching, and runtime in the previous model — revalidate turns on ISR, runtime should stay on the default Node.js because Edge is deprecated — and under cacheComponents, six of the eight exports (dynamic, revalidate, fetchCache, dynamicParams, runtime, experimental_ppr) are rejected outright in favor of 'use cache' plus cacheLife, while preferredRegion and maxDuration are untouched deployment hints that were never about caching in the first place.
 </Callout>
 
 export const quizSegmentEn = [
@@ -99,21 +183,71 @@ export const quizSegmentEn = [
     q: 'Where do Route Segment Config values live?',
     options: ['In next.config only', 'As named exports at the top of a segment file', 'Inside the component body', 'In a separate JSON file'],
     answer: 1,
+    explain: 'Route Segment Config is a set of named exports (dynamic, revalidate, runtime, etc.) declared at the top of a page.tsx, layout.tsx, or route.ts file.',
   },
   {
     q: 'Which export turns on Incremental Static Regeneration?',
     options: ['runtime', 'dynamicParams', 'revalidate', 'fetchCache'],
     answer: 2,
+    explain: 'Setting revalidate to a number of seconds tells Next.js to serve the cached static page and rebuild it in the background after that window elapses.',
   },
   {
     q: 'What is the default runtime for a route?',
     options: ['edge', 'nodejs', 'browser', 'deno'],
     answer: 1,
+    explain: 'Every route defaults to the Node.js runtime, which gives you the full Node API surface, unless you explicitly export runtime = "edge" (deprecated).',
   },
   {
     q: 'What is the status of export const runtime = \'edge\' in Next.js 16?',
     options: ['It is the default runtime', 'It is deprecated — next build warns, and Cache Components rejects the export', 'It is required to enable ISR', 'It is the only runtime that supports use cache'],
     answer: 1,
+    explain: 'next build prints "The Edge Runtime is deprecated" for any route exporting it, and under cacheComponents the runtime export is rejected regardless of its value.',
+  },
+  {
+    q: `\`\`\`ts
+// next.config.ts
+const nextConfig = { cacheComponents: true }
+\`\`\`
+\`\`\`tsx
+// app/page.tsx
+export const runtime = 'nodejs'
+\`\`\`
+Does this build?`,
+    options: [
+      "Yes — 'nodejs' is the default and always safe to declare explicitly",
+      "No — Cache Components rejects the runtime export for any value, including 'nodejs'",
+      "Yes, but it silently downgrades to the Pages Router",
+      "No — only 'edge' is rejected under Cache Components",
+    ],
+    answer: 1,
+    explain: 'The rejection is on the export itself, not a specific value — Cache Components requires Node.js and leaves nothing left to configure, so even the already-default "nodejs" value fails the build.',
+  },
+  {
+    q: 'Which two Route Segment Config exports build successfully under cacheComponents: true, with no Cache Components equivalent needed?',
+    options: [
+      'dynamic and revalidate',
+      'runtime and fetchCache',
+      'preferredRegion and maxDuration',
+      'dynamicParams and experimental_ppr',
+    ],
+    answer: 2,
+    explain: 'preferredRegion (a deployment-region hint, deprecated for unrelated reasons) and maxDuration (an execution-time limit) are both orthogonal to caching and build cleanly under Cache Components — proven directly against next build.',
+  },
+  {
+    q: `\`\`\`tsx
+export const dynamicParams = false
+
+export default function Page() { /* ... */ }
+\`\`\`
+What is the Cache Components-compatible replacement for this line?`,
+    options: [
+      'cacheLife(\'max\') at the top of the page',
+      'Calling notFound() inside the page when the param does not resolve to real data',
+      'Deleting generateStaticParams entirely',
+      'There is no replacement — unlisted params always 404 under Cache Components',
+    ],
+    answer: 1,
+    explain: 'dynamicParams itself is rejected under cacheComponents. The equivalent behavior is achieved in code: call notFound() inside the component when a param not covered by generateStaticParams turns out not to correspond to real data.',
   },
 ];
 

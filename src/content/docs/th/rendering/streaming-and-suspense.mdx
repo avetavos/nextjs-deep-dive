@@ -1,6 +1,6 @@
 ---
 title: 'Streaming และ Suspense'
-description: 'static shell stream ออกมาก่อน ทำไม loading.tsx คือ Suspense boundary อัตโนมัติของ segment การใช้ Suspense boundary แบบ manual เพื่อ stream เฉพาะ component ที่ช้า และทำไม streaming ช่วยเรื่อง TTFB กับ perceived performance'
+description: 'static shell stream ออกมาก่อน ทำไม loading.tsx คือ Suspense boundary อัตโนมัติของ segment ทำไม Suspense ที่ห่อทั้งหน้าไม่ได้อะไรเพิ่ม และอะไรที่พัง streaming จริง ๆ ใน production (reverse proxy, CDN, compression)'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## ไอเดียในหนึ่งประโยค
 
@@ -25,7 +26,7 @@ browser paint shell ทันที ผู้ใช้จึงเห็นห�
 วาง `loading.tsx` ไว้ข้าง ๆ `page.tsx` แล้ว Next.js จะห่อทั้ง segment นั้นด้วย Suspense boundary ให้เอง ระหว่างที่ page รอ data อยู่ loading UI จะโชว์ทันที
 
 ```tsx
-// app/feed/loading.tsx — shown instantly while page.tsx awaits its data
+// app/feed/loading.tsx
 export default function Loading() {
   return <p>Loading your feed…</p>;
 }
@@ -63,12 +64,120 @@ export default function FeedPage() {
 
 heading paint ทันที ส่วน `SlowComments` stream เข้ามาแล้วแทนที่ fallback เมื่อ fetch resolve
 
+`loading.tsx` กับ `<Suspense>` แบบ manual แก้ปัญหาเดียวกันแต่คนละระดับความละเอียด — `loading.tsx` ครอบทั้ง segment (ทุก dynamic API และทุก fetch ในหน้านั้นรอหลัง fallback เดียวกันหมด) ส่วน boundary แบบ manual ให้คุณตัดเฉพาะ region ที่ช้าออกมา แล้วเก็บส่วนที่เหลือของหน้า — ส่วนที่เร็วอยู่แล้ว — ไว้นอก fallback ทั้งหมด ใช้ `loading.tsx` สำหรับการโหลดครั้งแรกของทั้ง route และใช้ `<Suspense>` แบบ manual เมื่อมีแค่ component เดียวในหน้าที่เร็วอยู่แล้วที่ช้า
+
+## Suspense ที่ห่อทั้งหน้าไม่ได้อะไรเพิ่ม
+
+การห่อ *ทั้ง* หน้าด้วย `<Suspense>` เดียว ยังทำให้ server flush response header ชุดแรกได้เร็วอยู่ดี แต่ถ้าไม่มีอะไรที่มีความหมายอยู่นอก boundary นั้นเลย ก็ไม่มี shell จริง ๆ ให้โชว์ — ผู้เข้าชมจ้อง fallback นานเท่ากับเวลารวมที่ใช้ถ้าไม่มี Suspense เลย พิสูจน์ด้วย server จริงกับ script วัดเวลา chunk (`Accept-Encoding: identity` ปิด compression ไม่ให้ chunk ถูก buffer โดย layer นั้น ตรงกับเทคนิคที่ docs ของ Next.js ใช้ยืนยัน streaming) —
+
+```tsx
+// app/stream-none/page.tsx
+export const dynamic = 'force-dynamic';
+
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return 'slow data';
+}
+
+export default async function Page() {
+  const data = await slow(); // no Suspense at all — the whole response blocks
+  return (
+    <main>
+      <h1>Shell heading</h1>
+      <p>{data}</p>
+    </main>
+  );
+}
+```
+
+```tsx
+// app/stream-wrap-all/page.tsx
+export const dynamic = 'force-dynamic';
+import { Suspense } from 'react';
+
+async function Slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return <p>slow data</p>;
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <main>
+        <h1>Shell heading</h1>
+        <Slow />
+      </main>
+    </Suspense>
+  );
+}
+```
+
+```tsx
+// app/stream-granular/page.tsx
+export const dynamic = 'force-dynamic';
+import { Suspense } from 'react';
+
+async function Slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return <p>slow data</p>;
+}
+
+export default function Page() {
+  return (
+    <main>
+      <h1>Shell heading</h1>
+      <p>This ships immediately, in the shell.</p>
+      <Suspense fallback={<p>Loading…</p>}>
+        <Slow />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+รันทั้งสามอันกับ `next start` แล้วอ่าน raw HTTP chunk ตามที่มันมาถึงจริง (timestamp เทียบกับตอนที่ request ถูกส่งไป) —
+
+```text
+stream-none        headers +1536ms   chunk 0 +1540ms  (chunk เดียว ไม่มีอะไรมาก่อนหน้า)
+stream-wrap-all    headers   +32ms   chunk 1 +1530ms  chunk 2 +1531ms  (มีแค่ fallback แล้วทุกอย่างมาพร้อมกันทีเดียว)
+stream-granular    headers   +28ms   chunk 1 +1528ms  chunk 2 +1529ms  (shell content จริง แล้วตามด้วยส่วนที่ช้า)
+```
+
+`stream-wrap-all` ได้ time-to-first-byte เร็วในทางเทคนิค — fallback เองก็ stream ออกมาที่ 32ms — แต่ผู้เข้าชมไม่เห็นอะไรนอกจาก spinner จนถึง 1531ms เวลารวมเท่ากับ `stream-none` ที่ blocking เป็น response เดียวที่ 1540ms `stream-granular` ได้ header เร็วเท่ากัน **และ** โชว์ content จริงที่มีประโยชน์ (heading กับ text แนะนำ) ตลอดช่วงเวลารอนั้นด้วย ข้อดีของ `<Suspense>` แบบ manual ไม่ใช่เวลารวมที่เร็วขึ้น — แต่คือ content จริงที่พร้อมโดยไม่ต้องเสียเวลารออะไรเลย แทนที่จะเป็น boundary ที่กว้างจนมี fallback เป็นสิ่งเดียวที่โชว์ได้
+
+## อะไรที่พัง streaming ใน production
+
+layer ไหนก็ตามระหว่าง server กับ browser ที่ buffer ทั้ง response ก่อนส่งต่อ ก็ทำลาย streaming ได้เลย ถึงแม้ server จะสร้างมันแบบ progressive จริง ๆ ก็ตาม —
+
+- **reverse proxy** — Nginx และ proxy คล้าย ๆ กัน buffer response เป็น default ทางแก้จาก docs ของ Next.js คือ response header ไม่ใช่ nginx directive — ตั้ง `X-Accel-Buffering: no` บน response
+- **CDN** — บางตัว buffer ทั้ง response ก่อนส่งต่อ เช็ก streaming support ของ provider ตัวเอง
+- **serverless platform** — ไม่ใช่ทุกตัวรองรับ streaming เป็น default AWS Lambda ต้องเปิด response-streaming mode เองแบบชัดเจน
+- **compression** — gzip/Brotli buffer chunk ข้างในเพื่อ compress ให้มีประสิทธิภาพ เพิ่ม latency ก่อน chunk แรกที่เห็นได้
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: '/:path*{/}?',
+        headers: [{ key: 'X-Accel-Buffering', value: 'no' }],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
 ## ทำไม streaming ช่วยเรื่อง perceived performance
 
 streaming แยก "first paint" ออกจาก "data ที่ช้าที่สุด" มีสองข้อดีที่ตามมา —
 
 - **TTFB ดีขึ้น** — shell ออกจาก server โดยไม่รอ data request ใด ๆ byte แรกจึงมาถึงเร็ว
-- **perceived performance ดีขึ้น** — ผู้ใช้อ่าน layout จริงได้ระหว่างที่ region ช้ากำลังเติมเข้ามา แทนที่จะจ้องหน้าจอว่างจนกว่าทุกอย่างจะพร้อม
+- **perceived performance ดีขึ้น** — ผู้ใช้อ่าน layout จริงได้ระหว่างที่ region ช้ากำลังเติมเข้ามา แทนที่จะจ้องหน้าจอว่างจนกว่าทุกอย่างจะพร้อม — ตราบใดที่มี content จริงอยู่ใน shell ไม่ใช่แค่ Suspense fallback ที่ห่อทุกอย่างไว้
 
 <Mermaid title="ส่ง shell ก่อน แล้วค่อย stream ส่วนที่ช้า" code={diagramStreamTh} />
 
@@ -78,8 +187,64 @@ export const diagramStreamTh = `flowchart LR
   D[Slow async component resolves] --> E[Server streams the chunk]
   E --> F[Suspense fallback swaps to real content]`;
 
+## Mental Model
+
+นึกภาพ response เป็นรถขนของที่ส่งพัสดุทีละชิ้นได้แทนที่จะรอจนพัสดุทุกชิ้นบนเส้นทางถูกโหลดครบ `loading.tsx` คือ "กักรถทั้งคันไว้ที่ depot จนกว่า route นี้จะพร้อม" — หยาบ แต่อัตโนมัติ `<Suspense>` แบบ manual คือ "โหลดรถด้วยทุกอย่างที่พร้อมตอนนี้ แล้วส่งรถอีกคันไปรับพัสดุชิ้นเดียวที่ยังแพ็คไม่เสร็จ" — คนขับ (browser) ออกเดินทางทันทีพร้อมของจริง การห่อทั้งหน้าด้วย `<Suspense>` เดียว ก็คือ trick แบบ depot อันเดิม แค่เปลี่ยนชื่อเรียก — รถยังไม่ออกไปพร้อมอะไรที่มีประโยชน์จนกว่าพัสดุชิ้นสุดท้ายจะมาถึง
+
+## ข้อแลกเปลี่ยน
+
+| สิ่งที่ได้ | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| `loading.tsx` | Suspense boundary แบบไม่ต้องเขียน code เองสำหรับทั้ง segment | หยาบ — fallback ของทั้ง segment โชว์แม้จะมีแค่ fetch เดียวที่ช้า |
+| `<Suspense>` แบบ manual รอบ component เดียว | ส่วนที่เหลือของหน้า render ทันทีพร้อม content จริง | ต้องระบุให้ได้ว่า component ไหนช้าจริง ๆ |
+| `<Suspense>` ห่อทั้งหน้า | ไม่ได้อะไรเพิ่มเลยเทียบกับไม่ stream ถ้าไม่มีอะไรอยู่นอกมัน | รอเวลารวมเท่าเดิมกับแบบ blocking แต่ดูเหมือนน่าจะช่วยได้ |
+| `X-Accel-Buffering: no` | คืน behavior streaming จริงหลัง reverse proxy สไตล์ Nginx | ต้องตั้งเองชัดเจน — default เงียบ ๆ ลด streaming ให้เหลือ chunk ก้อนเดียว |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **ห่อหน้ามากขึ้นด้วย `<Suspense>` ช่วยได้เสมอ** boundary มีประโยชน์ก็ต่อเมื่อมี content จริงที่พร้อมแล้วอยู่ *นอก* มัน การห่อทุกอย่างแค่ทำให้ content เดิมช้าลงเบื้องหลัง fallback แทนที่จะโชว์เร็วขึ้น
+- **`loading.tsx` กับ `<Suspense>` แบบ manual ใช้แทนกันได้** `loading.tsx` ครอบทั้ง segment ทีเดียว ส่วน boundary แบบ manual ให้คุณเก็บบางส่วนของหน้าไว้นอก fallback ใด ๆ เลย ใช้แบบละเอียดเมื่อมีแค่บางส่วนของหน้าที่ช้า
+- **ถ้า server stream, browser ก็เห็นแบบ stream เสมอ** reverse proxy, CDN, compression layer หรือแม้แต่ HTTP client ที่ buffer เอง ก็เปลี่ยน response ที่ progressive จริง ๆ จาก server ให้กลายเป็น blob เดียวที่ล่าช้าได้ตอนที่มันไปถึง code ที่อ่านมัน
+- **streaming ทำให้ data ช้าเร็วขึ้น** ไม่จริง — มันไม่ได้ทำให้ request ที่ช้าสั้นลง มันแค่เปลี่ยนสิ่งที่ผู้เข้าชมเห็น *ระหว่างรอ* จากหน้าจอว่างเปล่าให้กลายเป็นหน้าจริงที่ยังไม่ครบสมบูรณ์
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ snippet ที่ generate มาแตะ streaming หรือ Suspense ให้เช็กสิ่งเหล่านี้ก่อนเชื่อมัน —
+
+- `<Suspense>` boundary ถูกห่อรอบทุกอย่างในหน้าจริง ๆ โดยไม่มีอะไรมีความหมายอยู่นอกมันเลยหรือเปล่า? แบบนั้นได้ TTFB เร็วสำหรับ fallback ไม่ใช่สำหรับ content จริง — เช็กว่ามีอะไรที่เร็วอยู่แล้วซึ่งดึงออกมานอก boundary ได้หรือเปล่า
+- `await` ที่ช้าอยู่ข้างใน component ที่ถูกห่อด้วย `<Suspense>` จริง ๆ หรือถูก await ไว้อีกชั้นบนสุด ใน parent ก่อนที่ child ที่ห่อ `<Suspense>` จะถูก render ด้วยซ้ำ? await ที่อยู่เหนือ boundary จะ block ทั้ง tree ไม่ว่า `<Suspense>` ข้างล่างจะวางไว้ตรงไหน
+- มี `loading.tsx` สำหรับ segment ที่จริง ๆ มีแค่ component เดียวที่ช้า ทั้งที่ `<Suspense>` แบบ manual รอบเฉพาะ component นั้นจะให้ส่วนที่เหลือของหน้า render ทันทีได้หรือเปล่า?
+- deployment guidance (Dockerfile, nginx config, reverse-proxy setup) ลืมปิด response buffering หรือเปล่า? streaming ทำงานถูกต้องสมบูรณ์บน `next start` ได้ แล้วยังมาถึงเป็น blob เดียวใน production หลัง proxy ที่ไม่ได้ตั้งค่าไว้
+
+<SpotTheBug code={`// app/feed/page.tsx
+import { Suspense } from 'react'
+
+async function getFeed() {
+  return fetch('https://api.example.com/feed', { cache: 'no-store' }).then((r) => r.json())
+}
+
+async function Comments() {
+  const comments = await fetch('https://api.example.com/comments', { cache: 'no-store' }).then((r) => r.json())
+  return <ul>{comments.map((c: { id: number; text: string }) => <li key={c.id}>{c.text}</li>)}</ul>
+}
+
+export default async function FeedPage() {
+  const feed = await getFeed()
+  return (
+    <section>
+      <h1>Your feed</h1>
+      <p>{feed.headline}</p>
+      <Suspense fallback={<p>Loading comments…</p>}>
+        <Comments />
+      </Suspense>
+    </section>
+  )
+}`}>
+`<Suspense>` รอบ `Comments` ดูถูกต้องถ้ามองแยก ๆ แต่ `FeedPage` เองเป็น `async` function ที่ `await` `getFeed()` **ก่อน** ที่จะ return JSX ใด ๆ เลย — รวมถึง `<Suspense>` boundary ด้วย ไม่มีอะไร stream ได้จนกว่า await ตัวนอกนั้นจะ resolve เพราะ React ยังไม่ได้เริ่ม render tree ที่มี boundary อยู่ข้างในด้วยซ้ำ ทางแก้คือ render heading กับ shell แบบ synchronous แล้วย้าย `getFeed()` ไปไว้ใน child component ของตัวเอง ห่อด้วย `<Suspense>` ของตัวเอง — ทางแก้เดียวกับที่ใช้กับ boundary ที่ห่อทั้งหน้า แค่ย้ายมาใช้อีกชั้นสูงขึ้นไป
+</SpotTheBug>
+
 <Callout title="สรุปในหนึ่งบรรทัด">
-streaming ส่ง static shell ก่อนเพื่อ TTFB ที่เร็ว แล้วค่อยดัน region ช้าเข้ามาเมื่อ resolve — ผ่าน loading.tsx สำหรับทั้ง segment หรือ `<Suspense>` แบบ manual รอบ component เดียวที่ช้า
+streaming ส่ง static shell ก่อนเพื่อ TTFB ที่เร็ว แล้วค่อยดัน region ช้าเข้ามาเมื่อ resolve — ผ่าน loading.tsx สำหรับทั้ง segment หรือ `<Suspense>` แบบ manual รอบ component เดียวที่ช้า — แต่ boundary จะคุ้มก็ต่อเมื่อมี content จริงอยู่นอกมัน และต่อเมื่อไม่มีอะไรข้างบน (proxy, await ที่หลงอยู่เหนือ boundary) กำลัง buffer ทั้ง response อยู่แล้ว
 </Callout>
 
 export const quizStreamTh = [
@@ -87,21 +252,83 @@ export const quizStreamTh = [
     q: 'อะไรถูกส่งไปที่ browser ก่อนเมื่อหน้า stream?',
     options: ['region ของ data ที่ช้าที่สุด', 'static shell', 'ไม่มีอะไรจนกว่า data จะ resolve หมด', 'client bundle เท่านั้น'],
     answer: 1,
+    explain: 'ส่วนของหน้าที่พร้อมอยู่แล้ว — static shell — ออกจาก server ก่อน โดยไม่ต้องรอ data request ที่ช้าเลย',
   },
   {
     q: 'ไฟล์ loading.tsx สร้างอะไรให้ segment ของตัวเอง?',
     options: ['dynamic route', 'Suspense boundary อัตโนมัติ', 'API route แยกต่างหาก', 'client component'],
     answer: 1,
+    explain: 'loading.tsx คือ file convention ที่ห่อทั้ง segment ด้วย Suspense boundary ให้เอง — ไม่ต้องเขียน <Suspense> เอง',
   },
   {
     q: 'ควรใช้ <Suspense> แบบ manual เมื่อไหร่?',
     options: ['เพื่อ stream เฉพาะ region ช้าเดียวขณะที่ส่วนที่เหลือ render', 'เพื่อปิด streaming', 'เพื่อบังคับ static rendering', 'เพื่อ cache fetch request'],
     answer: 0,
+    explain: 'boundary แบบ manual ให้คุณตัดเฉพาะ component ที่ช้าออกมา ส่วนที่เหลือของหน้า — ที่เร็วอยู่แล้ว — ก็ออกไปทันทีแทนที่จะรออยู่หลัง fallback เดียวของทั้ง segment',
   },
   {
     q: 'ทำไม streaming ช่วยเรื่อง time to first byte?',
     options: ['cache ทุก request', 'ส่ง shell ออกไปโดยไม่รอ data request', 'ข้ามการ render ทั้งหมด', 'รันบน client เท่านั้น'],
     answer: 1,
+    explain: 'server ไม่กั๊ก response ไว้จนกว่าทุก await จะ resolve — มัน flush shell ที่พร้อมแล้วทันที byte แรกเลยมาถึงก่อน data ที่ช้าที่สุด',
+  },
+  {
+    q: `\`\`\`tsx
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <main>
+        <h1>Shell heading</h1>
+        <Slow />
+      </main>
+    </Suspense>
+  )
+}
+\`\`\`
+วัดกับ server จริง หน้านี้กับหน้าเทียบเท่าที่ไม่มี Suspense เลย ใช้เวลารวมพอ ๆ กันกว่าจะโชว์ content จริง ทำไม?`,
+    options: [
+      'Suspense boundary เพิ่ม overhead เสมอ',
+      'ไม่มีอะไรมีความหมายอยู่นอก boundary เลย เลยไม่มี shell จริง — fallback คือสิ่งเดียวที่เห็นได้จนกว่าทุกอย่างจะ resolve',
+      'fallback prop เขียนผิด',
+      'force-dynamic ปิด Suspense',
+    ],
+    answer: 1,
+    explain: 'Suspense boundary จะคุ้มก็ต่อเมื่อมี content จริงที่พร้อมแล้วอยู่นอกมัน การห่อทั้งหน้าแปลว่า "shell" คือแค่ fallback — เวลารวมกว่าจะเห็นอะไรมีประโยชน์เลยเท่ากับ version ที่ blocking เต็มรูปแบบ',
+  },
+  {
+    q: `\`\`\`tsx
+export default async function Page() {
+  const feed = await getFeed() // slow fetch
+  return (
+    <section>
+      <h1>{feed.headline}</h1>
+      <Suspense fallback={<p>Loading…</p>}>
+        <Comments />
+      </Suspense>
+    </section>
+  )
+}
+\`\`\`
+Suspense boundary รอบ Comments ทำให้ heading stream ออกมาก่อน getFeed() resolve ได้ไหม?`,
+    options: [
+      'ได้ Suspense stream ได้อิสระจาก await รอบข้างเสมอ',
+      'ไม่ได้ — await ตัวนอก block ทั้ง function ก่อนที่ JSX ใด ๆ รวมถึง Suspense boundary จะถูก return ออกมาด้วยซ้ำ',
+      'ได้ แต่เฉพาะตอน development เท่านั้น',
+      'ไม่ได้ เพราะ Comments ไม่มี "use client"',
+    ],
+    answer: 1,
+    explain: 'await ที่อยู่เหนือ JSX ที่ return block การ render ทั้งหมด รวมถึง Suspense boundary ด้วย — Suspense ข้าม await ได้เฉพาะที่เกิดข้างใน subtree ที่มันห่ออยู่ ไม่ใช่ await ที่เกิดก่อนที่ tree นั้นจะถูกสร้างขึ้นมาด้วยซ้ำ',
+  },
+  {
+    q: 'หน้า stream ถูกต้องจาก next start แต่ผู้เข้าชมทุกคนเห็น response เดียวที่ล่าช้าใน production หลัง Nginx reverse proxy ทางแก้ที่ docs ระบุไว้คืออะไร?',
+    options: [
+      'เพิ่ม <Suspense> boundary ให้มากขึ้น',
+      'ตั้ง response header X-Accel-Buffering เป็น no',
+      'เปลี่ยน route เป็น force-static',
+      'เพิ่มค่า revalidate',
+    ],
+    answer: 1,
+    explain: 'Nginx และ proxy คล้าย ๆ กัน buffer response เป็น default — ทางแก้ตาม docs ของ Next.js คือ response header X-Accel-Buffering: no ตั้งผ่าน headers() ใน next.config ไม่ใช่การแก้ nginx.conf',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Streaming and Suspense'
-description: 'How the static shell streams first, why loading.tsx is an automatic Suspense boundary for a segment, how a manual Suspense boundary streams just one slow component, and why streaming improves TTFB and perceived performance.'
+description: 'How the static shell streams first, why loading.tsx is an automatic Suspense boundary for a segment, why a Suspense boundary around the whole page buys nothing, and what actually breaks streaming in production (reverse proxies, CDNs, compression).'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The idea in one sentence
 
@@ -25,7 +26,7 @@ The browser paints the shell right away, so the user sees a real page while data
 Drop a `loading.tsx` beside a `page.tsx` and Next.js wraps that whole segment in a Suspense boundary for you. While the page awaits its data, the loading UI shows instantly.
 
 ```tsx
-// app/feed/loading.tsx — shown instantly while page.tsx awaits its data
+// app/feed/loading.tsx
 export default function Loading() {
   return <p>Loading your feed…</p>;
 }
@@ -63,12 +64,120 @@ export default function FeedPage() {
 
 The heading paints at once; `SlowComments` streams in and replaces its fallback when the fetch resolves.
 
+`loading.tsx` and a manual `<Suspense>` solve the same problem at different granularity: `loading.tsx` covers an entire segment (every dynamic API and every fetch on that page waits behind one fallback), while a manual boundary lets you carve out just the slow region and keep the rest of the page — the parts that are already fast — out of the fallback entirely. Reach for `loading.tsx` for a whole route's first load, and a manual `<Suspense>` when only one component on an otherwise-fast page is slow.
+
+## A Suspense boundary wrapping the whole page buys nothing
+
+Wrapping the *entire* page in one `<Suspense>` still lets the server flush a fast set of response headers, but if nothing meaningful sits outside that boundary, there's no real shell to show — the visitor stares at the fallback for the same total time it would have taken without Suspense at all. Proven with a real server and a chunk-timing script (`Accept-Encoding: identity` disables compression so chunks aren't buffered by that layer, matching the technique the Next.js docs use to verify streaming):
+
+```tsx
+// app/stream-none/page.tsx
+export const dynamic = 'force-dynamic';
+
+async function slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return 'slow data';
+}
+
+export default async function Page() {
+  const data = await slow(); // no Suspense at all — the whole response blocks
+  return (
+    <main>
+      <h1>Shell heading</h1>
+      <p>{data}</p>
+    </main>
+  );
+}
+```
+
+```tsx
+// app/stream-wrap-all/page.tsx
+export const dynamic = 'force-dynamic';
+import { Suspense } from 'react';
+
+async function Slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return <p>slow data</p>;
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <main>
+        <h1>Shell heading</h1>
+        <Slow />
+      </main>
+    </Suspense>
+  );
+}
+```
+
+```tsx
+// app/stream-granular/page.tsx
+export const dynamic = 'force-dynamic';
+import { Suspense } from 'react';
+
+async function Slow() {
+  await new Promise((r) => setTimeout(r, 1500));
+  return <p>slow data</p>;
+}
+
+export default function Page() {
+  return (
+    <main>
+      <h1>Shell heading</h1>
+      <p>This ships immediately, in the shell.</p>
+      <Suspense fallback={<p>Loading…</p>}>
+        <Slow />
+      </Suspense>
+    </main>
+  );
+}
+```
+
+Running all three against `next start` and reading the raw HTTP chunks as they arrive (timestamps relative to when the request was sent):
+
+```text
+stream-none        headers +1536ms   chunk 0 +1540ms  (single chunk, nothing before it)
+stream-wrap-all    headers   +32ms   chunk 1 +1530ms  chunk 2 +1531ms  (fallback only, then everything at once)
+stream-granular    headers   +28ms   chunk 1 +1528ms  chunk 2 +1529ms  (real shell content, then the slow part)
+```
+
+`stream-wrap-all` technically gets a fast time-to-first-byte — the fallback itself streams at 32ms — but the visitor sees nothing but a spinner until 1531ms, the same total wall-clock time as `stream-none`'s single blocking response at 1540ms. `stream-granular` gets the *same* fast headers **and** shows real, useful content (the heading and intro text) during that entire waiting window. The win from a manual `<Suspense>` isn't a faster total time — it's real content ready with nothing spent waiting on it, instead of a boundary so wide that its fallback is all there is to show.
+
+## What breaks streaming in production
+
+Any layer between your server and the browser that buffers the whole response before forwarding it defeats streaming, even though the server generated it progressively:
+
+- **Reverse proxies** — Nginx and similar proxies buffer responses by default. The Next.js docs' fix is a response header, not an nginx directive: set `X-Accel-Buffering: no` on the response.
+- **CDNs** — some buffer the entire response before forwarding; check your provider's streaming support.
+- **Serverless platforms** — not all support streaming by default; AWS Lambda requires response-streaming mode to be explicitly enabled.
+- **Compression** — gzip/Brotli can buffer chunks internally to compress efficiently, adding latency before the first visible chunk.
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: '/:path*{/}?',
+        headers: [{ key: 'X-Accel-Buffering', value: 'no' }],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
 ## Why streaming improves perceived performance
 
 Streaming decouples "first paint" from "slowest data". Two wins fall out of that:
 
 - **Better TTFB** — the shell leaves the server without waiting on any data request, so the first byte arrives fast.
-- **Better perceived performance** — the user reads a real layout while slow regions fill in, instead of staring at a blank screen until everything is ready.
+- **Better perceived performance** — the user reads a real layout while slow regions fill in, instead of staring at a blank screen until everything is ready — as long as there's real content in that shell, not just a Suspense fallback wrapping everything.
 
 <Mermaid title="Shell first, then stream the slow parts" code={diagramStreamEn} />
 
@@ -78,8 +187,64 @@ export const diagramStreamEn = `flowchart LR
   D[Slow async component resolves] --> E[Server streams the chunk]
   E --> F[Suspense fallback swaps to real content]`;
 
+## Mental Model
+
+Think of the response as a delivery truck that can drop off packages one at a time instead of waiting until every package on the route is loaded. `loading.tsx` is "hold the whole truck at the depot until this one route is ready" — coarse, but automatic. A manual `<Suspense>` is "load the truck with everything that's ready now, and send a second truck for the one package that's still being packed" — the driver (the browser) starts moving immediately with real cargo. Wrapping the entire page in one `<Suspense>` is the depot trick again, just given a different name — the truck still doesn't leave with anything useful until the last package arrives.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `loading.tsx` | Zero-code Suspense boundary for a whole segment | Coarse — the entire segment's fallback shows even if only one fetch is slow |
+| Manual `<Suspense>` around one component | Rest of the page renders immediately with real content | Requires identifying which component is actually slow |
+| `<Suspense>` around the entire page | None over not streaming at all, if nothing sits outside it | Same total wait as blocking, but looks like it should help |
+| `X-Accel-Buffering: no` | Restores real streaming behind Nginx-style reverse proxies | Must be set explicitly — the default silently reduces streaming to one big chunk |
+
+## Common Misconceptions
+
+- **Wrapping more of the page in `<Suspense>` always helps.** A boundary is only useful if there's real, ready content *outside* it. Wrapping everything just delays the same content behind a fallback instead of showing it sooner.
+- **`loading.tsx` and a manual `<Suspense>` are interchangeable.** `loading.tsx` covers the whole segment at once; a manual boundary lets you keep parts of the page out of any fallback at all. Use the granular one whenever only part of a page is slow.
+- **If the server streams, the browser always sees it stream.** A reverse proxy, CDN, compression layer, or even a buffering HTTP client can turn a genuinely progressive server response into one delayed blob by the time it reaches code that reads it.
+- **Streaming makes slow data fast.** It doesn't shorten the slow request — it changes what the visitor sees *while waiting* for it, from a blank screen to a partially-complete, real page.
+
+## Reading AI-generated code
+
+When a generated snippet touches streaming or Suspense, check for these before trusting it:
+
+- Is a `<Suspense>` boundary wrapped around literally everything on the page, with nothing meaningful outside it? That gets a fast TTFB for a fallback, not for real content — check whether anything genuinely fast was left inside the boundary that could be pulled outside it.
+- Is the slow `await` actually inside the component that's wrapped in `<Suspense>` — or is it awaited one level up, in the parent, before the `<Suspense>`-wrapped child is even rendered? An await above the boundary blocks the whole tree regardless of where the `<Suspense>` sits below it.
+- Does a `loading.tsx` exist for a segment where only one component is actually slow, when a manual `<Suspense>` around just that component would let the rest of the page render immediately instead?
+- Does deployment guidance (a Dockerfile, an nginx config, a reverse-proxy setup) omit disabling response buffering? Streaming can work perfectly on `next start` and still arrive as one blob in production behind an unconfigured proxy.
+
+<SpotTheBug code={`// app/feed/page.tsx
+import { Suspense } from 'react'
+
+async function getFeed() {
+  return fetch('https://api.example.com/feed', { cache: 'no-store' }).then((r) => r.json())
+}
+
+async function Comments() {
+  const comments = await fetch('https://api.example.com/comments', { cache: 'no-store' }).then((r) => r.json())
+  return <ul>{comments.map((c: { id: number; text: string }) => <li key={c.id}>{c.text}</li>)}</ul>
+}
+
+export default async function FeedPage() {
+  const feed = await getFeed()
+  return (
+    <section>
+      <h1>Your feed</h1>
+      <p>{feed.headline}</p>
+      <Suspense fallback={<p>Loading comments…</p>}>
+        <Comments />
+      </Suspense>
+    </section>
+  )
+}`}>
+The `<Suspense>` around `Comments` looks correct in isolation, but `FeedPage` itself is an `async` function that `await`s `getFeed()` **before** it returns any JSX — including the `<Suspense>` boundary. Nothing can stream until that outer `await` resolves, because React hasn't even started rendering the tree with the boundary in it yet. The fix is to render the heading and shell synchronously and push the `getFeed()` call into its own child component, wrapped in its own `<Suspense>` — the same fix, applied one level higher, that keeps the fast parts of the page out of every slow `await`'s way.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Streaming sends the static shell first for a fast TTFB, then pushes slow regions in as they resolve — via loading.tsx for a whole segment or a manual `<Suspense>` around a single slow component.
+Streaming sends the static shell first for a fast TTFB, then pushes slow regions in as they resolve — via loading.tsx for a whole segment or a manual `<Suspense>` around a single slow component — but a boundary only pays off when real content sits outside it, and only if nothing upstream (a proxy, a stray `await` above the boundary) is buffering the whole response anyway.
 </Callout>
 
 export const quizStreamEn = [
@@ -87,21 +252,83 @@ export const quizStreamEn = [
     q: 'What is sent to the browser first when a page streams?',
     options: ['The slowest data region', 'The static shell', 'Nothing until all data resolves', 'The client bundle only'],
     answer: 1,
+    explain: 'The parts of the page that are already ready — the static shell — leave the server first, without waiting on any slow data request.',
   },
   {
     q: 'What does a loading.tsx file create for its segment?',
     options: ['A dynamic route', 'An automatic Suspense boundary', 'A separate API route', 'A client component'],
     answer: 1,
+    explain: 'loading.tsx is a file convention that wraps the whole segment in a Suspense boundary for you — no manual <Suspense> required.',
   },
   {
     q: 'When should you reach for a manual <Suspense> boundary?',
     options: ['To stream just one slow region while the rest renders', 'To disable streaming', 'To force static rendering', 'To cache a fetch request'],
     answer: 0,
+    explain: 'A manual boundary lets you carve out only the slow component, so the rest of the page — the parts that are already fast — ships immediately instead of waiting behind one whole-segment fallback.',
   },
   {
     q: 'Why does streaming improve time to first byte?',
     options: ['It caches every request', 'It sends the shell without waiting on data requests', 'It skips rendering entirely', 'It runs only on the client'],
     answer: 1,
+    explain: "The server doesn't hold the response until every await resolves — it flushes the ready shell immediately, so the first byte arrives before the slowest data does.",
+  },
+  {
+    q: `\`\`\`tsx
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <main>
+        <h1>Shell heading</h1>
+        <Slow />
+      </main>
+    </Suspense>
+  )
+}
+\`\`\`
+Measured against a real server, this and an equivalent page with no Suspense at all both took about the same total time to show real content. Why?`,
+    options: [
+      'Suspense boundaries always add overhead',
+      'Nothing meaningful sits outside the boundary, so there is no real shell — the fallback is all there is to see until everything resolves',
+      'The fallback prop was written incorrectly',
+      'force-dynamic disables Suspense',
+    ],
+    answer: 1,
+    explain: 'A Suspense boundary only pays off when real, ready content sits outside it. Wrapping the entire page means the "shell" is just the fallback — total time to see anything useful matches the fully-blocking version.',
+  },
+  {
+    q: `\`\`\`tsx
+export default async function Page() {
+  const feed = await getFeed() // slow fetch
+  return (
+    <section>
+      <h1>{feed.headline}</h1>
+      <Suspense fallback={<p>Loading…</p>}>
+        <Comments />
+      </Suspense>
+    </section>
+  )
+}
+\`\`\`
+Does the Suspense boundary around Comments let the heading stream in before getFeed() resolves?`,
+    options: [
+      'Yes, Suspense always streams independently of surrounding awaits',
+      'No — the outer await blocks the whole function before any JSX, including the Suspense boundary, is returned',
+      'Yes, but only in development',
+      'No, because Comments is missing the "use client" directive',
+    ],
+    answer: 1,
+    explain: "An await above the returned JSX blocks the entire render, Suspense boundary and all — Suspense can only skip ahead of an await that happens inside the wrapped subtree, not one that happens before the tree is even produced.",
+  },
+  {
+    q: 'A page streams correctly from next start, but every visitor sees one delayed response in production behind an Nginx reverse proxy. What is the documented fix?',
+    options: [
+      'Add more <Suspense> boundaries',
+      'Set the X-Accel-Buffering response header to no',
+      'Switch the route to force-static',
+      'Increase revalidate',
+    ],
+    answer: 1,
+    explain: 'Nginx and similar reverse proxies buffer responses by default; the Next.js docs\' fix is the X-Accel-Buffering: no response header, set via next.config headers(), not an nginx.conf change.',
   },
 ];
 
