@@ -19,7 +19,7 @@ Server Action คือ async function ที่ mark ด้วย directive `"u
 
 ก่อนจะพูดถึง syntax ต้องเข้าใจก่อนว่า Server Action ไม่ใช่ช่องทาง RPC ส่วนตัวระหว่าง UI กับ server ของเราเอง ตอน build directive `"use server"` บอกให้ compiler แทนที่ implementation ของ function ใน client bundle ด้วย reference — action ID ที่ถูก encrypt บวก dispatcher — ที่ post กลับไปที่ server implementation ยังอยู่บน server เหมือนเดิม แต่ route ที่มันสร้างขึ้นมานั้น เรียกได้จากใครก็ตามที่ส่ง POST request แบบเดียวกันมา ไม่ว่าเขาจะเคยโหลด form ของเราหรือไม่ก็ตาม
 
-นี่ไม่ใช่ edge case ที่ค่อยมาป้องกันทีหลัง แต่เป็นสมมติฐานตั้งต้นของทุก action ที่เราจะเขียน เริ่มตั้งแต่ตัวอย่างแรกในบทนี้เลย ดังนั้นตัวอย่างที่รันได้จริงทุกอันตั้งแต่นี้ไปจะยึดกฎเดียวกัน: **authorize ผู้เรียกก่อน แล้วค่อย validate input ก่อนแตะ database** authorize หมายถึงเรียกเช็ค session — คอร์สนี้ใช้ pattern `verifySession()` ของ Data Access Layer จากบท [authentication patterns](/th/production-and-ecosystem/authentication-patterns/) — ส่วน validate หมายถึงการ parse `FormData` ที่ไม่น่าเชื่อถือด้วย schema library อย่าง `zod`
+นี่ไม่ใช่ edge case ที่ค่อยมาป้องกันทีหลัง แต่เป็นสมมติฐานตั้งต้นของทุก action ที่เราจะเขียน เริ่มตั้งแต่ตัวอย่างแรกในบทนี้เลย ดังนั้นตัวอย่างที่รันได้จริงทุกอันตั้งแต่นี้ไปจะยึดกฎเดียวกัน: **authorize ผู้เรียกก่อน แล้วค่อย validate input ก่อนแตะ database** authorize หมายถึงเรียกเช็ค session — คอร์สนี้ใช้ pattern `verifySession()` ของ Data Access Layer จากบท [authentication patterns](/nextjs/th/production-and-ecosystem/authentication-patterns/) — ส่วน validate หมายถึงการ parse `FormData` ที่ไม่น่าเชื่อถือด้วย schema library อย่าง `zod`
 
 ```ts
 // app/lib/dal.ts
@@ -37,7 +37,7 @@ export const verifySession = cache(async () => {
 })
 ```
 
-`verifySession()` เรียก `redirect()` เมื่อไม่มี session — และ `redirect()` throw ซึ่งแปลว่าห้ามเรียก `verifySession()` ภายใน `try/catch` ที่ไม่ปล่อยให้ control-flow error ของ Next.js หลุดออกไปโดยตั้งใจ บท [mutations and revalidation](/th/server-actions-and-mutations/mutations-and-revalidation/) จะอธิบายว่าทำไมถึงสำคัญขนาดนี้ ตอนนี้ให้จำไว้ก่อนว่า `verifySession()` คือสิ่งที่เรียกไว้บนสุดของ action แบบไม่มี try/catch คลุม
+`verifySession()` เรียก `redirect()` เมื่อไม่มี session — และ `redirect()` throw ซึ่งแปลว่าห้ามเรียก `verifySession()` ภายใน `try/catch` ที่ไม่ปล่อยให้ control-flow error ของ Next.js หลุดออกไปโดยตั้งใจ บท [mutations and revalidation](/nextjs/th/server-actions-and-mutations/mutations-and-revalidation/) จะอธิบายว่าทำไมถึงสำคัญขนาดนี้ ตอนนี้ให้จำไว้ก่อนว่า `verifySession()` คือสิ่งที่เรียกไว้บนสุดของ action แบบไม่มี try/catch คลุม
 
 <Mermaid title="action ถูกเรียกถึงได้ไม่ว่า request จะมาจากไหน" code={diagramSaPublicTh} />
 
@@ -153,7 +153,7 @@ Route Handler ใน `route.ts` คือ URL สาธารณะที่เ�
 
 - **"มีแต่ form ของฉันที่เรียก action นี้ ปลอดภัยแน่นอน"** action ID เรียกถึงได้ด้วย POST ตรง ๆ จากที่ไหนก็ได้ form เป็นแค่ผู้เรียกหนึ่งในบรรดาผู้เรียกที่เป็นไปได้ทั้งหมด
 - **"render form ให้เฉพาะคน login แล้วก็พอ"** การ gate ตอน render ควบคุมแค่ UI ที่แสดง ไม่ได้ควบคุมว่า server จะรับ request แบบไหน action เองยังต้องมี check ของตัวเอง
-- **"action ที่ไม่ได้ export ออกจาก app จะเรียกไม่ถึง"** ทุก action ที่ **export** จากไฟล์ `'use server'` จะกลายเป็น endpoint ที่เรียกได้ทันทีที่มันถูกใช้ที่ไหนสักแห่งใน app มีแต่ action ที่ไม่ถูกใช้จริง ๆ เท่านั้นที่จะถูกลบด้วย dead-code elimination (ดูบท [security and patterns](/th/server-actions-and-mutations/security-and-patterns/) ว่า build step นี้พิสูจน์อะไรได้จริง ๆ)
+- **"action ที่ไม่ได้ export ออกจาก app จะเรียกไม่ถึง"** ทุก action ที่ **export** จากไฟล์ `'use server'` จะกลายเป็น endpoint ที่เรียกได้ทันทีที่มันถูกใช้ที่ไหนสักแห่งใน app มีแต่ action ที่ไม่ถูกใช้จริง ๆ เท่านั้นที่จะถูกลบด้วย dead-code elimination (ดูบท [security and patterns](/nextjs/th/server-actions-and-mutations/security-and-patterns/) ว่า build step นี้พิสูจน์อะไรได้จริง ๆ)
 
 ## อ่านโค้ดที่ AI เขียน
 

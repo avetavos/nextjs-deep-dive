@@ -19,7 +19,7 @@ A Server Action is an async function marked with the `"use server"` directive th
 
 Before any syntax: a Server Action is not a private RPC channel between your own UI and your own server. At build time, the `"use server"` directive tells the compiler to replace the function's implementation in the client bundle with a reference — an encrypted action ID plus a dispatcher — that POSTs back to the server. The implementation stays on the server, but the route it creates is reachable by anyone who can send that same POST request, whether or not they ever loaded your form.
 
-This is not a corner case to defend against later — it is the starting assumption for every action you write, starting with the very first one in this module. So every runnable example from here on follows one rule: **authorize the caller, then validate the input, before touching the database.** Authorization means calling a session check — this course uses the `verifySession()` Data Access Layer pattern from the [authentication patterns](/en/production-and-ecosystem/authentication-patterns/) lesson — and validation means parsing the untrusted `FormData` with a schema library such as `zod`.
+This is not a corner case to defend against later — it is the starting assumption for every action you write, starting with the very first one in this module. So every runnable example from here on follows one rule: **authorize the caller, then validate the input, before touching the database.** Authorization means calling a session check — this course uses the `verifySession()` Data Access Layer pattern from the [authentication patterns](/nextjs/en/production-and-ecosystem/authentication-patterns/) lesson — and validation means parsing the untrusted `FormData` with a schema library such as `zod`.
 
 ```ts
 // app/lib/dal.ts
@@ -37,7 +37,7 @@ export const verifySession = cache(async () => {
 })
 ```
 
-`verifySession()` calls `redirect()` when there is no session — and `redirect()` throws. That means `verifySession()` must never be called inside a `try/catch` block that does not deliberately let Next.js's own control-flow errors escape; the [mutations and revalidation](/en/server-actions-and-mutations/mutations-and-revalidation/) lesson covers exactly why. For now, treat `verifySession()` as a call you make at the top of an action, unguarded.
+`verifySession()` calls `redirect()` when there is no session — and `redirect()` throws. That means `verifySession()` must never be called inside a `try/catch` block that does not deliberately let Next.js's own control-flow errors escape; the [mutations and revalidation](/nextjs/en/server-actions-and-mutations/mutations-and-revalidation/) lesson covers exactly why. For now, treat `verifySession()` as a call you make at the top of an action, unguarded.
 
 <Mermaid title="An action is reachable however the request arrives" code={diagramSaPublicEn} />
 
@@ -153,7 +153,7 @@ Think of a Server Action as a button that happens to compile into an HTTP endpoi
 
 - **"Only my form calls this action, so it's safe."** The action ID is reachable by direct POST from anywhere; the form is one caller among any number of possible callers.
 - **"Rendering the form only for logged-in users is enough."** Render-time gating controls what UI shows up, not what requests the server will accept — the action itself still needs its own check.
-- **"An action I never export from my app can't be reached."** Every *exported* action from a `'use server'` file becomes a candidate endpoint the moment it is used anywhere in the app; only an action that is truly unused anywhere gets removed by dead-code elimination (see the [security and patterns](/en/server-actions-and-mutations/security-and-patterns/) lesson for what that build step actually proves).
+- **"An action I never export from my app can't be reached."** Every *exported* action from a `'use server'` file becomes a candidate endpoint the moment it is used anywhere in the app; only an action that is truly unused anywhere gets removed by dead-code elimination (see the [security and patterns](/nextjs/en/server-actions-and-mutations/security-and-patterns/) lesson for what that build step actually proves).
 
 ## Reading AI-generated code
 
